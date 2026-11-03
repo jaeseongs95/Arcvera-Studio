@@ -22,9 +22,9 @@ fn startup_commands_case(replies: Vec<Result<Vec<u8>, String>>, started: Result<
 #[test]
 fn startup_reuses_running_server_without_install_or_start_and_keeps_legacy_path() {
     let socket = env::current_dir().unwrap().join("startup-fixture.sock").to_str().unwrap().to_owned();
-    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_status("running", &socket))], Err("시작 금지".into()));
+    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(startup_status("running", &socket))], Err("시작 금지".into()));
     assert_eq!(result.unwrap().unwrap()["status"], "running");
-    assert_eq!(calls, ["app-server --help", "app-server daemon version"]);
+    assert_eq!(calls, ["app-server --help", "app-server daemon start --help", "app-server daemon version"]);
     let legacy = b"Usage: fixture app-server [OPTIONS]\n\nOptions:\n  -h, --help\n          Print help\n".to_vec();
     let (result, calls) = startup_commands_case(vec![Ok(legacy)], Err("시작 금지".into()));
     assert!(result.unwrap().is_none());
@@ -38,39 +38,44 @@ fn startup_starts_installed_server_once_then_verifies_ready_for_both_start_resul
     let socket = env::current_dir().unwrap().join("startup-fixture.sock").to_str().unwrap().to_owned();
     for status in ["started", "alreadyRunning"] {
         let (result, calls) = startup_commands_case(
-            vec![Ok(startup_help()), Err("연결 없음".into()), Ok(startup_start_help()), Ok(startup_status("running", &socket))],
+            vec![Ok(startup_help()), Ok(startup_start_help()), Err("연결 없음".into()), Ok(startup_status("running", &socket))],
             Ok(startup_status(status, &socket)),
         );
         assert!(result.unwrap().is_some());
-        assert_eq!(calls, ["app-server --help", "app-server daemon version", "app-server daemon start --help", "start --existing-installation", "app-server daemon version"]);
+        assert_eq!(calls, ["app-server --help", "app-server daemon start --help", "app-server daemon version", "start --existing-installation", "app-server daemon version"]);
     }
 }
 #[test]
 fn startup_requires_declared_preserving_start_option_without_unsafe_fallback() {
     for help in [
+        b"Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n  -h, --help\n          Print help\n".to_vec(),
         b"Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n  -h, --help\n          Use --existing-installation if available\n".to_vec(),
         b"Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation-extra\n  -h, --help\n          Print help\n".to_vec(),
-        b"invalid help".to_vec(),
     ] {
-        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Err("연결 없음".into()), Ok(help)], Err("시작 금지".into()));
-        assert!(result.is_err());
-        assert_eq!(calls, ["app-server --help", "app-server daemon version", "app-server daemon start --help"]);
+        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(help)], Err("시작 금지".into()));
+        assert!(result.unwrap().is_none(),"공식형 daemon/proxy가 있어도 관리형 시작을 선언하지 않으면 개별 서버 경로여야 한다");
+        assert_eq!(calls, ["app-server --help", "app-server daemon start --help"],"미선언에서는 daemon version/status/start를 호출하면 안 된다");
+    }
+    for help in [Err("fixture start help 실패".into()),Ok(b"invalid help".to_vec()),Ok(vec![0xff])] {
+        let(result,calls)=startup_commands_case(vec![Ok(startup_help()),help],Err("시작 금지".into()));
+        assert!(result.is_err(),"실행·형식 오류를 미지원으로 바꿔서는 안 된다");
+        assert_eq!(calls,["app-server --help","app-server daemon start --help"]);
     }
 }
 #[test]
 fn startup_never_retries_failed_start_and_rejects_unverified_readiness() {
     let socket = env::current_dir().unwrap().join("startup-fixture.sock").to_str().unwrap().to_owned();
-    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Err("연결 없음".into()), Ok(startup_start_help())], Err("실행 거절".into()));
+    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Err("연결 없음".into())], Err("실행 거절".into()));
     assert!(result.unwrap_err().contains("실행 거절"));
     assert_eq!(calls.iter().filter(|call| call.as_str() == "start --existing-installation").count(), 1);
     for ready in [Err("준비 시간 초과".into()), Ok(startup_status("notRunning", &socket)), Ok(startup_status("running", &(socket.clone()+"-other")))] {
-        let (result, _) = startup_commands_case(vec![Ok(startup_help()), Err("연결 없음".into()), Ok(startup_start_help()), ready], Ok(startup_status("started", &socket)));
+        let (result, _) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Err("연결 없음".into()), ready], Ok(startup_status("started", &socket)));
         assert!(result.is_err());
     }
     for reply in [b"bad json".to_vec(), startup_status("stopped", &socket), startup_status("running", "relative")] {
-        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(reply)], Err("시작 금지".into()));
+        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(reply)], Err("시작 금지".into()));
         assert!(result.is_err());
-        assert_eq!(calls.len(), 2, "성공 코드의 잘못된 상태를 시작 허가로 바꾸면 안 된다");
+        assert_eq!(calls.len(), 3, "성공 코드의 잘못된 상태를 시작 허가로 바꾸면 안 된다");
     }
 }
 #[test]

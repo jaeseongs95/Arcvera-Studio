@@ -119,6 +119,10 @@ fn parse_page(value: &Value, previous: Option<&str>) -> Result<CatalogPage, Stri
     Ok(CatalogPage { sessions, next_cursor: cursor(value, previous)? })
 }
 
+fn read_page<S: Read + Write>(rpc: &mut Rpc<S>, params: Value, previous: Option<&str>) -> Result<CatalogPage, String> {
+    parse_page(&rpc.call("thread/list", params)?, previous)
+}
+
 pub fn catalog_list(request: CatalogQuery) -> Result<CatalogPage, String> {
     catalog_list_with_executable(&executable()?, request)
 }
@@ -149,7 +153,7 @@ pub fn catalog_list_with_executable(exe: &OsString, request: CatalogQuery) -> Re
         None => None,
     };
     with_reader(exe, |rpc| {
-        let page = parse_page(&rpc.call("thread/list", params)?, request.cursor.as_deref())?;
+        let page = read_page(rpc, params, request.cursor.as_deref())?;
         if let Some(expected) = selected_directory {
             for session in &page.sessions {
                 let actual = Path::new(&session.cwd).canonicalize().map_err(|e| format!("Cannot verify filtered session directory: {e}"))?;
@@ -210,15 +214,67 @@ pub fn catalog_preview(thread_id: &str, previous: Option<String>) -> Result<Cata
 pub fn catalog_preview_with_executable(exe: &OsString, thread_id: &str, previous: Option<String>) -> Result<CatalogPreview, String> {
     Uuid::parse_str(thread_id).map_err(|_| "Preview requires an exact thread UUID")?;
     validate_cursor(previous.as_deref())?;
-    with_reader(exe, |rpc| {
-        let params = json!({"threadId":thread_id,"limit":CATALOG_PAGE_SIZE,"sortDirection":"desc","cursor":previous.as_deref()});
-        parse_preview(&rpc.call("thread/items/list", params)?, previous.as_deref())
-    })
+    with_reader(exe, |rpc| read_preview(rpc, thread_id, previous.as_deref()))
+}
+
+fn read_preview<S: Read + Write>(rpc: &mut Rpc<S>, thread_id: &str, previous: Option<&str>) -> Result<CatalogPreview, String> {
+    let params = json!({"threadId":thread_id,"limit":CATALOG_PAGE_SIZE,"sortDirection":"desc","cursor":previous});
+    // The selected runtime may reject an unmaterialized/unsupported item store.
+    // Preserve that error; never replace bounded pagination with full history.
+    parse_preview(&rpc.call("thread/items/list", params)?, previous)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one_request_rpc(method: &'static str, params: Value, response: Value) -> (Rpc<TcpStream>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut ws = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
+            let request: Value = loop {
+                if let Message::Text(text) = ws.read().unwrap() { break serde_json::from_str(&text).unwrap(); }
+            };
+            assert_eq!(request["method"], method);
+            assert_eq!(request["params"], params);
+            let mut response = response;
+            response["id"] = request["id"].clone();
+            ws.send(Message::Text(response.to_string().into())).unwrap();
+            assert!(ws.read().is_err(), "목록·미리보기 조회는 추가 전체 이력/대화/서버 변경 요청을 보내면 안 된다");
+        });
+        (Rpc {ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))}, worker)
+    }
+
+    #[test]
+    fn official_catalog_and_preview_use_only_bounded_common_methods() {
+        let params = json!({"limit":CATALOG_PAGE_SIZE,"sortKey":"updated_at","sortDirection":"desc","useStateDbOnly":true});
+        let (mut rpc, worker) = one_request_rpc("thread/list", params.clone(), json!({"result":{"data":[],"nextCursor":null}}));
+        assert!(read_page(&mut rpc, params, None).unwrap().sessions.is_empty());
+        drop(rpc); worker.join().unwrap();
+
+        let id = Uuid::new_v4().to_string();
+        let (mut rpc, worker) = one_request_rpc("thread/items/list", json!({"threadId":id,"limit":CATALOG_PAGE_SIZE,"sortDirection":"desc","cursor":"older"}),
+            json!({"result":{"data":[{"turnId":"turn-1","item":{"type":"agentMessage","id":"answer-1","text":"official answer"}}],"nextCursor":null}}));
+        let preview = read_preview(&mut rpc, &id, Some("older")).unwrap();
+        assert_eq!(preview.messages[0].text, "official answer");
+        assert!(preview.next_cursor.is_none());
+        drop(rpc); worker.join().unwrap();
+    }
+
+    #[test]
+    fn unsupported_official_item_store_does_not_fall_back_to_full_history() {
+        let id = Uuid::new_v4().to_string();
+        let (mut rpc, worker) = one_request_rpc("thread/items/list", json!({"threadId":id,"limit":CATALOG_PAGE_SIZE,"sortDirection":"desc","cursor":null}),
+            json!({"error":{"code":-32601,"message":"thread/items/list is not supported yet"}}));
+        let error = read_preview(&mut rpc, &id, None).unwrap_err();
+        assert!(error.contains("-32601") && error.contains("not supported yet"));
+        drop(rpc); worker.join().unwrap();
+    }
+
     #[test]
     fn history_page_validates_identity_and_never_claims_live_ownership() {
         let id = Uuid::new_v4().to_string();

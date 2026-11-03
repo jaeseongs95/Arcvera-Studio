@@ -337,7 +337,7 @@ mod tests {
     use super::*;
 
     fn project_session(id: &str, project_id: Option<String>) -> SessionInfo {
-        SessionInfo { id: id.into(), generation: 1, title: "보존할 대화 제목".into(), cwd: "C:\\workspace".into(), project_assigned: project_id.is_some(), project_id, project_revision: 0, thread_id: Some("keep-thread".into()), state: "running".into(), active: true }
+        SessionInfo { id: id.into(), generation: 1, title: "보존할 대화 제목".into(), cwd: "C:\\workspace".into(), project_assigned: project_id.is_some(), project_id, project_revision: 0, thread_id: Some("keep-thread".into()), state: "running".into(), active: true, runtime_features: None }
     }
 
     fn project_names(store: &Store) -> Vec<String> { store.projects().unwrap().into_iter().map(|project| project.name).collect() }
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn metadata_restores_without_running_and_layout_replaces_atomically() {
         let store = Store::open(Path::new(":memory:")).unwrap();
-        let mut info = SessionInfo { id: "test".into(), generation: 2, title: "title".into(), cwd: "directory".into(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "running".into(), active: true };
+        let mut info = SessionInfo { id: "test".into(), generation: 2, title: "title".into(), cwd: "directory".into(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "running".into(), active: true, runtime_features: None };
         store.save_session(&info).unwrap();
         info.generation = 1;
         info.title = "stale".into();
@@ -745,7 +745,7 @@ mod tests {
     fn metadata_retention_preserves_active_sessions_without_unbounded_history() {
         let store = Store::open(Path::new(":memory:")).unwrap();
         for index in 0..600 {
-            store.save_session(&SessionInfo { id: format!("session-{index:04}"), generation: 1, title: "fixture".into(), cwd: ".".into(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "exited".into(), active: false }).unwrap();
+            store.save_session(&SessionInfo { id: format!("session-{index:04}"), generation: 1, title: "fixture".into(), cwd: ".".into(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "exited".into(), active: false, runtime_features: None }).unwrap();
         }
         store.prune_sessions(&["session-0000".into()]).unwrap();
         let count: usize = store.connection.query_row("SELECT COUNT(*) FROM session_metadata", [], |r| r.get(0)).unwrap();
@@ -772,7 +772,7 @@ mod tests {
             assert_eq!(first.name, "한글 프로젝트");
             assert_eq!(store.projects().unwrap().len(), 1);
             store.save_layout(&serde_json::json!({"version":1,"sessions":[]})).unwrap();
-            store.save_session(&SessionInfo { id: "existing".into(), generation: 1, title: "Existing session".into(), cwd: first.cwd.clone().unwrap(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "exited".into(), active: false }).unwrap();
+            store.save_session(&SessionInfo { id: "existing".into(), generation: 1, title: "Existing session".into(), cwd: first.cwd.clone().unwrap(), project_id: None, project_assigned: false, project_revision: 0, thread_id: None, state: "exited".into(), active: false, runtime_features: None }).unwrap();
         }
         {
             let reopened = Store::open(&database).unwrap();

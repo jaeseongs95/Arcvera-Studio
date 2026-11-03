@@ -1,6 +1,10 @@
 //! 기존 서버·대화의 구조화 연결. 입력과 응답은 한 작업자가 소유하며 재전송하지 않는다.
 use super::*;
 
+#[path = "codex_conversation_adapter.rs"]
+pub(super) mod adapter;
+use adapter::{RuntimeProtocol, PASSIVE_SUBSCRIBE, START_USER_IF_IDLE, COMPACT_IF_IDLE};
+
 #[path = "codex_subagents.rs"]
 mod subagents;
 pub use subagents::SubagentRequest;
@@ -12,9 +16,6 @@ const REQUEST_COUNT: usize = 32;
 const TEXT_PREVIEW: usize = 4096;
 const DETAIL_BYTES: usize = 16 * 1024;
 const MAX_CONTEXT_INTEGER: i64 = 9_007_199_254_740_991;
-const PASSIVE_SUBSCRIBE: &str = "thread/subscribePassive";
-const START_USER_IF_IDLE: &str = "turn/startUserIfIdle";
-const COMPACT_IF_IDLE: &str = "thread/compact/startIfIdle";
 const HISTORY_UNAVAILABLE: &str = "대화 이력 원문을 아직 조회할 수 없습니다. 빈 이력으로 처리하지 않았습니다.";
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +63,7 @@ struct Control {
     deleted: AtomicBool,
     detail: Mutex<Option<DetailSnapshot>>,
     subagents: Mutex<subagents::State>,
+    observer_protocol: Mutex<Option<RuntimeProtocol>>,
 }
 struct DetailSnapshot { id: String, turn_id: String, item_id: String, text: Arc<str> }
 struct Worker {
@@ -120,6 +122,7 @@ impl CompactProgress {
         match message["method"].as_str() {
             Some("turn/started")=>{if self.turn.as_ref().is_some_and(|(id,done)|id==turn&&*done){return;}self.turn=Some((turn.into(),false));},
             Some("turn/completed")=>{if self.turn.as_ref().is_none_or(|(id,_)|id==turn){self.turn=Some((turn.into(),true));}},
+            Some("thread/compacted")=>{if self.turn.as_ref().is_none_or(|(id,_)|id==turn){self.turn=Some((turn.into(),true));}},
             Some("item/started" | "item/completed") if params["item"]["type"]=="contextCompaction"=>{
                 if self.turn.as_ref().is_some_and(|(id,done)|id==turn&&*done){return;}
                 if params["item"]["id"].as_str().is_some_and(|id|valid_id(id).is_ok()) {self.turn=Some((turn.into(),false));}
@@ -158,12 +161,16 @@ struct Events {
     context_compaction: Option<(String,String)>, context_revision: u64,
     context_activity_revision: u64, context_turn: Option<String>, gui_compact_supported: bool, observer_compact_supported: bool,
     gui_interrupt_supported: bool, interrupt_diagnostic: Option<&'static str>,
+    gui_protocol: Option<RuntimeProtocol>,
 }
 impl Events {
     fn blocks_attach(&self,owned: bool,unknown: bool) -> bool {
         owned || unknown || self.blocks_release(true) || self.pending.values().any(|request|request["guiOwned"]!=false)
     }
     fn blocks_release(&self,handoff: bool) -> bool {
+        // 표준 연결의 질문을 TUI가 같은 request ID로 승계한다는 보장은 없다.
+        if self.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription)
+            && (!self.pending.is_empty() || !self.observed_pending.is_empty()) {return true;}
         self.requests_unavailable || self.pending.iter().chain(self.observed_pending.iter()).any(|(id,request)| {
             !handoff || request["responded"]==true || self.answered.contains(id)
                 || !matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/tool/requestUserInput" | "item/permissions/requestApproval"))
@@ -198,7 +205,34 @@ impl ConversationConnection {
         }
     }
     pub(super) fn new(endpoint: Endpoint, stopped: Arc<AtomicBool>) -> Self {
-        Self(Arc::new(Control {endpoint,stopped,input:Mutex::new(false),owned:AtomicBool::new(false),worker:Mutex::new(None),events:Mutex::new(Events::default()),sent:Mutex::new(HashSet::new()),unknown:AtomicBool::new(false),deleted:AtomicBool::new(false),detail:Mutex::new(None),subagents:Mutex::new(subagents::State::default())}))
+        Self(Arc::new(Control {endpoint,stopped,input:Mutex::new(false),owned:AtomicBool::new(false),worker:Mutex::new(None),events:Mutex::new(Events::default()),sent:Mutex::new(HashSet::new()),unknown:AtomicBool::new(false),deleted:AtomicBool::new(false),detail:Mutex::new(None),subagents:Mutex::new(subagents::State::default()),observer_protocol:Mutex::new(None)}))
+    }
+    pub(super) fn configure(&self, initialized: &Value) -> Result<(),String> {
+        let protocol=adapter::from_initialize(initialized)?;
+        *self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?=Some(protocol);
+        Ok(())
+    }
+    pub(super) fn features(&self) -> Result<super::runtime::RuntimeFeatures,String> {
+        let protocol=*self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?;
+        let configured=protocol.is_some();
+        Ok(super::runtime::RuntimeFeatures {conversation:configured,manual_compact:configured,
+            subagents:protocol.is_some_and(|value|value.extensions.subagents),cron:false,remote_control:false,token_usage:configured})
+    }
+    pub(super) fn observer_supports_passive(&self) -> Result<bool,String> {
+        Ok(self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?
+            .is_some_and(|protocol|protocol.extensions.passive_subscription))
+    }
+    pub(super) fn observer_read_state(&self, result: &Value) -> Result<(),String> {
+        if self.observer_supports_passive()? {return Ok(());}
+        let mut events=self.0.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
+        // 표준 관찰자는 구독하거나 질문 응답을 소유하지 않는다. GUI 연결 중에는
+        // 더 오래된 metadata 조회로 GUI 이벤트 순서를 되돌리지 않는다.
+        if !events.connected && !(self.0.owned.load(Ordering::Acquire) && events.gui_protocol.is_some()) {
+            events.context_active=context_active(&result["thread"]["status"]);
+            events.observer_connected=true;events.observer_compact_supported=true;
+            events.token_usage_fresh=false;events.context_activity_revision+=1;events.context_revision+=1;
+        }
+        Ok(())
     }
     pub(crate) fn terminal_write<T>(&self, write: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let gui = self.0.input.lock().map_err(|_| "대화 입력 소유 상태를 확인할 수 없습니다.")?;
@@ -223,7 +257,7 @@ impl ConversationConnection {
         let events=self.0.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
         let reason=context_block_reason(&self.0,&events,closing);
         Ok(json!({"threadId":thread_id,"connected":events.connected||events.observer_connected,"guiConnected":events.connected,
-            "tokenUsage":events.token_usage,"tokenUsageFresh":events.token_usage_fresh&&events.observer_connected&&!self.0.unknown.load(Ordering::Acquire),"compacting":events.context_compaction.is_some(),"active":events.context_active,
+            "tokenUsage":events.token_usage,"tokenUsageFresh":events.token_usage_fresh&&(if events.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription){events.connected}else{events.observer_connected})&&!self.0.unknown.load(Ordering::Acquire),"compacting":events.context_compaction.is_some(),"active":events.context_active,
             "canCompact":reason.is_none(),"reason":reason,"revision":events.context_revision}))
     }
     pub(crate) fn is_deleted(&self) -> bool { self.0.deleted.load(Ordering::Acquire) }
@@ -234,6 +268,7 @@ impl ConversationConnection {
     // false는 실제 JSON-RPC의 정확한 준비 오류에서만 반환한다. 문자열이나
     // 성공 응답의 유사 필드로 재시도를 지시하지 않는다.
     pub(super) fn observer_subscribe<S: Read+Write>(&self,rpc: &mut Rpc<S>,thread_id: &str,cwd: &Path) -> Result<bool,String> {
+        if !self.observer_supports_passive()? {return Ok(false);}
         {let mut events=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?;events.observer_compact_supported=false;events.context_revision+=1;}
         let mut preparing=false;
         let result=match call_observed(&self.0,rpc,thread_id,PASSIVE_SUBSCRIBE,json!({"threadId":thread_id}),self.0.stopped.as_ref(),true,None,Some(&mut preparing),None) {
@@ -440,7 +475,7 @@ fn call_observed<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &s
     live(control, cancelled)?;
     check_cancelled(rpc.cancelled.as_ref())?;
     if rpc.deadline.is_some_and(|deadline|Instant::now()>=deadline) {return Err("대화 요청 기한이 지나 전송하지 않았습니다.".into());}
-    let mutation = matches!(method,START_USER_IF_IDLE | COMPACT_IF_IDLE | "turn/interrupt");
+    let mutation = adapter::is_mutation(method);
     let previous_unknown = if mutation {control.unknown.swap(true,Ordering::AcqRel)} else {false};
     // 입력·작업 상태·큐·취소·기한 검사가 끝난 실제 송신 시도 경계에서만 보존한다.
     // 이 뒤의 실패는 일부 바이트 송신 가능성이 있어 파일과 결과 불명을 보존한다.
@@ -466,9 +501,8 @@ fn call_observed<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &s
                 let rejected=matches!(message["error"]["code"].as_i64(),Some(-32601 | -32602))
                     || (method==START_USER_IF_IDLE && matches!(message["result"]["status"].as_str(),Some("skippedBusy" | "notStarted")))
                     || (method==COMPACT_IF_IDLE && message.get("error").is_none() && (message["result"]["status"]=="skippedBusy" || (message["result"]["status"]=="notStarted"&&message["result"]["reason"].is_string())));
-                let accepted=if matches!(method,START_USER_IF_IDLE | COMPACT_IF_IDLE) {
-                    (method!=COMPACT_IF_IDLE||message.get("error").is_none()) && message["result"]["status"]=="started" && message["result"]["turn"]["id"].as_str().is_some_and(|id|!id.is_empty()&&(method!=COMPACT_IF_IDLE||valid_id(id).is_ok()))
-                } else {message.get("result").is_some()};
+                let accepted=adapter::accepted(method,&message)
+                    && (method!=COMPACT_IF_IDLE || message["result"]["turn"]["id"].as_str().is_some_and(|id|valid_id(id).is_ok()));
                 if mutation && (rejected || accepted) { control.unknown.store(previous_unknown,Ordering::Release); }
                 if rejected {
                     if let Some((context,receipt))=retention.take() {context.store.rollback_known_rejection(&context.session_id,receipt)?;}
@@ -507,19 +541,49 @@ fn call_observed<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &s
     Err(format!("대화 {method} 응답 시간이 초과되었습니다. 요청 결과는 불명확하며 재전송하지 않았습니다."))
 }
 fn serve<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path, receiver: mpsc::Receiver<Work>, cancelled: &AtomicBool, deadline: &Mutex<Option<Instant>>) -> Result<(), String> {
-    {let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;events.gui_compact_supported=false;events.gui_interrupt_supported=false;events.interrupt_diagnostic=None;}
+    serve_with_protocol(control,rpc,thread_id,cwd,receiver,cancelled,deadline,None)
+}
+fn serve_with_protocol<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path, receiver: mpsc::Receiver<Work>, cancelled: &AtomicBool, deadline: &Mutex<Option<Instant>>, selected_protocol: Option<RuntimeProtocol>) -> Result<(), String> {
+    {let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;events.gui_protocol=None;events.gui_compact_supported=false;events.gui_interrupt_supported=false;events.interrupt_diagnostic=None;}
     rpc.deadline = *deadline.lock().map_err(|_| "대화 요청 기한 상태 오류")?;
     let mut init = initialize(); init["capabilities"] = json!({"experimentalApi":true});
     let initialized=call(control, rpc, thread_id, "initialize", init, cancelled)?;
+    let observed_protocol=adapter::from_initialize(&initialized)?;
+    let protocol=selected_protocol.unwrap_or(observed_protocol);
     let initialize_interrupt=interrupt_capability(&initialized)?;
     rpc.send(json!({"method":"initialized","params":{}}))?;
-    // loaded 동일 runtime의 수동 구독만 허용한다. resume는 idle 작업을 실행할 수 있어 대체 경로로 쓰지 않는다.
-    let mut resumed = call(control, rpc, thread_id, PASSIVE_SUBSCRIBE, json!({"threadId":thread_id}), cancelled)?;
-    verify_passive(&resumed, thread_id, cwd)?;
+    // 명시적인 GUI 진입은 표준 metadata resume를 쓴다. 선택 확장이 선언된
+    // 연결에서만 passive를 사용하며, 실패 뒤 다른 attach 방식으로 재전송하지 않는다.
+    if !protocol.extensions.passive_subscription {
+        let events=control.events.lock().map_err(|_| "대화 승인 상태 오류")?;
+        if !events.observed_pending.is_empty() || !events.pending.is_empty() {
+            return Err("터미널에서 대기 중인 질문의 응답 소유권을 승계할 수 없습니다. 원래 터미널에서 처리한 뒤 대화 화면으로 전환하세요.".into());
+        }
+        drop(events);
+        let current=call(control,rpc,thread_id,"thread/read",json!({"threadId":thread_id,"includeTurns":false}),cancelled)?;
+        verified_thread(&current["thread"],thread_id,cwd)?;
+        if current["thread"]["status"]["activeFlags"].as_array().is_some_and(|flags|flags.iter().any(|flag|matches!(flag.as_str(),Some("waitingOnApproval" | "waitingOnUserInput")))) {
+            return Err("터미널에서 대기 중인 질문의 응답 소유권을 승계할 수 없습니다. 원래 터미널에서 처리한 뒤 대화 화면으로 전환하세요.".into());
+        }
+    }
+    let context_activity={
+        let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
+        events.gui_protocol=Some(protocol);events.token_usage_fresh=false;
+        events.context_activity_revision
+    };
+    let (attach_method,attach_params)=protocol.attach(thread_id);
+    let mut resumed = call(control, rpc, thread_id, attach_method, attach_params, cancelled)?;
+    if protocol.extensions.passive_subscription {verify_passive(&resumed,thread_id,cwd)?;}
+    else {
+        verified_thread(&resumed["thread"],thread_id,cwd)?;
+        if !resumed["thread"]["turns"].as_array().is_some_and(Vec::is_empty) {
+            return Err("metadata 재개 응답에 전체 이력이 포함되었거나 형식이 올바르지 않습니다.".into());
+        }
+    }
     // CLI는 응답 뒤 복사된 pending을 replay한다. 기존 Attach 전체기한 안에서
     // 실제 동일 원문 또는 resolved를 기다리며 별도 큐/재송신은 만들지 않는다.
     let replay_deadline=rpc.deadline.unwrap_or_else(||Instant::now()+RPC_TIMEOUT);
-    loop {
+    while protocol.extensions.passive_subscription {
         live(control,cancelled)?;
         let events=control.events.lock().map_err(|_| "대화 승인 상태 오류")?;
         if events.blocks_release(true) || control.unknown.load(Ordering::Acquire) {return Err("재구독 중 미확인 요청이 확인되어 입력 소유권을 유지했습니다.".into());}
@@ -537,12 +601,15 @@ fn serve<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_id: &str, 
         resumed["activeTurnKnown"] = json!(true);
         resumed["activeTurnId"] = current.first().filter(|turn| turn["status"] == "inProgress").and_then(|turn| turn["id"].as_str()).map_or(Value::Null,|id|json!(id));
     }
-    { let mut events = control.events.lock().map_err(|_| "대화 이벤트 상태 오류")?; if events.requests_unavailable {return Err("요청 관측을 중단한 세션의 연결을 복구하지 않았습니다.".into());} events.gui_compact_supported=resumed["supportsCompactIfIdle"].as_bool()==Some(true);
+    { let mut events = control.events.lock().map_err(|_| "대화 이벤트 상태 오류")?; if events.requests_unavailable {return Err("요청 관측을 중단한 세션의 연결을 복구하지 않았습니다.".into());}
+        events.gui_protocol=Some(protocol);
+        events.gui_compact_supported=!protocol.extensions.idle_compaction || resumed["supportsCompactIfIdle"].as_bool()==Some(true);
+        if !protocol.extensions.passive_subscription && events.context_activity_revision==context_activity {events.context_active=context_active(&resumed["thread"]["status"]);events.context_activity_revision+=1;}
         let passive_interrupt=interrupt_capability(&resumed)?;
-        // 이 GUI 연결에서 두 응답을 모두 읽었으므로 양쪽의 명시 지원만 채택한다.
-        // 다른 관찰자 연결의 값이나 압축 지원 값은 중단 권한이 아니다.
-        events.gui_interrupt_supported=initialize_interrupt&&passive_interrupt;
-        events.interrupt_diagnostic=(initialize_interrupt!=passive_interrupt).then_some("현재 연결의 안전한 작업 중단 지원 응답이 서로 일치하지 않아 요청을 보내지 않았습니다.");
+        // 기대 turn 보호 확장은 두 응답을 모두 대조한다. 표준 경로는 공식
+        // turn/interrupt의 계약을 쓰며 확장과 같은 보장을 주장하지 않는다.
+        events.gui_interrupt_supported=!protocol.extensions.passive_subscription || (initialize_interrupt&&passive_interrupt);
+        events.interrupt_diagnostic=(protocol.extensions.passive_subscription&&initialize_interrupt!=passive_interrupt).then_some("현재 연결의 안전한 작업 중단 지원 응답이 서로 일치하지 않아 요청을 보내지 않았습니다.");
         events.connected = true;events.context_revision+=1; events.error = None; }
     rpc.deadline = None; *deadline.lock().map_err(|_| "대화 요청 기한 상태 오류")? = None;
     loop {
@@ -654,11 +721,30 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
             live(control,cancelled)?;
             let events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
             if let Some(reason)=context_block_reason(control,&events,false) {return Ok(json!({"status":if reason=="unsupported" {"unsupported"}else{"notStarted"},"reason":reason}));}
-            let activity=events.context_activity_revision;drop(events);
+            let activity=events.context_activity_revision;
+            let protocol=events.gui_protocol.ok_or("대화 연결의 프로토콜을 확인할 수 없습니다.")?;drop(events);
             let mut progress=CompactProgress::default();
-            let result=call_observed(control,rpc,thread_id,COMPACT_IF_IDLE,json!({"threadId":thread_id}),cancelled,false,None,None,Some(&mut progress));
+            let method=protocol.compact_method();
+            let result=call_observed(control,rpc,thread_id,method,json!({"threadId":thread_id}),cancelled,false,None,None,Some(&mut progress));
             let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
             let value=match result {Ok(value)=>value,Err(error)=>{events.token_usage_fresh=false;events.context_revision+=1;return Err(error);}};
+            if method=="thread/compact/start" {
+                if !value.is_object() {control.unknown.store(true,Ordering::Release);return Err("압축 접수 응답의 형식을 확인하지 못했습니다. 자동으로 다시 요청하지 않습니다.".into());}
+                // 공통 응답은 turn ID를 제공하지 않는다. 접수만 알리고 완료를
+                // 추측하지 않으며, 같은 GUI 연결의 실제 진행 이벤트를 기다린다.
+                events.token_usage_fresh=false;
+                if events.context_activity_revision==activity {
+                    if let Some((turn,done))=progress.turn {
+                        events.context_compaction=(!done).then_some((turn.clone(),String::new()));
+                        events.context_active=Some(!done);events.context_turn=(!done).then_some(turn);
+                    } else {
+                        events.context_compaction=Some((String::new(),String::new()));events.context_active=None;
+                    }
+                    events.context_activity_revision+=1;
+                }
+                events.context_revision+=1;
+                return Ok(json!({"status":"started"}));
+            }
             match value["status"].as_str() {
                 Some("unsupported") if !control.unknown.load(Ordering::Acquire)=>{events.gui_compact_supported=false;events.context_revision+=1;Ok(value)},
                 Some("skippedBusy")=>Ok(value),
@@ -686,11 +772,14 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
             if control.unknown.load(Ordering::Acquire) { return Err("이전 전송 결과가 불명확하여 새 전송을 차단했습니다. 원래 대화 상태를 먼저 확인하세요.".into()); }
             let input = user_input(&text, &attachments)?;
             if model.as_ref().is_some_and(|v| v.is_empty() || v.len() > 256) || effort.as_ref().is_some_and(|v| v.len() > 64) { return Err("모델 또는 추론 설정이 올바르지 않습니다.".into()); }
-            // 서버의 원자적 사용자 입장만 사용한다. 상태 조회와 start 사이의 외부 입력 경쟁을 만들지 않는다.
+            let protocol=control.events.lock().map_err(|_| "대화 연결의 프로토콜 상태 오류")?.gui_protocol.ok_or("대화 연결의 프로토콜을 확인할 수 없습니다.")?;
+            // 공통 turn/start의 의미는 서버에 맡긴다. 선택 확장의 idle 접수
+            // 보장을 공통 계약에도 존재한다고 가정하지 않는다.
             let mut params = json!({"threadId":thread_id,"input":input,"clientUserMessageId":request_id});
             if let Some(model) = model { params["model"] = json!(model); }
             if let Some(effort) = effort { params["effort"] = json!(effort); }
-            let result=call_observed(control,rpc,thread_id,START_USER_IF_IDLE,params,cancelled,false,send_context.map(|context|(context,attachments.as_slice())),None,None)?;
+            let result=call_observed(control,rpc,thread_id,protocol.start_method(),params,cancelled,false,send_context.map(|context|(context,attachments.as_slice())),None,None)?;
+            let result=protocol.normalize_start(result);
             match result["status"].as_str() {
                 Some("started") if result["turn"]["id"].as_str().is_some_and(|id| !id.is_empty()) => Ok(result),
                 Some("skippedBusy") => Err("다른 입력이 먼저 시작되어 새 메시지를 보내지 않았습니다. 초안을 보존했습니다.".into()),
@@ -767,11 +856,16 @@ fn observe_message(control: &Control, thread_id: &str, message: Value) -> Result
 }
 fn record_message(control: &Control, thread_id: &str, message: Value, metadata_only: bool) -> Result<(), String> {
     let Some(method) = message["method"].as_str() else { return Ok(()); };
-    if metadata_only && message.get("id").is_none() && !matches!(method,"serverRequest/resolved" | "thread/deleted" | "thread/tokenUsage/updated" | "thread/settings/updated" | "model/rerouted" | "thread/status/changed" | "turn/started" | "turn/completed" | "item/started" | "item/completed") {return Ok(());}
+    if metadata_only && message.get("id").is_none() && !matches!(method,"serverRequest/resolved" | "thread/deleted" | "thread/tokenUsage/updated" | "thread/settings/updated" | "model/rerouted" | "thread/status/changed" | "thread/compacted" | "turn/started" | "turn/completed" | "item/started" | "item/completed") {return Ok(());}
     let params = &message["params"];
     let selected = params["threadId"].as_str().or_else(|| params["thread"]["id"].as_str());
     if selected != Some(thread_id) { return Ok(()); }
+    let standard_observer=metadata_only && control.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?
+        .is_some_and(|protocol|!protocol.extensions.passive_subscription);
+    if standard_observer && message.get("id").is_some() {return Ok(());}
     let mut events = control.events.lock().map_err(|_| "대화 이벤트 상태 오류")?;
+    let standard_gui=events.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription);
+    if metadata_only && standard_gui && message.get("id").is_some() {return Ok(());}
     if method == "thread/deleted" {
         if control.deleted.swap(true,Ordering::AcqRel) { return Err("원래 대화가 이미 삭제되었습니다.".into()); }
         events.pending.clear(); events.observed_pending.clear(); events.connected=false; events.observer_connected=false;events.gui_compact_supported=false;events.observer_compact_supported=false;events.gui_interrupt_supported=false;events.interrupt_diagnostic=None;
@@ -786,7 +880,8 @@ fn record_message(control: &Control, thread_id: &str, message: Value, metadata_o
     }
     // 사용량과 그 무효화는 기존 관찰 스트림 하나만 환원한다. GUI 복사본을
     // 섞지 않아 서로 다른 연결의 도착 순번을 전역 최신 순서로 오인하지 않는다.
-    if metadata_only && message.get("id").is_none() {
+    let context_source=if standard_gui {!metadata_only}else{metadata_only};
+    if context_source && message.get("id").is_none() {
         match method {
             "thread/tokenUsage/updated" => {
                 let usage=params["turnId"].as_str().filter(|id|valid_id(id).is_ok()).and_then(|_|serde_json::from_value::<ContextTokenUsage>(params["tokenUsage"].clone()).ok())
@@ -799,9 +894,16 @@ fn record_message(control: &Control, thread_id: &str, message: Value, metadata_o
             "turn/started" => {events.context_active=Some(true);events.context_turn=params["turn"]["id"].as_str().filter(|id|valid_id(id).is_ok()).map(str::to_owned);events.context_activity_revision+=1;events.context_revision+=1;},
             "turn/completed" => {
                 let turn=params["turn"]["id"].as_str().or_else(||params["turnId"].as_str());
-                if events.context_compaction.as_ref().is_some_and(|(id,_)|Some(id.as_str())==turn) {events.token_usage_fresh=false;events.context_compaction=None;}
+                if events.context_compaction.as_ref().is_some_and(|(id,_)|Some(id.as_str())==turn||(standard_gui&&id.is_empty())) {events.token_usage_fresh=false;events.context_compaction=None;}
                 if events.context_compaction.is_none() && events.context_turn.as_deref().is_none_or(|id|Some(id)==turn) {events.context_active=Some(false);}
                 events.context_activity_revision+=1;events.context_revision+=1;
+            },
+            "thread/compacted" => {
+                if params["turnId"].as_str().is_some_and(|turn|valid_id(turn).is_ok()
+                    && events.context_compaction.as_ref().is_some_and(|(id,_)|id==turn||(standard_gui&&id.is_empty()))) {
+                    events.context_compaction=None;
+                }
+                events.token_usage_fresh=false;events.context_activity_revision+=1;events.context_revision+=1;
             },
             "item/started" | "item/completed" if params["item"]["type"]=="contextCompaction" => {
                 if let (Some(turn),Some(item))=(params["turnId"].as_str(),params["item"]["id"].as_str()) {
@@ -809,7 +911,7 @@ fn record_message(control: &Control, thread_id: &str, message: Value, metadata_o
                         let key=(turn.to_owned(),item.to_owned());
                         events.token_usage_fresh=false;
                         if method=="item/started" {events.context_compaction=Some(key);}
-                        else if events.context_compaction.as_ref().is_some_and(|(id,old_item)|id==turn&&(old_item.is_empty()||old_item==item)) {events.context_compaction=None;}
+                        else if events.context_compaction.as_ref().is_some_and(|(id,old_item)|(id==turn&&(old_item.is_empty()||old_item==item))||(standard_gui&&id.is_empty())) {events.context_compaction=None;}
                         events.context_activity_revision+=1;events.context_revision+=1;
                     }
                 }
@@ -882,11 +984,19 @@ fn validate_response(request: &Value, result: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn extension_protocol() -> RuntimeProtocol {
+        RuntimeProtocol {extensions:adapter::ExtensionProfile {passive_subscription:true,atomic_user_start:true,idle_compaction:true,expected_turn_interrupt:false,subagents:false}}
+    }
+    fn serve_extension<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,cwd: &Path,receiver: mpsc::Receiver<Work>,cancelled: &AtomicBool,deadline: &Mutex<Option<Instant>>) -> Result<(),String> {
+        serve_with_protocol(control,rpc,thread_id,cwd,receiver,cancelled,deadline,Some(extension_protocol()))
+    }
     fn fixture() -> (ConversationConnection,Rpc<TcpStream>,TcpListener) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         let connection = ConversationConnection::new(Endpoint::Owned{address:String::new(),token:String::new(),job:Weak::new()},Arc::new(AtomicBool::new(false)));
+        *connection.0.observer_protocol.lock().unwrap()=Some(extension_protocol());
+        connection.0.events.lock().unwrap().gui_protocol=Some(extension_protocol());
         (connection,Rpc{ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:None},listener)
     }
     fn read_request(socket: &mut WebSocket<TcpStream>) -> Value {
@@ -899,6 +1009,119 @@ mod tests {
         let result=socket.get_mut().read(&mut[0u8;1]);
         let closed=match &result {Ok(0)=>true,Err(error)=>matches!(error.kind(),io::ErrorKind::ConnectionAborted|io::ErrorKind::ConnectionReset),_=>false};
         assert!(closed,"추가 송신 없이 실제 연결이 닫혀야 한다. 시간 초과는 종료 근거가 아니다: {result:?}");
+    }
+    #[test]
+    fn standard_and_r34_connections_use_common_resume_start_and_compact_without_extension_rpcs() {
+        for (initialized,completion) in [(json!({}),"turn/completed"),(json!({"supportsSubagentManagement":true,"supportsExpectedTurnInterrupt":true}),"thread/compacted")] {
+            let(control,mut rpc,listener)=fixture();control.configure(&initialized).unwrap();
+            let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let request=read_request(&mut socket);assert_eq!(request["method"],"initialize");reply(&mut socket,&request,initialized);
+                assert_eq!(read_request(&mut socket)["method"],"initialized");
+                let request=read_request(&mut socket);assert_eq!(request["method"],"thread/read");assert_eq!(request["params"],json!({"threadId":"original","includeTurns":false}));
+                reply(&mut socket,&request,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                let request=read_request(&mut socket);assert_eq!(request["method"],"thread/resume");assert_eq!(request["params"],json!({"threadId":"original","excludeTurns":true}));
+                reply(&mut socket,&request,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}},"model":"actual-model"}));
+                let request=read_request(&mut socket);assert_eq!(request["method"],"thread/turns/list");assert_eq!(request["params"]["limit"],1);reply(&mut socket,&request,json!({"data":[]}));
+                let request=read_request(&mut socket);assert_eq!(request["method"],"thread/compact/start");assert_eq!(request["params"],json!({"threadId":"original"}));
+                let params=if completion=="thread/compacted" {json!({"threadId":"original","turnId":"compact-turn"})}
+                    else {json!({"threadId":"original","turn":{"id":"compact-turn","status":"completed"}})};
+                socket.send(Message::Text(json!({"method":completion,"params":params}).to_string().into())).unwrap();
+                reply(&mut socket,&request,json!({}));
+                let request=read_request(&mut socket);assert_eq!(request["method"],"turn/start");assert_eq!(request["params"]["input"][0]["text"],"standard input");
+                reply(&mut socket,&request,json!({"turn":{"id":"standard-turn","status":"inProgress","items":[]}}));
+                let request=read_request(&mut socket);assert_eq!(request["method"],"turn/interrupt");assert_eq!(request["params"],json!({"threadId":"original","turnId":"standard-turn"}));reply(&mut socket,&request,json!({}));
+                assert_closed_without_input(&mut socket);
+            });
+            let(sender,receiver)=mpsc::sync_channel(8);let mut replies=Vec::new();
+            for request in [ConversationRequest::Attach,ConversationRequest::Compact,
+                ConversationRequest::Send{request_id:Uuid::new_v4().to_string(),text:"standard input".into(),attachments:vec![],model:None,effort:None},
+                ConversationRequest::Interrupt{turn_id:"standard-turn".into()},ConversationRequest::Detach] {
+                let(reply,result)=mpsc::sync_channel(1);sender.send(Work{request,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();replies.push(result);
+            }
+            serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap();
+            let results:Vec<_>=replies.into_iter().map(|reply|reply.recv().unwrap().unwrap()).collect();
+            assert_eq!(results[0]["model"],"actual-model");assert_eq!(results[1],json!({"status":"started"}));assert_eq!(results[2]["status"],"started");assert_eq!(results[2]["turn"]["id"],"standard-turn");
+            assert!(!control.0.unknown.load(Ordering::Acquire));assert!(control.0.events.lock().unwrap().context_compaction.is_none());
+            drop(rpc);server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn standard_bootstrap_preserves_newer_gui_activity_and_new_connection_questions() {
+        let(control,mut rpc,listener)=fixture();control.configure(&json!({})).unwrap();
+        let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+        let server=thread::spawn(move||{
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
+            let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+            let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");reply(&mut socket,&resume,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}}));
+            let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");
+            socket.send(Message::Text(json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"new-live-turn","status":"inProgress"}}}).to_string().into())).unwrap();
+            socket.send(Message::Text(json!({"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"original","questions":[{"id":"q","question":"new GUI question"}]}}).to_string().into())).unwrap();
+            reply(&mut socket,&history,json!({"data":[{"id":"new-live-turn","status":"inProgress"}]}));assert_closed_without_input(&mut socket);
+        });
+        let(sender,receiver)=mpsc::sync_channel(1);let(reply,attached)=mpsc::sync_channel(1);
+        sender.send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();drop(sender);
+        serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap();
+        assert_eq!(attached.recv().unwrap().unwrap()["activeTurnId"],"new-live-turn");
+        let events=control.0.events.lock().unwrap();assert_eq!(events.context_active,Some(true));assert_eq!(events.pending["7"]["guiOwned"],true);drop(events);
+        assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+    }
+
+    #[test]
+    fn standard_observer_never_subscribes_or_claims_terminal_requests() {
+        let(control,mut rpc,listener)=fixture();control.configure(&json!({"supportsSubagentManagement":true})).unwrap();
+        assert!(!control.observer_subscribe(&mut rpc,"original",Path::new(".")).unwrap());assert_eq!(rpc.next_id,0);
+        control.observer_message("original",json!({"id":17,"method":"item/tool/requestUserInput","params":{"threadId":"original","questions":[]}})).unwrap();
+        assert!(control.pending_snapshot().unwrap().2.is_empty());
+        drop(rpc);let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);
+    }
+
+    #[test]
+    fn standard_attach_blocks_known_terminal_questions_before_resume() {
+        for flag in ["waitingOnApproval","waitingOnUserInput"] {
+            let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
+                let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"active","activeFlags":[flag]}}}));assert_closed_without_input(&mut socket);
+            });
+            let(_sender,receiver)=mpsc::sync_channel(1);let error=serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err();
+            assert!(error.contains("원래 터미널"));assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn standard_mutation_disconnect_preserves_unknown_without_fallback_or_replay() {
+        for compact in [false,true] {
+            let(control,mut rpc,listener)=fixture();
+            {let mut events=control.0.events.lock().unwrap();events.gui_protocol=Some(RuntimeProtocol::default());events.connected=true;events.gui_compact_supported=true;events.context_active=Some(false);}
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let request=read_request(&mut socket);assert_eq!(request["method"],if compact{"thread/compact/start"}else{"turn/start"});
+            });
+            let request=if compact {ConversationRequest::Compact}else{ConversationRequest::Send{request_id:Uuid::new_v4().to_string(),text:"once".into(),attachments:vec![],model:None,effort:None}};
+            assert!(execute(&control.0,&mut rpc,"original",request,&AtomicBool::new(false)).is_err());server.join().unwrap();
+            assert!(control.0.unknown.load(Ordering::Acquire));let before=rpc.next_id;
+            let retry=ConversationRequest::Send{request_id:Uuid::new_v4().to_string(),text:"do not retry".into(),attachments:vec![],model:None,effort:None};
+            assert!(execute(&control.0,&mut rpc,"original",retry,&AtomicBool::new(false)).is_err());assert_eq!(rpc.next_id,before);
+        }
+    }
+
+    #[test]
+    fn standard_gui_question_must_resolve_before_terminal_handoff() {
+        let(control,mut rpc,listener)=fixture();install_finished_worker(&control);
+        control.0.events.lock().unwrap().gui_protocol=Some(RuntimeProtocol::default());
+        observe_message(&control.0,"original",json!({"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"original","questions":[{"id":"q","question":"answer?"}]}})).unwrap();
+        assert!(control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).is_err());
+        let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);let response=read_request(&mut socket);assert!(response.get("method").is_none());assert_eq!(response["id"],9);assert_eq!(response["result"],json!({"answers":{"q":{"answers":["answer"]}}}));assert_closed_without_input(&mut socket);});
+        execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{request_id:"9".into(),result:json!({"answers":{"q":{"answers":["answer"]}}})},&AtomicBool::new(false)).unwrap();
+        assert!(control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).is_err());
+        observe_message(&control.0,"original",json!({"method":"serverRequest/resolved","params":{"threadId":"original","requestId":9}})).unwrap();
+        control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).unwrap();drop(rpc);server.join().unwrap();
     }
     #[test]
     fn context_snapshot_uses_existing_observer_without_draining_or_connecting() {
@@ -1053,7 +1276,7 @@ mod tests {
         control.0.events.lock().unwrap().observer_connected=true;
         control.observer_message("original",json!({"method":"thread/status/changed","params":{"threadId":"original","status":{"type":"idle"}}})).unwrap();
         control.observer_message("original",json!({"method":"thread/tokenUsage/updated","params":{"threadId":"original","turnId":"previous","tokenUsage":{"total":{"totalTokens":100,"inputTokens":70,"cachedInputTokens":0,"outputTokens":30,"reasoningOutputTokens":0},"last":{"totalTokens":40,"inputTokens":30,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0},"modelContextWindow":1000}}})).unwrap();
-        install_actor(control,move|state,receiver,cancelled|{let _=serve(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(None));});
+        install_actor(control,move|state,receiver,cancelled|{let _=serve_extension(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(None));});
         let(reply,attached)=mpsc::sync_channel(1);control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();attached.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
     }
     #[test]
@@ -1097,7 +1320,7 @@ mod tests {
                     assert_closed_without_input(&mut socket);
                 });
                 if observer {assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap_err().contains("bool"));assert!(!control.0.events.lock().unwrap().observer_compact_supported);}
-                else {let(_sender,receiver)=mpsc::sync_channel(1);assert!(serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err().contains("bool"));assert!(!control.0.events.lock().unwrap().gui_compact_supported);}
+                else {let(_sender,receiver)=mpsc::sync_channel(1);assert!(serve_extension(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err().contains("bool"));assert!(!control.0.events.lock().unwrap().gui_compact_supported);}
                 assert!(!control.0.events.lock().unwrap().connected);assert_eq!(rpc.next_id,if observer{1}else{2});drop(rpc);server.join().unwrap();
             }
         }
@@ -1195,7 +1418,7 @@ mod tests {
                     assert_closed_without_input(&mut socket);
                 });
                 let error=if phase=="observer" {control.observer_subscribe(&mut rpc,"original",&cwd).unwrap_err()}
-                    else {let(_sender,receiver)=mpsc::sync_channel(1);serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err()};
+                    else {let(_sender,receiver)=mpsc::sync_channel(1);serve_extension(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err()};
                 assert!(error.contains("지원 정보 형식"));assert!(!error.contains("supportsExpectedTurnInterrupt"));assert!(!control.0.events.lock().unwrap().gui_interrupt_supported);assert_eq!(rpc.next_id,if phase=="passive"{2}else{1});drop(rpc);server.join().unwrap();
             }
         }
@@ -1278,7 +1501,7 @@ mod tests {
                 socket.send(Message::Text(json!({"id":request["id"],"error":{"code":-32601,"message":"unknown method"}}).to_string().into())).unwrap();
                 assert!(socket.read().is_err(),"미지원 응답 뒤 resume/start/read 대체 요청이 한 건이라도 나가면 안 된다");methods
             });
-            let error=if gui {let(_sender,receiver)=mpsc::sync_channel(1);serve(&control.0,&mut rpc,"original",Path::new("."),receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err()}
+            let error=if gui {let(_sender,receiver)=mpsc::sync_channel(1);serve_extension(&control.0,&mut rpc,"original",Path::new("."),receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err()}
                 else {control.observer_subscribe(&mut rpc,"original",Path::new(".")).unwrap_err()};
             assert!(error.contains("호환되는 서버"));assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);
             let expected=if gui {vec!["initialize","initialized",PASSIVE_SUBSCRIBE]} else {vec![PASSIVE_SUBSCRIBE]};assert_eq!(server.join().unwrap(),expected);
@@ -1350,7 +1573,7 @@ mod tests {
             let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");socket.send(Message::Text(json!({"id":history["id"],"error":{"code":-32600,"message":"not materialized","data":{"kind":"historyProjectionUnavailable","reason":"unmaterialized"}}}).to_string().into())).unwrap();
         });
         let(sender,receiver)=mpsc::sync_channel(2);let(reply,attached)=mpsc::sync_channel(1);sender.send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();let(reply,detached)=mpsc::sync_channel(1);sender.send(Work{request:ConversationRequest::Detach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();
-        serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap();let value=attached.recv().unwrap().unwrap();assert_eq!(value["historyUnavailable"],true);assert_eq!(value["activeTurnKnown"],false);assert!(value["activeTurnId"].is_null());assert_eq!(value["model"],"actual-model");assert_eq!(value["serviceTier"],"ultrafast");assert!(detached.recv().unwrap().is_ok());drop(rpc);server.join().unwrap();
+        serve_extension(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap();let value=attached.recv().unwrap().unwrap();assert_eq!(value["historyUnavailable"],true);assert_eq!(value["activeTurnKnown"],false);assert!(value["activeTurnId"].is_null());assert_eq!(value["model"],"actual-model");assert_eq!(value["serviceTier"],"ultrafast");assert!(detached.recv().unwrap().is_ok());drop(rpc);server.join().unwrap();
     }
     #[test]
     fn deleted_thread_invalidates_both_pending_maps_and_detail_but_releases_only_after_join() {
@@ -1548,7 +1771,7 @@ mod tests {
                 let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");reply(&mut socket,&history,json!({"data":[]}));
                 assert_closed_without_input(&mut socket);
             });
-            install_actor(&control,move|state,receiver,cancelled|{serve(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(None)).unwrap();});
+            install_actor(&control,move|state,receiver,cancelled|{serve_extension(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(None)).unwrap();});
             // 동일 원문의 두 연결 사본을 보존한다. Attach 응답은 초기 구독 완료의 장벽이다.
             control.observer_message("original",pending.clone()).unwrap();control.0.events.lock().unwrap().observer_connected=true;
             let(reply,attached)=mpsc::sync_channel(1);control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();attached.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
@@ -1717,7 +1940,7 @@ mod tests {
                 }
                 if matches!(outcome,"same"|"resolved"){let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");reply(&mut socket,&history,json!({"data":[]}));}assert_closed_without_input(&mut socket);
             });
-            let(finished,result)=mpsc::sync_channel(1);let(start,started)=mpsc::sync_channel(1);install_actor(&control,move|state,receiver,cancelled|{started.recv_timeout(Duration::from_secs(3)).unwrap();let value=serve(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(Some(Instant::now()+Duration::from_secs(1))));finished.send(value).unwrap();});
+            let(finished,result)=mpsc::sync_channel(1);let(start,started)=mpsc::sync_channel(1);install_actor(&control,move|state,receiver,cancelled|{started.recv_timeout(Duration::from_secs(3)).unwrap();let value=serve_extension(&state,&mut rpc,"original",&cwd,receiver,&cancelled,&Mutex::new(Some(Instant::now()+Duration::from_secs(1))));finished.send(value).unwrap();});
             let(reply,attached)=mpsc::sync_channel(1);control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();
             start.send(()).unwrap();
             if outcome!="startFailure" {

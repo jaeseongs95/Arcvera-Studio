@@ -26,6 +26,9 @@ pub struct SessionInfo {
     pub state: String,
     #[serde(default)]
     pub active: bool,
+    // Runtime declarations are launch-scoped and must never be restored as authority.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub runtime_features: Option<codex::RuntimeFeatures>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,7 +368,7 @@ impl Engine {
             if let Some(id) = sessions.iter().find(|(_, session)| session.phase.load(Ordering::Acquire) == 3 && !session.cleanup_failed.load(Ordering::Acquire)).map(|(id, _)| id.clone()) { Some(id) }
             else { return Err("session metadata limit reached".into()); }
         } else { None };
-        let info = SessionInfo { id: Uuid::new_v4().to_string(), generation: 1, title: request.title.clone(), cwd: cwd.to_string_lossy().into_owned(), project_id: request.project_id.clone(), project_assigned: request.project_assigned || request.project_id.is_some(), project_revision: 0, thread_id: request.thread_id.clone(), state: "starting".into(), active: true };
+        let info = SessionInfo { id: Uuid::new_v4().to_string(), generation: 1, title: request.title.clone(), cwd: cwd.to_string_lossy().into_owned(), project_id: request.project_id.clone(), project_assigned: request.project_assigned || request.project_id.is_some(), project_revision: 0, thread_id: request.thread_id.clone(), state: "starting".into(), active: true, runtime_features: None };
         {
             let store = self.inner.store.lock().map_err(|_| "metadata store lock poisoned")?;
             store.save_session(&info)?;
@@ -419,6 +422,7 @@ impl Engine {
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         let mut guard = LaunchGuard { session: session.clone(), armed: true };
+        let mut runtime_features = adapter.as_ref().map(CodexSession::runtime_features).transpose()?;
         let launch = || -> Result<_, String> {
             if session.stop_requested.load(Ordering::Acquire) { return Err("session was stopped before launch".into()); }
             #[cfg(windows)]
@@ -426,6 +430,11 @@ impl Engine {
                 let info=session.info()?;
                 codex::cron_control::CronPreparation::prepare(&mut command,&info.id,info.generation,session.stop_requested.clone())?
             } else {None};
+            #[cfg(windows)]
+            if let Some(features) = runtime_features.as_mut() { features.cron = cron.is_some(); }
+            if let Some(features) = runtime_features.take() {
+                session.update(|info| info.runtime_features = Some(features), false)?;
+            }
             let pair = native_pty_system().openpty(size(cols, rows)).map_err(|e| format!("open native PTY: {e}"))?;
             let reader = pair.master.try_clone_reader().map_err(|e| format!("open PTY reader: {e}"))?;
             let writer = pair.master.take_writer().map_err(|e| format!("open PTY writer: {e}"))?;
@@ -981,6 +990,9 @@ impl Engine {
         if session.phase.load(Ordering::Acquire) != 1 || session.stop_requested.load(Ordering::Acquire) {
             return Err("mobile management requires a running session".into());
         }
+        if !session.info()?.runtime_features.is_some_and(|features| features.remote_control) {
+            return Err("이 세션의 실행 파일은 모바일 원격 제어를 지원하지 않습니다.".into());
+        }
         let process = session.process.lock().map_err(|_| "session process lock poisoned")?.clone().ok_or("session process is unavailable")?;
         let connection = process.adapter.lock().map_err(|_| "session adapter lock poisoned")?.as_ref().ok_or("session server is unavailable")?.mobile_connection();
         drop(process);
@@ -1523,6 +1535,19 @@ mod runtime_preparation_tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    #[test]
+    fn persisted_runtime_features_cannot_authorize_a_restored_session() {
+        let engine = Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap();
+        let mut info = engine.allocate(&request()).unwrap().info().unwrap();
+        info.runtime_features = Some(codex::RuntimeFeatures { conversation:true, manual_compact:true,
+            subagents:true, cron:true, remote_control:true, token_usage:true });
+        let wire = serde_json::to_value(&info).unwrap();
+        assert_eq!(wire["runtimeFeatures"]["remoteControl"], true);
+        let restored: SessionInfo = serde_json::from_value(wire).unwrap();
+        assert!(restored.runtime_features.is_none(), "previous process capabilities must not survive restoration");
+        assert_eq!(restored.id, info.id);
+        assert_eq!(restored.generation, info.generation);
+    }
     #[test]
     fn unconfirmed_shared_stop_finishes_as_unknown_and_a_retry_never_reports_success() {
         let engine = Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap();

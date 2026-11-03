@@ -116,7 +116,13 @@ fn finish_read<T>(result: Result<T, String>, cleanup: Result<(), String>) -> Res
 fn read_snapshot<S: Read + Write>(exe: &OsString, rpc: &mut Rpc<S>) -> Result<WeeklyUsageSnapshot, String> {
     rpc.call("initialize", initialize())?;
     rpc.send(json!({"method":"initialized","params":{}}))?;
-    let response = rpc.call("account/rateLimits/read", json!({"excludeResetCreditDetails":true}))?;
+    read_initialized_snapshot(exe, rpc)
+}
+
+fn read_initialized_snapshot<S: Read + Write>(exe: &OsString, rpc: &mut Rpc<S>) -> Result<WeeklyUsageSnapshot, String> {
+    // The common account method needs no OpenDIY-only request fields. Owned
+    // servers have already completed initialize in launch_server_until.
+    let response = rpc.call("account/rateLimits/read", json!({}))?;
     let weekly = weekly_window(&response)?;
     let limit_name = response["rateLimits"]["limitName"].as_str()
         .filter(|name| !name.is_empty() && name.len() <= 512).map(str::to_owned);
@@ -128,19 +134,29 @@ fn read_snapshot<S: Read + Write>(exe: &OsString, rpc: &mut Rpc<S>) -> Result<We
     })
 }
 
-fn read_existing(exe: &OsString, cwd: &Path, deadline: Instant) -> Result<WeeklyUsageSnapshot, String> {
+fn read_backend(exe: &OsString, cwd: &Path, deadline: Instant) -> Result<WeeklyUsageSnapshot, String> {
     let mut expiry = UsageDeadline::new(deadline)?;
     let result = (|| {
         check_cancelled(Some(&expiry.cancelled))?;
         if Instant::now() >= deadline { return Err("사용량 조회 전체 기한이 만료되었습니다.".into()); }
-        let endpoint = shared::SharedEndpoint::existing(exe, cwd, Some(&expiry.cancelled))?
-            .ok_or("이 실행 도구에서는 기존 공유 연결로 사용량을 조회할 수 없습니다. 서버를 새로 시작하지 않았습니다.")?;
-        let mut proxy = endpoint.open_until(Some(expiry.cancelled.clone()), Some(deadline))?;
-        let result = match proxy.rpc.as_mut() {
-            Some(rpc) => read_snapshot(exe, rpc),
-            None => Err("사용량 조회 연결이 준비되지 않았습니다.".into()),
-        };
-        finish_read(result, proxy.finish())
+        if let Some(endpoint) = shared::SharedEndpoint::existing(exe, cwd, Some(&expiry.cancelled))? {
+            let mut proxy = endpoint.open_until(Some(expiry.cancelled.clone()), Some(deadline))?;
+            let result = match proxy.rpc.as_mut() {
+                Some(rpc) => read_snapshot(exe, rpc),
+                None => Err("사용량 조회 연결이 준비되지 않았습니다.".into()),
+            };
+            return finish_read(result, proxy.finish());
+        }
+        // Only explicit shared-protocol non-support selects this owned path.
+        // Shared discovery/permission/transport failures above remain errors.
+        let (server, mut rpc) = launch_server_until(exe, cwd, None, Some(expiry.cancelled.clone()), deadline)?;
+        rpc.deadline = Some(deadline);
+        let result = read_initialized_snapshot(exe, &mut rpc);
+        let _ = rpc.ws.close(None);
+        let _ = rpc.ws.get_ref().shutdown(Shutdown::Both);
+        drop(rpc);
+        drop(server);
+        result
     })();
     let result = finish_read(result, expiry.finish());
     if Instant::now() >= deadline {
@@ -156,7 +172,7 @@ pub fn weekly_usage_with_executable(exe: &OsString, manual: bool) -> Result<Week
     let started = Instant::now();
     let mut permit = admission(&USAGE_REQUEST, started, manual)?;
     let result = env::temp_dir().canonicalize().map_err(|e| format!("사용량 조회 작업 경로를 열 수 없습니다: {e}"))
-        .and_then(|cwd| read_existing(exe, &cwd, started + READ_TIMEOUT));
+        .and_then(|cwd| read_backend(exe, &cwd, started + READ_TIMEOUT));
     // A failed read must not consume the successful automatic-read cooldown.
     // The permit remains owned through explicit proxy and watcher settlement.
     if result.is_ok() { permit.last_success = Some(started); }
@@ -216,7 +232,7 @@ mod tests {
             assert_eq!(initialized, json!({"method":"initialized","params":{}}));
             let usage = rpc_message(&mut ws);
             assert_eq!(usage["method"], "account/rateLimits/read");
-            assert_eq!(usage["params"], json!({"excludeResetCreditDetails":true}));
+            assert_eq!(usage["params"], json!({}));
             rpc_reply(&mut ws, &usage, json!({"rateLimits":{"limitName":"계정","secondary":{"windowDurationMins":10080,"usedPercent":42.5}}}));
             assert!(ws.read().is_err(), "추가 서버·대화·설정 명령을 보내면 안 된다");
         });
@@ -224,6 +240,27 @@ mod tests {
         let snapshot = read_snapshot(&"선택한 실행 도구".into(), &mut rpc).unwrap();
         assert_eq!(snapshot.weekly.unwrap().used_percent, 42.5);
         assert_eq!(snapshot.limit_name.as_deref(), Some("계정"));
+        drop(rpc); worker.join().unwrap();
+    }
+
+    #[test]
+    fn initialized_owned_connection_reads_common_quota_without_reinitializing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut ws = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
+            let usage = rpc_message(&mut ws);
+            assert_eq!(usage["method"], "account/rateLimits/read");
+            assert_eq!(usage["params"], json!({}), "공식 조회에는 전용 최적화 필드를 보내지 않는다");
+            rpc_reply(&mut ws, &usage, json!({"rateLimits":{"primary":{"windowDurationMins":10080,"usedPercent":0}}}));
+            assert!(ws.read().is_err(), "이미 초기화된 소유 연결을 다시 초기화하거나 thread를 만들면 안 된다");
+        });
+        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))};
+        let snapshot = read_initialized_snapshot(&"공식 CLI".into(), &mut rpc).unwrap();
+        assert_eq!(snapshot.weekly.unwrap().used_percent, 0.0);
         drop(rpc); worker.join().unwrap();
     }
 
@@ -257,7 +294,7 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn missing_or_legacy_shared_server_never_starts_a_backend_and_discovery_obeys_total_deadline() {
+    fn shared_server_errors_never_start_an_owned_backend_and_discovery_obeys_total_deadline() {
         use std::{fs, path::PathBuf};
         use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, WaitForSingleObject}};
         let root = env::temp_dir().join(format!("opendiy-usage-shared-test-{}", Uuid::new_v4()));
@@ -284,6 +321,9 @@ class UsageFixture {
    if (mode == "version-stall") Thread.Sleep(30000);
    Console.Error.Write("fixture shared server is unavailable"); return 23;
   }
+  if (args.Length == 4 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "start" && args[3] == "--help") {
+   Console.Write("Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n          Preserve installed daemon settings\n  -h, --help\n          Print help\n"); return 0;
+  }
   return 99;
  }
 }
@@ -296,19 +336,18 @@ class UsageFixture {
             .chain([compile.to_string_lossy().into_owned(), "-SourcePath".into(), source.to_string_lossy().into_owned(), "-DestinationPath".into(), fixture.to_string_lossy().into_owned()]).collect();
         extensions::command_stdout(&powershell, &root, &compile_args, Duration::from_secs(30)).unwrap();
         let exe = fixture.into_os_string();
-        for mode in ["legacy", "offline", "help-stall", "version-stall"] {
+        for mode in ["offline", "help-stall", "version-stall"] {
             fs::write(root.join("mode"), mode).unwrap();
             fs::write(root.join("calls"), "").unwrap();
             fs::write(root.join("pids"), "").unwrap();
             let started = Instant::now();
             let timeout = if mode.ends_with("stall") { Duration::from_millis(500) } else { Duration::from_secs(5) };
-            let error = read_existing(&exe, &root, started + timeout).unwrap_err();
+            let error = read_backend(&exe, &root, started + timeout).unwrap_err();
             let calls = fs::read_to_string(root.join("calls")).unwrap();
-            let expected = if mode == "legacy" || mode == "help-stall" { "app-server --help\n" } else { "app-server --help\napp-server daemon version\n" };
+            let expected = if mode == "help-stall" { "app-server --help\n" } else { "app-server --help\napp-server daemon start --help\napp-server daemon version\n" };
             assert_eq!(calls, expected, "{mode}: 새 backend·proxy fallback을 실행하면 안 된다");
-            assert!(!calls.contains("--listen") && !calls.contains("daemon start"));
-            if mode == "legacy" { assert!(error.contains("기존 공유 연결"), "{error}"); }
-            else if mode == "offline" { assert!(error.contains("23"), "{error}"); }
+            assert!(!calls.contains("--listen") && !calls.lines().any(|line| line == "app-server daemon start"));
+            if mode == "offline" { assert!(error.contains("23"), "{error}"); }
             else {
                 assert!(error.contains("cancelled"), "{mode}: {error}");
                 assert!(started.elapsed() < Duration::from_secs(3), "전체 기한은 discovery부터 적용되어야 한다");
@@ -324,7 +363,7 @@ class UsageFixture {
         }
         // An already expired budget must not even probe the selected executable.
         fs::write(root.join("calls"), "").unwrap();
-        assert!(read_existing(&exe, &root, Instant::now() - Duration::from_millis(1)).is_err());
+        assert!(read_backend(&exe, &root, Instant::now() - Duration::from_millis(1)).is_err());
         assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "");
         fs::remove_dir_all(root).unwrap();
     }

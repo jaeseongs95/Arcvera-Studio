@@ -36,6 +36,10 @@ fn prepare_runtime_commands(
 ) -> Result<Option<Value>, String> {
     let help = query(&["app-server", "--help"])?;
     if !supports_shared(&help)? { return Ok(None); }
+    // daemon/proxy also exist in the official CLI. Only the explicitly declared
+    // preserving lifecycle contract opts into this managed-server adapter.
+    let start_help = query(&["app-server", "daemon", "start", "--help"])?;
+    if !supports_managed_start_help(&start_help)? { return Ok(None); }
     let version = ["app-server", "daemon", "version"];
     match query(&version) {
         Ok(bytes) => {
@@ -43,12 +47,7 @@ fn prepare_runtime_commands(
             lifecycle_socket(&value)?;
             Ok(Some(value))
         }
-        Err(probe) => {
-            let help = query(&["app-server", "daemon", "start", "--help"])
-                .map_err(|error| format!("공유 서버 시작 지원을 확인하지 못했습니다: {error}; 실행 상태 확인: {probe}"))?;
-            if !help_supports_option(&help, "--existing-installation")? {
-                return Err("선택한 CLI는 기존 설정을 보존하는 공유 서버 시작을 지원하지 않습니다. 실행 파일을 업데이트한 뒤 다시 시도하세요.".into());
-            }
+        Err(_probe) => {
             let started = lifecycle_value(&start().map_err(|error| format!("공유 서버 시작 실패: {error}"))?)?;
             if !matches!(started["status"].as_str(), Some("started" | "alreadyRunning")) {
                 return Err("공유 서버 시작 결과를 확인할 수 없습니다. 세션을 복원하지 않았습니다.".into());
@@ -64,6 +63,15 @@ fn prepare_runtime_commands(
             Ok(Some(ready))
         }
     }
+}
+pub(super) fn supports_managed_start_help(bytes: &[u8]) -> Result<bool, String> {
+    let help = std::str::from_utf8(bytes).map_err(|_| "공유 서버 관리 도움말이 올바른 UTF-8이 아닙니다.")?;
+    if !help.lines().any(|line| line.trim_start().strip_prefix("Usage:").or_else(|| line.trim_start().strip_prefix("사용법:"))
+        .is_some_and(|usage| usage.split_ascii_whitespace().collect::<Vec<_>>().windows(3)
+            .any(|tokens| tokens == ["app-server", "daemon", "start"]))) {
+        return Err("공유 서버 관리 도움말의 명령 경로를 확인할 수 없습니다.".into());
+    }
+    help_supports_option(bytes, "--existing-installation")
 }
 pub(super) fn lifecycle_value(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(bytes).map_err(|_| "공유 서버 상태 응답이 올바른 JSON이 아닙니다.".into())
@@ -101,6 +109,10 @@ impl SharedEndpoint {
         let help = extensions::command_stdout_until(exe, cwd, &help_args, deadline, cancelled)
             .map_err(|e| format!("Codex 공유 연결 지원을 확인할 수 없습니다: {e}"))?;
         if !supports_shared(&help)? { return Ok(None); }
+        let start_help = extensions::command_stdout_until(exe, cwd,
+            &["app-server".into(), "daemon".into(), "start".into(), "--help".into()], deadline, cancelled)
+            .map_err(|error| format!("공유 서버 관리 계약을 확인하지 못했습니다: {error}"))?;
+        if !supports_managed_start_help(&start_help)? { return Ok(None); }
         let args = ["app-server", "daemon", "version"].map(str::to_owned);
         let output = extensions::command_stdout_until(exe, cwd, &args, deadline, cancelled)
             .map_err(|e| format!("기존 공유 Codex 서버에 연결할 수 없습니다. Codex에서 공유 서버의 실행 상태와 권한을 확인한 뒤 다시 시도하세요. 서버를 자동으로 설치하거나 시작하지 않았습니다. 원인: {e}"))?;
@@ -279,6 +291,7 @@ pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpo
     let stopped = Arc::new(AtomicBool::new(false));
     let control = SharedControl { endpoint:endpoint.clone(),thread_id:id.clone(),cwd:cwd.into(),capabilities:super::runtime::observed_capabilities(&initialized),stopped:stopped.clone() };
     let conversation = Some(ConversationConnection::new(super::conversation::Endpoint::Shared(endpoint.clone()), stopped.clone()));
+    conversation.as_ref().unwrap().configure(&initialized)?;
     let mobile = MobileConnection::shared(endpoint, stopped.clone());
     on_event(CodexEvent::ThreadId(id.clone()));
     on_event(CodexEvent::Status(status(&thread["status"])));

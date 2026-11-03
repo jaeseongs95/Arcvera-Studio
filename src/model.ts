@@ -1,3 +1,5 @@
+import type { RuntimeFeatures } from './runtime-features';
+
 export const MAX_WORKSPACE_SESSIONS = 32;
 export const MAX_SAVED_WORKSPACE_SESSIONS = 512;
 
@@ -12,6 +14,7 @@ export interface SessionInfo {
   projectId?: string | null;
   projectAssigned?: boolean;
   projectRevision?: number;
+  runtimeFeatures?: RuntimeFeatures;
 }
 
 export interface Output {

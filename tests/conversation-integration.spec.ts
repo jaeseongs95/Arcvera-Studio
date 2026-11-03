@@ -16,7 +16,7 @@ test.beforeEach(async ({ page }) => {
         if (command === 'load_layout') return { version: 1, columns: 1, sessions: [] };
         if (command === 'list_projects') return [];
         if (command === 'choose_conversation_attachments') return state.fixtureAttachments ?? [];
-        if (command === 'list_sessions') return [{ id: 'chat-session', generation: 1, title: '기존 세션', cwd: 'D:\\Work', threadId: 'original-thread', state: 'idle', active: true }];
+        if (command === 'list_sessions') return [{ id: 'chat-session', generation: 1, title: '기존 세션', cwd: 'D:\\Work', threadId: 'original-thread', state: 'idle', active: true, runtimeFeatures: { conversation: true, manualCompact: true, tokenUsage: true, subagents: false, cron: true, remoteControl: false } }];
         if (command === 'cron_request') return state.cronSnapshot ?? { supported: false, connected: false, scope: 'cliLifetime', jobs: [], hasMore: false, reason: 'unsupported' };
         if (command === 'conversation_request') {
           if (args.request.type === 'attach' && state.attachFailure) throw new Error(state.failureRaw ?? 'fixture attach failure');

@@ -60,7 +60,8 @@ for (const width of [1440, 800]) {
     const topbar = (await page.locator('.topbar').boundingBox())!;
     expect(topbar.y).toBe(0);
     expect(topbar.height).toBeLessThanOrEqual(60);
-    for (const selector of ['#catalog-open', '#new-session', '#notifications', '#exit']) {
+    await expect(page.locator('.topbar #notifications')).toBeHidden();
+    for (const selector of ['#catalog-open', '#new-session', '#exit']) {
       const action = page.locator(`.topbar ${selector}`);
       await expect(action).toBeVisible();
       const box = (await action.boundingBox())!;

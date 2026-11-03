@@ -16,7 +16,7 @@ async function workspace(page: Page) {
         if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_projects') return projects;
-        if (command === 'list_sessions') return Array.from({ length: 12 }, (_, index) => ({ id: `session-${index}`, title: `열린 작업 ${index + 1}`, cwd: projects[0].cwd, generation: 1, state: 'idle', active: true }));
+        if (command === 'list_sessions') return Array.from({ length: 12 }, (_, index) => ({ id: `session-${index}`, title: `열린 작업 ${index + 1}`, cwd: projects[0].cwd, generation: 1, state: 'idle', active: true, runtimeFeatures: { conversation: false, manualCompact: false, tokenUsage: false, subagents: false, cron: false, remoteControl: true } }));
         if (command === 'list_external') return [];
         if (command === 'get_codex_settings') return { savedPath: null, resolvedPath: 'D:\\도구\\codex.exe', source: 'path', error: null };
         if (command === 'weekly_usage') return { executable: 'D:\\도구\\codex.exe', observedAt: Date.now(), limitName: '시험 계정', weekly: { usedPercent: 25, resetsAt: 1900000000 } };

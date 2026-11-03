@@ -1,4 +1,5 @@
 import { bindAttribute, onLanguageChange, t } from './i18n';
+import { runtimeFeatures, type RuntimeFeatures } from './runtime-features';
 import './context-controls.css';
 
 interface ContextStatus {
@@ -17,6 +18,7 @@ interface Options {
   statusHost: HTMLElement;
   sessionId: string;
   generation: number;
+  runtimeFeatures?: RuntimeFeatures;
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
   prepare(): Promise<void>;
   compact(): Promise<{ status?: string }>;
@@ -32,14 +34,16 @@ export function createContextControls(options: Options) {
   const amount = usage.querySelector('span')!;
   const fill = usage.querySelector<SVGCircleElement>('.context-fill')!;
   let snapshot: ContextStatus | undefined;
+  let features = runtimeFeatures(options);
   let visible = false; let disposed = false; let epoch = 0;
   let reading = false; let busy = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let revision = -1;
   const abort = new AbortController();
   const read = () => options.call<ContextStatus>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'contextStatus' } });
-  const alive = (version: number) => !disposed && visible && epoch === version;
-  const canAttempt = () => !!snapshot && (snapshot.canCompact === true || (snapshot.reason === 'guiDisconnected' && snapshot.connected === true && snapshot.active === false && !snapshot.compacting));
+  const supported = () => features.tokenUsage || features.manualCompact;
+  const alive = (version: number) => !disposed && visible && supported() && epoch === version;
+  const canAttempt = () => features.manualCompact && snapshot?.reason !== 'unsupported' && !!snapshot && (snapshot.canCompact === true || (snapshot.reason === 'guiDisconnected' && snapshot.connected === true && snapshot.active === false && !snapshot.compacting));
   function accept(value: ContextStatus) {
     if (!value || typeof value !== 'object') return;
     if (typeof value.revision === 'number' && Number.isSafeInteger(value.revision) && value.revision >= 0) {
@@ -62,7 +66,9 @@ export function createContextControls(options: Options) {
     }
   }
   function render() {
-    options.statusHost.hidden = snapshot?.connected !== true || snapshot.compacting !== true;
+    usage.hidden = !features.tokenUsage;
+    compact.hidden = !features.manualCompact || snapshot?.reason === 'unsupported';
+    options.statusHost.hidden = !features.manualCompact || snapshot?.connected !== true || snapshot.compacting !== true;
     const status = t('압축 중', 'Compacting');
     if (options.statusHost.textContent !== status) options.statusHost.textContent = status;
     const used = snapshot?.tokenUsage?.last?.totalTokens;
@@ -78,16 +84,16 @@ export function createContextControls(options: Options) {
     const en = valid ? `Context ${percent}% · latest model response usage ${used.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} tokens${fresh ? '' : ' · last known value, current usage unknown'} · click to refresh` : 'Context usage unknown · click to refresh';
     bindAttribute(usage, 'title', ko, en); bindAttribute(usage, 'aria-label', ko, en);
     compact.title = reason(); compact.setAttribute('aria-label', reason());
-    usage.disabled = !visible || reading;
+    usage.disabled = !features.tokenUsage || !visible || reading;
     compact.disabled = !visible || busy || !canAttempt();
     compact.setAttribute('aria-busy', String(busy || snapshot?.compacting === true));
   }
   function schedule(delay = 2000) {
     clearTimeout(timer);
-    if (!disposed && visible) timer = setTimeout(() => void refresh(), delay);
+    if (!disposed && visible && supported()) timer = setTimeout(() => void refresh(), delay);
   }
   async function refresh() {
-    if (disposed || !visible || reading) return;
+    if (disposed || !visible || !supported() || reading) return;
     reading = true; const version = epoch; render();
     try {
       const value = await read();
@@ -108,7 +114,7 @@ export function createContextControls(options: Options) {
       const current = await read();
       if (!alive(version)) return;
       accept(current);
-      if (snapshot?.canCompact !== true || snapshot.guiConnected !== true) {
+      if (!canAttempt() || snapshot?.canCompact !== true || snapshot.guiConnected !== true) {
         options.notify('현재 연결·작업 상태에서는 압축할 수 없습니다. 상태를 확인한 뒤 다시 시도하세요.', false, 'Compaction is unavailable in the current connection or activity state. Check the status before trying again.'); return;
       }
       const result = await options.compact();
@@ -128,6 +134,13 @@ export function createContextControls(options: Options) {
   const unlanguage = onLanguageChange(render);
   render();
   return {
+    setFeatures(value?: RuntimeFeatures) {
+      if (disposed) return;
+      const next = runtimeFeatures({ runtimeFeatures: value });
+      if (features.tokenUsage === next.tokenUsage && features.manualCompact === next.manualCompact) return;
+      features = next; epoch++; clearTimeout(timer); snapshot = undefined; revision = -1; render();
+      if (visible) void refresh();
+    },
     setVisible(value: boolean) {
       if (disposed || visible === value) return;
       visible = value; epoch++; clearTimeout(timer); render();

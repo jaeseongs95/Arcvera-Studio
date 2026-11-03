@@ -3,6 +3,19 @@ use super::*;
 
 static COMPATIBILITY_REQUEST: Mutex<()> = Mutex::new(());
 
+/// Renderer policy for one running session, derived from its actual connection.
+/// Missing declarations never enable optional runtime extensions.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFeatures {
+    pub conversation: bool,
+    pub manual_compact: bool,
+    pub subagents: bool,
+    pub cron: bool,
+    pub remote_control: bool,
+    pub token_usage: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeCompatibility {

@@ -47,6 +47,7 @@ struct Management {
 }
 
 impl MobileConnection {
+    pub(super) fn supported(&self) -> bool { self.0.namespaced_remote || self.0.shared.is_some() }
     pub(super) fn new(endpoint: String, token: String, job: &Arc<ProcessJob>, stopped: Arc<AtomicBool>, namespaced_remote: bool) -> Self {
         Self(Arc::new(Management { endpoint, token, job: Arc::downgrade(job), stopped, admission:Mutex::new(()), socket:Mutex::new(None), namespaced_remote, shared:None }))
     }

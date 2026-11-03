@@ -18,6 +18,7 @@ import { createWeeklyUsage } from './weekly-usage';
 import './weekly-usage.css';
 import { createConversation } from './conversation';
 import { createContextControls } from './context-controls';
+import { runtimeFeatures, type RuntimeFeatures } from './runtime-features';
 import { createCronManager } from './cron-manager';
 import { createSubagentManager } from './subagent-manager';
 import { createQuestionCenter } from './question-center';
@@ -329,6 +330,19 @@ function notify(text: string, error = false, english = text) {
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!native) throw new UiError(demo ? '디자인 데모에서는 프로세스를 실행하거나 입력할 수 없습니다.' : '데스크톱 앱에서 사용할 수 있는 기능입니다.', demo ? 'The design demo cannot run processes or accept input.' : 'This feature is available in the desktop app.');
+  const request = args?.request as { type?: string } | undefined;
+  const feature: keyof RuntimeFeatures | undefined = command === 'subagents_request' ? 'subagents'
+    : command === 'cron_request' ? 'cron'
+    : command === 'mobile_control' ? 'remoteControl'
+    : command === 'respond_pending_question' || command === 'stage_conversation_image' ? 'conversation'
+    : command === 'conversation_request' && !['detach', 'handoffToTerminal'].includes(request?.type ?? '') ? request?.type === 'compact' ? 'manualCompact' : request?.type === 'contextStatus' ? undefined : 'conversation' : undefined;
+  if (feature || command === 'conversation_request' && request?.type === 'contextStatus') {
+    const session = sessions.get(String(args?.id ?? args?.sessionId ?? ''));
+    const features = runtimeFeatures(session);
+    if (!session || session.generation !== args?.generation || (feature ? !features[feature] : !features.tokenUsage && !features.manualCompact)) {
+      throw new UiError('이 세션의 실행 환경은 해당 기능을 지원하지 않습니다.', 'This session’s runtime does not support this feature.');
+    }
+  }
   return invoke<T>(command, args);
 }
 
@@ -532,7 +546,12 @@ function mountConversation(session: Session) {
   const toggle = card.querySelector<HTMLButtonElement>('.conversation-toggle')!;
   function getConversation() {
     if (!conversation) {
-      conversation = createConversation({ sessionId: session.id, generation: session.generation, host: conversationHost, call,
+      conversation = createConversation({ sessionId: session.id, generation: session.generation, host: conversationHost,
+        call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+          const current = sessions.get(session.id);
+          if (command === 'choose_conversation_attachments' && (current?.generation !== session.generation || !runtimeFeatures(current).conversation)) return Promise.reject(new UiError('이 세션에서는 첨부를 선택할 수 없습니다.', 'Attachments are unavailable for this session.'));
+          return call<T>(command, args);
+        },
         ownerChanged(owned) { if (conversations.get(session.id) !== conversation) return; if (owned) { conversationOwners.add(session.id); input.cancelPending(); } else conversationOwners.delete(session.id); refreshInputState(session.id); },
       });
       conversations.set(session.id, conversation);
@@ -540,6 +559,7 @@ function mountConversation(session: Session) {
     return conversation!;
   }
   toggle.onclick = async () => {
+    if (!runtimeFeatures(sessions.get(session.id)).conversation || exitInProgress) return;
     toggle.disabled = true;
     try {
       getConversation();
@@ -560,7 +580,7 @@ function mountConversation(session: Session) {
   };
   contextControls.get(session.id)?.dispose();
   contextControls.set(session.id, createContextControls({
-    host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, call, notify,
+    host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, runtimeFeatures: session.runtimeFeatures, call, notify,
     async prepare() {
       if (toggle.disabled) throw new Error('대화 화면 전환 중');
       toggle.disabled = true;
@@ -652,10 +672,10 @@ function createTerminal(session: Session) {
   };
   const subagentsButton = card.querySelector<HTMLButtonElement>('.subagents-open')!;
   bindAttribute(subagentsButton, 'aria-label', '서브에이전트 관리', 'Manage subagents'); bindAttribute(subagentsButton, 'title', '서브에이전트 관리', 'Manage subagents');
-  subagentsButton.onclick = () => { const current = sessions.get(session.id); if (current?.active && current.threadId && !exitInProgress) void subagentManager.open(current); };
+  subagentsButton.onclick = () => { const current = sessions.get(session.id); if (current?.active && current.threadId && runtimeFeatures(current).subagents && !exitInProgress) void subagentManager.open(current); };
   const cronButton = card.querySelector<HTMLButtonElement>('.cron-open')!;
   bindAttribute(cronButton, 'aria-label', '예약 작업', 'Scheduled jobs'); bindAttribute(cronButton, 'title', '예약 작업', 'Scheduled jobs');
-  cronButton.onclick = () => { const current = sessions.get(session.id); if (current?.active && !exitInProgress) void cronManager.open(current); };
+  cronButton.onclick = () => { const current = sessions.get(session.id); if (current?.active && runtimeFeatures(current).cron && !exitInProgress) void cronManager.open(current); };
   const projectMove = document.createElement('button'); projectMove.className = 'project-move icon-button'; projectMove.textContent = '▱'; bindAttribute(projectMove, 'aria-label', '프로젝트로 이동', 'Move to project'); bindAttribute(projectMove, 'title', '프로젝트로 이동', 'Move to project'); projectMove.onclick = () => projectManager.move(sessions.get(session.id)!); card.querySelector('.card-actions')!.prepend(projectMove);
   card.querySelector('.move-left')!.addEventListener('click', () => move(session.id, -1));
   card.querySelector('.move-right')!.addEventListener('click', () => move(session.id, 1));
@@ -831,6 +851,15 @@ function updateConversationVisibility() {
   }
   for (const [id, controller] of conversations) {
     const view = terminals.get(id);
+    if (!runtimeFeatures(sessions.get(id)).conversation) {
+      void controller.setVisible(false).then(() => {
+        if (conversations.get(id) !== controller || !view || runtimeFeatures(sessions.get(id)).conversation) return;
+        view.card.querySelector<HTMLElement>('.terminal-host')!.hidden = false;
+        view.card.querySelector('.conversation-toggle')!.setAttribute('aria-pressed', 'false');
+        view.fit.fit();
+      }).catch(error => notifyError('대화 연결 정리 실패', 'Could not release the conversation connection', error));
+      continue;
+    }
     void controller.setForeground(!!view && !view.card.hidden && !document.hidden && nativeWindowVisible).catch(error => notify('대화 화면을 갱신하지 못했습니다. 해당 세션을 다시 선택하세요.', true, 'Could not refresh the conversation view. Select the session again.'));
   }
 }
@@ -860,10 +889,18 @@ function renderHandles(count: number, rows: number) {
 }
 
 function renderAll() {
-  cronManager.updateSessions([...sessions.values()]);
-  subagentManager.updateSessions([...sessions.values()]);
+  cronManager.updateSessions([...sessions.values()].filter(session => runtimeFeatures(session).cron));
+  subagentManager.updateSessions([...sessions.values()].filter(session => runtimeFeatures(session).subagents));
+  questionCenter.refreshAvailability();
+  $('#mobile-control-open').hidden = ![...sessions.values()].some(session => session.active && runtimeFeatures(session).remoteControl);
+  if ($('#mobile-control-open').hidden) $<HTMLDialogElement>('#mobile-control-dialog').close();
   for (const [id, session] of sessions) {
     const card = terminals.get(id)!.card;
+    const features = runtimeFeatures(session);
+    contextControls.get(id)?.setFeatures(session.runtimeFeatures);
+    card.querySelector<HTMLButtonElement>('.conversation-toggle')!.hidden = !features.conversation;
+    card.querySelector<HTMLButtonElement>('.cron-open')!.hidden = !features.cron;
+    card.querySelector<HTMLButtonElement>('.subagents-open')!.hidden = !features.subagents;
     card.querySelector<HTMLButtonElement>('.session-id-copy')!.disabled = demo || !session.threadId;
     card.querySelector<HTMLButtonElement>('.session-restart')!.disabled = !native || !workspaceReady || restoringWorkspace || exitInProgress || restartingSessions.has(id) || !session.threadId || ['starting', 'stopping'].includes(session.state);
     card.querySelector<HTMLButtonElement>('.stop')!.disabled = restartingSessions.has(id) || exitInProgress;
@@ -930,9 +967,19 @@ $('#project-tabs').addEventListener('keydown', event => {
   selectProject(tabs[next].dataset.projectKey ?? ''); $('#project-tabs [aria-selected="true"]').focus();
 });
 const extensionsManager = createExtensionsManager({ call, notify });
-const mobileControl = createMobileControl({ call, notify, openExecutableSettings: () => void executableSettings.open() });
+const mobileControl = createMobileControl({
+  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    const value = await call<T>(command, args);
+    return command === 'list_sessions' ? (value as SessionInfo[]).filter(session => runtimeFeatures(session).remoteControl) as T : value;
+  },
+  notify, openExecutableSettings: () => void executableSettings.open(),
+});
+$('#mobile-control-open').hidden = true;
 const weeklyUsage = createWeeklyUsage({ call, initiallyVisible: !native });
-const questionCenter = createQuestionCenter({ call, button: $<HTMLButtonElement>('#notifications'), openSession: focusSession });
+const questionCenter = createQuestionCenter({ call, button: $<HTMLButtonElement>('#notifications'), openSession: focusSession,
+  available: () => [...sessions.values()].some(session => session.active && runtimeFeatures(session).conversation),
+  supportsSession: (id, generation) => { const session = sessions.get(id); return !!session?.active && session.generation === generation && runtimeFeatures(session).conversation; },
+});
 document.body.append(questionCenter.element);
 $('.sidebar').append(weeklyUsage.element);
 bindText($('#extensions-open-label'), '플러그인·스킬', 'Plugins & skills');

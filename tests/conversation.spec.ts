@@ -47,6 +47,7 @@ async function conversation(page: Page, options: { historyUnavailable?: boolean 
         if (request.type === 'send' || request.type === 'compact') {
           if (fixture.rejectSend) throw Error(fixture.rawFailure || '응답 시간 초과');
           if (fixture.holdStart) await new Promise<void>(resolve => { fixture.releaseStart = resolve; });
+          if (request.type === 'compact' && (fixture as any).standardCompact) return { status: 'started' };
           return { status: 'started', turn: { id: request.type === 'send' ? 'sent-turn' : 'compacted-turn', status: 'inProgress' } };
         }
         if (request.type === 'interrupt') { fixture.queue.push({ seq: fixture.nextSeq++, method: 'turn/completed', params: { turn: { id: request.turnId, status: 'interrupted' } } }); return {}; }
@@ -66,6 +67,40 @@ async function conversation(page: Page, options: { historyUnavailable?: boolean 
 }
 const view = (page: Page) => page.locator('#conversation-fixture');
 const privateFailure = 'PRIVATE_INTERNAL_FAILURE C:\\private-cli\\codex.exe token=FAKE_AUTH_TOKEN_DO_NOT_DISPLAY';
+
+for (const completion of ['turn/completed', 'item/completed', 'thread/compacted']) for (const early of [false, true]) {
+  test(`turn 없는 표준 압축 접수는 미확인이 아니며 실제 완료로 해제한다: ${completion} / 선행 ${early}`, async ({ page }) => {
+    await conversation(page);
+    await view(page).locator('.conversation-input').fill('압축 후 전송할 초안');
+    await page.evaluate(early => {
+      const state = window as any; const f = state.conversationFixture;
+      f.standardCompact = true; f.holdStart = early;
+      state.standardCompactResult = state.conversation.compact().then((result: any) => ({ result, inputDisabled: document.querySelector<HTMLTextAreaElement>('#conversation-fixture .conversation-input')!.disabled, sendDisabled: document.querySelector<HTMLButtonElement>('#conversation-fixture .conversation-send')!.disabled }));
+    }, early);
+    await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'compact').length)).toBe(1);
+    if (!early) {
+      const accepted = await page.evaluate(() => (window as any).standardCompactResult);
+      expect(accepted).toEqual({ result: { status: 'started' }, inputDisabled: false, sendDisabled: true });
+      await page.evaluate(() => { (window as any).conversationFixture.unknownResult = false; });
+      await page.waitForTimeout(500);
+      await expect(view(page).locator('.conversation-send')).toBeDisabled();
+    }
+    await page.evaluate(completion => {
+      const f = (window as any).conversationFixture;
+      f.queue.push({ seq: f.nextSeq++, method: completion, params: { threadId: 'thread-a', turnId: 'standard-compact', turn: { id: 'standard-compact', status: 'completed' }, item: { id: 'compact-item', type: 'contextCompaction' } } });
+      f.queue.push({ seq: f.nextSeq++, method: 'item/completed', params: { item: { id: 'compact-completed-marker', type: 'agentMessage', text: '압축 완료 관측 표식' } } });
+    }, completion);
+    await expect(view(page).locator('.conversation-messages')).toContainText('압축 완료 관측 표식');
+    if (early) {
+      await page.evaluate(() => (window as any).conversationFixture.releaseStart());
+      expect((await page.evaluate(() => (window as any).standardCompactResult)).inputDisabled).toBe(false);
+    }
+    await expect(view(page).locator('.conversation-send')).toBeEnabled();
+    await expect(view(page).locator('.conversation-input')).toHaveValue('압축 후 전송할 초안');
+    expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => ['send', 'interrupt'].includes(entry.args.request?.type)))).toEqual([]);
+  });
+}
+
 async function expectPrivateFailureHidden(page: Page) {
   const html = await view(page).evaluate(node => node.outerHTML);
   for (const marker of ['PRIVATE_INTERNAL_FAILURE', 'private-cli', 'FAKE_AUTH_TOKEN_DO_NOT_DISPLAY']) expect(html).not.toContain(marker);

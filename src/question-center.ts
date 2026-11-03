@@ -12,6 +12,8 @@ interface QuestionCenterHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openSession(sessionId: string): void | Promise<void>;
   button?: HTMLButtonElement;
+  available?(): boolean;
+  supportsSession?(id: string, generation: number): boolean;
 }
 interface Draft { values: Record<string, { selected?: string; text?: string }>; phase?: 'sending' | 'sent' | 'uncertain'; openFailed?: boolean }
 const interval = 3_000;
@@ -53,10 +55,13 @@ export function createQuestionCenter(host: QuestionCenterHost) {
   const responses = new Set<Promise<void>>();
   const text = (tag: string, content: string) => { const node = document.createElement(tag); node.textContent = content; return node; };
   const clearTimer = () => { clearTimeout(timer); timer = undefined; };
-  const active = () => !disposed && !exiting && nativeVisible && !document.hidden;
+  let available = host.available?.() ?? true;
+  const supported = (item: PendingQuestion) => host.supportsSession?.(item.sessionId, item.generation) ?? true;
+  const active = () => !disposed && !exiting && available && nativeVisible && !document.hidden;
 
   function render(force = false) {
     if (disposed) return;
+    button.hidden = !available;
     const count = items.filter(item => item.kind !== 'unsupported').length;
     const unavailable = items.filter(item => item.kind === 'unsupported').length;
     const stale = items.some(item => item.metadataAvailable === false);
@@ -100,7 +105,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
       const notice = text('p', t('연결이 끊겨 마지막 확인 내용을 표시합니다. 원래 세션에서 상태를 확인하세요.', 'Connection lost. Showing the last confirmed details. Check the status in the original session.'));
       notice.className = 'question-metadata-status'; notice.setAttribute('role', 'status'); row.append(notice);
     }
-    const locked = !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting;
+    const locked = !supported(item) || !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting;
     const form = document.createElement('form');
     if (item.kind === 'question') for (const [questionIndex, question] of (item.questions ?? []).entries()) {
       const field = document.createElement('fieldset'); field.disabled = locked;
@@ -159,7 +164,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
   }
 
   function respond(item: PendingQuestion, draft: Draft, result: Record<string, unknown>) {
-    if (disposed || exiting || draft.phase || item.responded || !item.canRespond || !item.requestId) return Promise.resolve();
+    if (disposed || exiting || !supported(item) || draft.phase || item.responded || !item.canRespond || !item.requestId) return Promise.resolve();
     draft.phase = 'sending'; draft.openFailed = false; render();
     const operation = Promise.resolve().then(() => host.call('respond_pending_question', { sessionId: item.sessionId, generation: item.generation, requestId: item.requestId, ...result })).then(() => {
       draft.phase = 'sent';
@@ -178,18 +183,26 @@ export function createQuestionCenter(host: QuestionCenterHost) {
     lastStarted = performance.now(); const token = epoch;
     running = Promise.resolve().then(() => host.call('list_pending_questions')).then(value => {
       if (!active() || token !== epoch) return;
-      items = readItems(value); readFailed = false; lastCheckedAt = Date.now(); render();
+      items = readItems(value).filter(supported); readFailed = false; lastCheckedAt = Date.now(); render();
     }).catch(() => { if (active() && token === epoch) { readFailed = true; render(); } }).finally(() => { running = undefined; schedule(); });
   }
   function visibility() { epoch++; clearTimer(); if (active()) poll(); }
   document.addEventListener('visibilitychange', visibility, { signal: abort.signal });
-  button.addEventListener('click', () => { if (!element.open && !disposed) element.showModal(); poll(); }, { signal: abort.signal });
+  button.addEventListener('click', () => { if (!element.open && !disposed && available) element.showModal(); poll(); }, { signal: abort.signal });
   element.querySelector('.question-close')!.addEventListener('click', () => element.close(), { signal: abort.signal });
   const unlanguage = onLanguageChange(() => render(true));
   render(); poll();
   return {
     button, element,
     refresh: poll,
+    refreshAvailability() {
+      const next = host.available?.() ?? true;
+      const retained = items.filter(supported);
+      if (available === next && retained.length === items.length) return;
+      available = next; items = retained; epoch++; clearTimer();
+      if (!available) element.close();
+      render(); poll();
+    },
     setVisible(visible: boolean) { if (nativeVisible !== visible) { nativeVisible = visible; visibility(); } },
     beginExit(): Promise<void> { exiting = true; epoch++; clearTimer(); render(true); return Promise.all([running, ...responses]).then(() => {}); },
     cancelExit() { exiting = false; render(true); poll(); },

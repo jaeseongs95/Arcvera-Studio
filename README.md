@@ -17,8 +17,8 @@ This approximately 6.5-second recording shows project switching and multiple run
 
 A Windows desktop grid for running coding-agent CLI sessions side by side.
 
-The Codex adapter supports [OpenDIY Codex](https://github.com/jaeseongs95/opendiy-codex),
-the selected runtime for this project, and compatible official Codex CLI versions. Arrange terminals in a
+Core features use the official Codex app-server protocol, with optional extensions for
+[OpenDIY Codex](https://github.com/jaeseongs95/opendiy-codex). Arrange terminals in a
 resizable grid, group them by working directory, search terminal output and
 enter text directly in each terminal.
 
@@ -53,6 +53,12 @@ the app saves that path for future starts
 and history queries. The screen shows the saved path, resolved executable and
 where it came from. Cancelling the chooser keeps the previous setting.
 Changing it leaves running terminals alone.
+
+Each session keeps the capabilities observed for its own runtime. Unsupported controls
+are hidden and their requests are disabled. Official CLI connections use standard conversation,
+history, model and usage methods. OpenDIY-only server management, subagent controls,
+mobile control and cron are enabled only when their respective contracts are declared.
+Unknown extension support stays disabled; version strings do not enable features.
 
 In v1.0.0, you can also select the installed `opendiy-codex-launcher.exe`.
 Desktop resolves its selected package for each new request and uses that package’s

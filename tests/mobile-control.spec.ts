@@ -16,7 +16,7 @@ async function workspace(page: Page) {
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_projects') return [];
         if (command === 'list_sessions') return [
-          { id: 'live', generation: 4, title: '실행 작업', cwd: 'D:\\fixture', active: true, state: 'idle' },
+          { id: 'live', generation: 4, title: '실행 작업', cwd: 'D:\\fixture', active: true, state: 'idle', runtimeFeatures: { conversation: false, manualCompact: false, tokenUsage: false, subagents: false, cron: false, remoteControl: true } },
           { id: 'stopped', generation: 2, title: '종료 작업', cwd: 'D:\\fixture', active: false, state: 'exited' },
         ];
         if (command === 'mobile_control') {

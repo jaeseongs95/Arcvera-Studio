@@ -13,7 +13,7 @@ const owned = [
   { id: 'parent', title: 'Parent session', cwd: 'D:\\Work' },
   { id: 'child', title: 'Child session', cwd: 'D:\\Work\\Alpha\\child' },
   { id: 'sibling', title: 'Sibling session', cwd: 'D:\\Work\\Alphabet' },
-].map(session => ({ ...session, generation: 7, state: 'idle', active: true, threadId: `thread-${session.id}` }));
+].map(session => ({ ...session, generation: 7, state: 'idle', active: true, threadId: `thread-${session.id}`, ...(session.id === 'a1' ? { runtimeFeatures: { conversation: true, manualCompact: true, tokenUsage: true, subagents: false, cron: false, remoteControl: false } } : {}) }));
 
 test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.status !== testInfo.expectedStatus) {

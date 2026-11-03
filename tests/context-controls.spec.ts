@@ -15,6 +15,7 @@ async function fixture(page: Page) {
     };
     state.contextControls = createContextControls({
       host, statusHost, sessionId: 'context-session', generation: 9,
+      runtimeFeatures: { conversation: true, manualCompact: true, tokenUsage: true, subagents: false, cron: false, remoteControl: false },
       async call(command: string, args: any) {
         if (command !== 'conversation_request' || args.id !== 'context-session' || args.generation !== 9 || args.request.type !== 'contextStatus') throw Error('관측 이외의 호출');
         data.reads++; const snapshot = structuredClone(data.snapshot);
@@ -102,6 +103,11 @@ test('지원하지 않는 실행 환경과 활성 작업에서는 압축을 전�
     await expect(compact).toBeDisabled();
     await compact.evaluate((button: HTMLButtonElement) => button.click());
   }
+  await page.evaluate(() => { Object.assign((window as any).contextFixture.snapshot, { canCompact: true, reason: 'unsupported' }); });
+  await page.locator('#context-fixture .context-usage').click();
+  await expect(compact).toBeHidden();
+  await expect(compact).toBeDisabled();
+  await compact.evaluate((button: HTMLButtonElement) => button.click());
   expect(await page.evaluate(() => (window as any).contextFixture.mutations)).toBe(0);
   expect(await page.evaluate(() => (window as any).contextFixture.preparations)).toBe(0);
 });
@@ -146,4 +152,23 @@ test('언어 변경 때 아이콘 설명과 차단 사유를 바꾸고 숫자는
   await expect(usage).toHaveText('40%');
   await expect(usage).toHaveAttribute('aria-label', /Context 40%/);
   await expect(page.locator('#context-fixture .context-compact')).toHaveAttribute('aria-label', 'Compact context');
+});
+
+test('기능 프로필을 철회하면 버튼과 조회를 숨기고 늦은 응답과 직접 클릭을 차단한다', async ({ page }) => {
+  await fixture(page);
+  await expect(page.locator('#context-fixture .context-usage')).toHaveText('40%');
+  await page.evaluate(() => { (window as any).contextFixture.holdRead = true; });
+  await page.locator('#context-fixture .context-usage').click();
+  await page.evaluate(() => { const s = window as any; s.contextControls.setFeatures(undefined); s.contextFixture.releaseRead(); });
+  await expect(page.locator('#context-fixture .context-usage')).toBeHidden();
+  await expect(page.locator('#context-fixture .context-compact')).toBeHidden();
+  const reads = await page.evaluate(() => (window as any).contextFixture.reads);
+  await page.locator('#context-fixture .context-compact').evaluate((button: HTMLButtonElement) => button.click());
+  await page.waitForTimeout(2200);
+  expect(await page.evaluate(() => (window as any).contextFixture.reads)).toBe(reads);
+  expect(await page.evaluate(() => (window as any).contextFixture.mutations)).toBe(0);
+  await page.evaluate(() => (window as any).contextControls.setFeatures({ conversation: true, manualCompact: true, tokenUsage: false }));
+  await expect(page.locator('#context-fixture .context-compact')).toBeVisible();
+  await expect(page.locator('#context-fixture .context-compact')).toBeEnabled();
+  await expect(page.locator('#context-fixture .context-usage')).toBeHidden();
 });

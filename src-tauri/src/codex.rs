@@ -48,7 +48,7 @@ pub(crate) fn prepare_runtime_with_executable(exe: &OsString, cancelled: &Arc<At
 
 #[path = "codex_runtime.rs"]
 mod runtime;
-pub use runtime::RuntimeCompatibility;
+pub use runtime::{RuntimeCompatibility, RuntimeFeatures};
 pub(crate) use runtime::inspect as inspect_runtime;
 
 #[path = "codex_runtime_source.rs"]
@@ -128,6 +128,11 @@ impl CodexSession {
     }
     pub(crate) fn shared_control(&self) -> Option<shared::SharedControl> { self.shared.clone() }
     pub(crate) fn conversation_connection(&self) -> Option<ConversationConnection> { self.conversation.clone() }
+    pub(crate) fn runtime_features(&self) -> Result<RuntimeFeatures, String> {
+        let mut features = self.conversation.as_ref().map(ConversationConnection::features).transpose()?.unwrap_or_default();
+        features.remote_control = self.mobile.as_ref().is_some_and(MobileConnection::supported);
+        Ok(features)
+    }
 }
 
 impl Drop for CodexSession {
@@ -187,10 +192,13 @@ fn help_supports_option(bytes: &[u8], option: &str) -> Result<bool, String> {
 fn help_supports_no_remote_control(bytes: &[u8]) -> Result<bool, String> { help_supports_option(bytes, "--no-remote-control") }
 
 fn server_capabilities(exe: &OsString, cwd: &Path, cancelled: Option<&Arc<AtomicBool>>) -> Result<(bool, bool), String> {
+    server_capabilities_until(exe, cwd, cancelled, Instant::now() + HELP_TIMEOUT)
+}
+fn server_capabilities_until(exe: &OsString, cwd: &Path, cancelled: Option<&Arc<AtomicBool>>, deadline: Instant) -> Result<(bool, bool), String> {
     // 실행 파일별 캐시를 두지 않아 같은 경로의 교체나 설정 변경도 다음
     // launch에서 실제 도움말로 판별한다. 실패를 미지원으로 삼키지 않는다.
     let args = vec!["app-server".into(), "--help".into()];
-    let output = extensions::command_stdout_until(exe, cwd, &args, Instant::now() + HELP_TIMEOUT, cancelled)
+    let output = extensions::command_stdout_until(exe, cwd, &args, deadline.min(Instant::now() + HELP_TIMEOUT), cancelled)
         .map_err(|error| format!("Cannot inspect app-server startup capabilities: {error}"))?;
     Ok((help_supports_option(&output, "--no-remote-control")?, help_supports_option(&output, "--remote-control-client-name")?))
 }
@@ -314,8 +322,12 @@ fn check_cancelled(cancelled: Option<&Arc<AtomicBool>>) -> Result<(), String> {
 }
 
 fn connect(endpoint: &str, token: &str, server: &mut Child, job: &ProcessJob, cancelled: Option<Arc<AtomicBool>>) -> Result<Rpc<TcpStream>, String> {
+    connect_until(endpoint, token, server, job, cancelled, Instant::now() + Duration::from_secs(12))
+}
+
+fn connect_until(endpoint: &str, token: &str, server: &mut Child, job: &ProcessJob, cancelled: Option<Arc<AtomicBool>>, deadline: Instant) -> Result<Rpc<TcpStream>, String> {
     let address = endpoint.trim_start_matches("ws://").parse().map_err(|e| format!("Invalid loopback endpoint: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(12);
+    let deadline = deadline.min(Instant::now() + Duration::from_secs(12));
     loop {
         check_cancelled(cancelled.as_ref())?;
         if let Some(status) = server.try_wait().map_err(|e| format!("Cannot inspect Codex server: {e}"))? {
@@ -326,7 +338,7 @@ fn connect(endpoint: &str, token: &str, server: &mut Child, job: &ProcessJob, ca
             // A released ephemeral port may have been claimed by an unrelated listener.
             job.verify_tcp_peer(&stream)
                 .map_err(|error| format!("Codex app-server TCP peer ownership verification failed: {error}"))?;
-            let mut rpc = authenticated_socket(endpoint, token, stream)?;
+            let mut rpc = authenticated_socket_until(endpoint, token, stream, deadline)?;
             rpc.cancelled = cancelled;
             return Ok(rpc);
         }
@@ -337,8 +349,12 @@ fn connect(endpoint: &str, token: &str, server: &mut Child, job: &ProcessJob, ca
 
 // The caller must verify the connected peer before this sends a credential.
 fn authenticated_socket(endpoint: &str, token: &str, stream: TcpStream) -> Result<Rpc<TcpStream>, String> {
-    stream.set_read_timeout(Some(Duration::from_millis(500))).map_err(|_| "Cannot set Codex read timeout")?;
-    stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|_| "Cannot set Codex write timeout")?;
+    authenticated_socket_until(endpoint, token, stream, Instant::now() + Duration::from_secs(5))
+}
+fn authenticated_socket_until(endpoint: &str, token: &str, stream: TcpStream, deadline: Instant) -> Result<Rpc<TcpStream>, String> {
+    let remaining = deadline.checked_duration_since(Instant::now()).filter(|time| !time.is_zero()).ok_or("Codex connection deadline expired")?;
+    stream.set_read_timeout(Some(Duration::from_millis(500).min(remaining))).map_err(|_| "Cannot set Codex read timeout")?;
+    stream.set_write_timeout(Some(Duration::from_secs(5).min(remaining))).map_err(|_| "Cannot set Codex write timeout")?;
     let mut request = endpoint.into_client_request().map_err(|_| "Invalid Codex endpoint")?;
     request.headers_mut().insert("Authorization", format!("Bearer {token}").parse().map_err(|_| "Invalid capability token")?);
     let mut config = tungstenite::protocol::WebSocketConfig::default();
@@ -407,9 +423,14 @@ fn launch_server(exe: &OsString, cwd: &Path, thread_id: Option<&str>) -> Result<
 }
 
 fn launch_server_with_cancellation(exe: &OsString, cwd: &Path, thread_id: Option<&str>, cancelled: Option<Arc<AtomicBool>>) -> Result<(CodexSession, Rpc<TcpStream>), String> {
+    launch_server_until(exe, cwd, thread_id, cancelled, Instant::now() + Duration::from_secs(30))
+}
+
+fn launch_server_until(exe: &OsString, cwd: &Path, thread_id: Option<&str>, cancelled: Option<Arc<AtomicBool>>, deadline: Instant) -> Result<(CodexSession, Rpc<TcpStream>), String> {
     check_cancelled(cancelled.as_ref())?;
-    let (no_remote_control, namespaced_remote) = server_capabilities(exe, cwd, cancelled.as_ref())?;
+    let (no_remote_control, namespaced_remote) = server_capabilities_until(exe, cwd, cancelled.as_ref(), deadline)?;
     check_cancelled(cancelled.as_ref())?;
+    if Instant::now() >= deadline { return Err("Codex server preparation deadline expired".into()); }
     // Opt-in namespace isolates this owned process from all existing servers'
     // enrollment records. Older CLIs remain usable with mobile mutations gated.
     let remote_client_name = namespaced_remote.then(|| format!("opendiy-desktop-{}", Uuid::new_v4().simple()));
@@ -433,9 +454,12 @@ fn launch_server_with_cancellation(exe: &OsString, cwd: &Path, thread_id: Option
     session.conversation = Some(ConversationConnection::new(conversation::Endpoint::Owned {address:endpoint.clone(),token:token.clone(),job:Arc::downgrade(session.job.as_ref().unwrap())}, session.stopped.clone()));
     session._launch_gate.as_ref().unwrap().release()?;
     let job = session.job.as_ref().ok_or("Codex server has no owned process job")?;
-    let mut rpc = connect(&endpoint, &token, session.server.as_mut().unwrap(), job, cancelled)?;
-    rpc.call("initialize", initialize())?;
+    let mut rpc = connect_until(&endpoint, &token, session.server.as_mut().unwrap(), job, cancelled, deadline)?;
+    rpc.deadline = Some(deadline);
+    let initialized = rpc.call("initialize", initialize())?;
+    session.conversation.as_ref().unwrap().configure(&initialized)?;
     rpc.send(json!({"method":"initialized","params":{}}))?;
+    rpc.deadline = None;
     Ok((session, rpc))
 }
 
@@ -497,6 +521,11 @@ fn observe<S: Read + Write>(rpc: &mut Rpc<S>, mut selected: Option<String>, cwd:
                             selected = Some(id.to_owned());
                             on_event(CodexEvent::ThreadId(id.to_owned()));
                         }
+                        if let Some(conversation) = conversation {
+                            if conversation.observer_read_state(&json!({"thread":thread})).is_err() {
+                                publish_status(&mut last_state, "unknown".into(), on_event); break;
+                            }
+                        }
                         if thread["status"]["type"]=="notLoaded" {
                             subscribed=false;
                             if let Some(conversation)=conversation {conversation.observer_disconnected();}
@@ -504,6 +533,16 @@ fn observe<S: Read + Write>(rpc: &mut Rpc<S>, mut selected: Option<String>, cwd:
                             if let (Some(id),Some(conversation))=(selected.as_deref(),conversation) {
                                 // 같은 연결에서 최대 세 번, 다음 1초 상태 조회 뒤에만
                                 // 재시도한다. 정확한 구조화 준비 오류 외에는 재시도하지 않는다.
+                                let passive = match conversation.observer_supports_passive() {
+                                    Ok(supported) => supported,
+                                    Err(_) => { publish_status(&mut last_state, "unknown".into(), on_event); break; }
+                                };
+                                if !passive {
+                                    subscription_stopped = true;
+                                    publish_status(&mut last_state, status(&thread["status"]), on_event);
+                                    next_poll = Instant::now() + Duration::from_secs(1);
+                                    continue;
+                                }
                                 subscription_attempts+=1;
                                 match conversation.observer_subscribe(rpc,id,cwd) {
                                     Ok(success)=>subscribed=success,
