@@ -116,6 +116,9 @@ class Fixture {
   if (args.Length == 3 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "--help") {
    Console.Write("Usage: fixture app-server daemon <COMMAND>\n\nCommands:\n  version  Read version\n\nOptions:\n  -h, --help\n"); return 0;
   }
+  if (args.Length == 4 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "start" && args[3] == "--help") {
+   Console.Write("Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n          Preserve the installed server and settings\n  -h, --help\n          Print help\n"); return 0;
+  }
   if (args.Length == 3 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "version") { Console.Write(File.ReadAllText(Path.Combine(root,"version.json"))); return 0; }
   if (args.Length == 2 && args[0] == "app-server" && args[1] == "proxy") {
    using (var client = new TcpClient("127.0.0.1",Int32.Parse(File.ReadAllText(Path.Combine(root,"port"))))) {
@@ -179,7 +182,9 @@ fn shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutd
                 let method = request["method"].as_str().unwrap().to_owned();
                 methods.push(method.clone());
                 let result = match method.as_str() {
-                    "initialize" => json!({}),
+                    // This synthetic runtime explicitly provides the passive observer
+                    // whose blocked sink establishes the reaper/join race below.
+                    "initialize" => json!({"opendiyCapabilities":{"passiveSubscription":true}}),
                     "initialized" => continue,
                     _ if preparation => panic!("사전 준비 연결이 대화 변경 또는 관측을 요청했다: {method}"),
                     "thread/start" => json!({"thread":{"id":id,"cwd":server_cwd,"status":{"type":"idle"}}}),

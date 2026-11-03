@@ -208,8 +208,10 @@ impl ConversationConnection {
         Self(Arc::new(Control {endpoint,stopped,input:Mutex::new(false),owned:AtomicBool::new(false),worker:Mutex::new(None),events:Mutex::new(Events::default()),sent:Mutex::new(HashSet::new()),unknown:AtomicBool::new(false),deleted:AtomicBool::new(false),detail:Mutex::new(None),subagents:Mutex::new(subagents::State::default()),observer_protocol:Mutex::new(None)}))
     }
     pub(super) fn configure(&self, initialized: &Value) -> Result<(),String> {
-        let protocol=adapter::from_initialize(initialized)?;
-        *self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?=Some(protocol);
+        let protocol=adapter::from_initialize(initialized);
+        let mut current=self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?;
+        *current=None;
+        *current=Some(protocol?);
         Ok(())
     }
     pub(super) fn features(&self) -> Result<super::runtime::RuntimeFeatures,String> {
@@ -275,11 +277,13 @@ impl ConversationConnection {
             Ok(value)=>value,Err(_) if preparing=>return Ok(false),Err(error)=>return Err(error),
         };
         verify_passive(&result,thread_id,cwd)?;
+        let idle_compaction=self.0.observer_protocol.lock().map_err(|_| "관찰 연결의 기능 지원 상태 오류")?
+            .is_some_and(|protocol|protocol.extensions.idle_compaction);
         let mut events=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?;
         if events.requests_unavailable {return Err("요청 관측을 중단한 세션의 구독을 복구하지 않았습니다.".into());}
         events.context_active=context_active(&result["thread"]["status"]);
         events.context_turn=None;events.context_activity_revision+=1;
-        events.observer_compact_supported=result["supportsCompactIfIdle"].as_bool()==Some(true);
+        events.observer_compact_supported=!idle_compaction || result["supportsCompactIfIdle"].as_bool()==Some(true);
         events.token_usage_fresh=false;events.context_compaction=None;
         events.context_revision+=1;
         events.observer_connected=true;
@@ -603,7 +607,11 @@ fn serve_with_protocol<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thr
     }
     { let mut events = control.events.lock().map_err(|_| "대화 이벤트 상태 오류")?; if events.requests_unavailable {return Err("요청 관측을 중단한 세션의 연결을 복구하지 않았습니다.".into());}
         events.gui_protocol=Some(protocol);
-        events.gui_compact_supported=!protocol.extensions.idle_compaction || resumed["supportsCompactIfIdle"].as_bool()==Some(true);
+        // 표준 resume는 선택 확장의 상태 필드를 반환하지 않는다. 그 경로의
+        // idle 압축은 같은 GUI 연결 initialize의 명시 선언으로 판단한다.
+        // passive를 선택한 경우에는 기존 응답의 지원 확인도 유지한다.
+        events.gui_compact_supported=!protocol.extensions.idle_compaction || !protocol.extensions.passive_subscription
+            || resumed["supportsCompactIfIdle"].as_bool()==Some(true);
         if !protocol.extensions.passive_subscription && events.context_activity_revision==context_activity {events.context_active=context_active(&resumed["thread"]["status"]);events.context_activity_revision+=1;}
         let passive_interrupt=interrupt_capability(&resumed)?;
         // 기대 turn 보호 확장은 두 응답을 모두 대조한다. 표준 경로는 공식
@@ -1069,6 +1077,78 @@ mod tests {
         assert_eq!(attached.recv().unwrap().unwrap()["activeTurnId"],"new-live-turn");
         let events=control.0.events.lock().unwrap();assert_eq!(events.context_active,Some(true));assert_eq!(events.pending["7"]["guiOwned"],true);drop(events);
         assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+    }
+
+    #[test]
+    fn declared_idle_compaction_is_independent_of_passive_and_keeps_passive_response_checks() {
+        for (passive,response_support) in [(false,None),(true,Some(false)),(true,Some(true))] {
+            let(control,mut rpc,listener)=fixture();
+            let initialized=json!({"opendiyCapabilities":{"passiveSubscription":passive,"compactStartIfIdle":true,"historySummary":false}});
+            control.configure(&initialized).unwrap();
+            {let mut events=control.0.events.lock().unwrap();events.observer_connected=true;events.context_active=Some(false);}
+            let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            let supported=!passive||response_support==Some(true);
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);assert_eq!(init["method"],"initialize");reply(&mut socket,&init,initialized);assert_eq!(read_request(&mut socket)["method"],"initialized");
+                if !passive {
+                    let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                }
+                let attach=read_request(&mut socket);assert_eq!(attach["method"],if passive{PASSIVE_SUBSCRIBE}else{"thread/resume"});
+                let mut response=json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}});
+                if let Some(value)=response_support {response["supportsCompactIfIdle"]=json!(value);}
+                reply(&mut socket,&attach,response);
+                let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");assert_eq!(history["params"]["limit"],1);assert_eq!(history["params"]["itemsView"],"summary");reply(&mut socket,&history,json!({"data":[]}));
+                if supported {
+                    let compact=read_request(&mut socket);assert_eq!(compact["method"],COMPACT_IF_IDLE);
+                    socket.send(Message::Text(json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"compact-turn","status":"completed"}}}).to_string().into())).unwrap();
+                    reply(&mut socket,&compact,json!({"status":"started","turn":{"id":"compact-turn"}}));
+                }
+                assert_closed_without_input(&mut socket);
+            });
+            let(sender,receiver)=mpsc::sync_channel(3);let mut replies=Vec::new();
+            for request in [ConversationRequest::Attach,ConversationRequest::Compact,ConversationRequest::Detach] {
+                let(reply,result)=mpsc::sync_channel(1);sender.send(Work{request,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();replies.push(result);
+            }
+            serve(&control.0,&mut rpc,"original",&cwd,receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap();
+            let results:Vec<_>=replies.into_iter().map(|reply|reply.recv().unwrap().unwrap()).collect();
+            assert_eq!(results[1]["status"],if supported{"started"}else{"unsupported"});
+            assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn malformed_initialize_extensions_stop_before_attach_or_extension_requests() {
+        for capabilities in [json!(true),json!({"passiveSubscription":true,"userTurnStartIfIdle":"true"}),json!({"historySummary":null})] {
+            let(control,mut rpc,listener)=fixture();let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);assert_eq!(init["method"],"initialize");reply(&mut socket,&init,json!({"opendiyCapabilities":capabilities}));assert_closed_without_input(&mut socket);
+            });
+            let(_sender,receiver)=mpsc::sync_channel(1);let error=serve(&control.0,&mut rpc,"original",Path::new("."),receiver,&AtomicBool::new(false),&Mutex::new(None)).unwrap_err();
+            assert!(error.contains("선택 확장 지원 정보"));assert_eq!(rpc.next_id,1);assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn malformed_reconfiguration_revokes_previous_extension_declarations() {
+        let(control,_rpc,_listener)=fixture();
+        control.configure(&json!({"opendiyCapabilities":{"passiveSubscription":true}})).unwrap();
+        assert!(control.observer_supports_passive().unwrap());
+        assert!(control.configure(&json!({"opendiyCapabilities":{"passiveSubscription":"true"}})).is_err());
+        assert!(!control.observer_supports_passive().unwrap());assert!(!control.features().unwrap().conversation);
+    }
+
+    #[test]
+    fn passive_subscription_without_idle_extension_preserves_standard_manual_compaction() {
+        let(control,mut rpc,listener)=fixture();control.configure(&json!({"opendiyCapabilities":{"passiveSubscription":true}})).unwrap();
+        let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+        let server=thread::spawn(move||{
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            let subscribe=read_request(&mut socket);assert_eq!(subscribe["method"],PASSIVE_SUBSCRIBE);
+            reply(&mut socket,&subscribe,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}}));assert_closed_without_input(&mut socket);
+        });
+        assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());
+        assert!(control.0.events.lock().unwrap().observer_compact_supported);drop(rpc);server.join().unwrap();
     }
 
     #[test]
