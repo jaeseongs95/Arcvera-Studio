@@ -125,7 +125,8 @@ impl CompactProgress {
             Some("thread/compacted")=>{if self.turn.as_ref().is_none_or(|(id,_)|id==turn){self.turn=Some((turn.into(),true));}},
             Some("item/started" | "item/completed") if params["item"]["type"]=="contextCompaction"=>{
                 if self.turn.as_ref().is_some_and(|(id,done)|id==turn&&*done){return;}
-                if params["item"]["id"].as_str().is_some_and(|id|valid_id(id).is_ok()) {self.turn=Some((turn.into(),false));}
+                if message["method"]=="item/completed" && self.turn.as_ref().is_some_and(|(id,_)|id!=turn) {return;}
+                if params["item"]["id"].as_str().is_some_and(|id|valid_id(id).is_ok()) {self.turn=Some((turn.into(),message["method"]=="item/completed"));}
             },
             _=>{},
         }
@@ -168,6 +169,9 @@ impl Events {
         owned || unknown || self.blocks_release(true) || self.pending.values().any(|request|request["guiOwned"]!=false)
     }
     fn blocks_release(&self,handoff: bool) -> bool {
+        // 표준 compact 접수에는 turn ID가 없을 수 있다. 완료를 같은 GUI
+        // 연결에서 관측하기 전에는 연결을 해제해 완료 이벤트를 잃지 않는다.
+        if self.standard_compaction_pending() {return true;}
         // 표준 연결의 질문을 TUI가 같은 request ID로 승계한다는 보장은 없다.
         if self.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription)
             && (!self.pending.is_empty() || !self.observed_pending.is_empty()) {return true;}
@@ -175,6 +179,10 @@ impl Events {
             !handoff || request["responded"]==true || self.answered.contains(id)
                 || !matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/tool/requestUserInput" | "item/permissions/requestApproval"))
         })
+    }
+    fn standard_compaction_pending(&self) -> bool {
+        self.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription)
+            && self.context_compaction.is_some()
     }
     fn push(&mut self, mut event: Value) {
         self.seq += 1;
@@ -311,6 +319,11 @@ impl ConversationConnection {
         let mut slot=self.0.worker.lock().map_err(|_| "대화 연결 상태 오류")?;
         let Some(worker)=slot.as_mut() else {return if self.0.owned.load(Ordering::Acquire) {Err("대화 입력 소유권의 종료 근거가 없습니다.".into())} else {Ok(true)};};
         if finished_only && !worker.joined && !worker.join.as_ref().is_some_and(JoinHandle::is_finished) {return Ok(false);}
+        // 최종 해제 경로도 stop 전에 검사한다. 승인된 표준 압축의 완료를
+        // 기다리는 살아 있는 worker를 먼저 중단한 뒤 차단하면 복구할 수 없다.
+        if self.0.events.lock().map_err(|_| "대화 문맥 상태 오류")?.standard_compaction_pending() {
+            return Err("표준 압축의 완료를 기다리고 있어 대화 연결과 입력 소유권을 유지했습니다.".into());
+        }
         // worker의 종료 콜백도 events를 잠그므로 join 중에는 events/input을 잡지 않는다.
         if let Err(error)=worker.stop() {
             let mut events=self.0.events.lock().map_err(|_| "대화 승인 상태 오류")?;
@@ -629,7 +642,7 @@ fn serve_with_protocol<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thr
                     let handoff=matches!(work.request,ConversationRequest::HandoffToTerminal);
                     let pending = control.events.lock().map_err(|_| "대화 승인 상태 오류")?.blocks_release(handoff);
                     if pending || control.unknown.load(Ordering::Acquire) {
-                        let _ = work.reply.send(Err("승인 대기 또는 결과 불명 요청이 있어 대화 입력 소유권을 유지했습니다. 현재 화면에서 요청을 처리하세요.".into()));
+                        let _ = work.reply.send(Err("압축 완료·승인 대기 또는 결과 불명 요청이 있어 대화 연결과 입력 소유권을 유지했습니다. 현재 화면에서 요청을 처리하세요.".into()));
                         continue;
                     }
                     let _ = work.reply.send(Ok(json!({}))); return Ok(());
@@ -749,6 +762,10 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
                         events.context_compaction=Some((String::new(),String::new()));events.context_active=None;
                     }
                     events.context_activity_revision+=1;
+                } else if events.context_compaction.is_none() && !progress.turn.as_ref().is_some_and(|(_,done)|*done) {
+                    // status/turn 시작 알림은 압축 완료가 아니다. 최신 활동 상태는
+                    // 보존하면서도 {} 접수의 완료 대기를 빠뜨리지 않는다.
+                    events.context_compaction=Some((progress.turn.map(|(turn,_)|turn).unwrap_or_default(),String::new()));
                 }
                 events.context_revision+=1;
                 return Ok(json!({"status":"started"}));
@@ -1202,6 +1219,74 @@ mod tests {
         assert!(control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).is_err());
         observe_message(&control.0,"original",json!({"method":"serverRequest/resolved","params":{"threadId":"original","requestId":9}})).unwrap();
         control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).unwrap();drop(rpc);server.join().unwrap();
+    }
+    #[test]
+    fn standard_compaction_keeps_the_live_worker_until_observed_completion_across_release_races() {
+        for handoff in [false,true] {for early in ["none","started","idle","completed","compacted","itemCompleted","wrongThread","unrelatedItem","wrongTurn","wrongItemTurn"] {
+            let(control,mut rpc,listener)=fixture();control.configure(&json!({})).unwrap();
+            let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();let worker_cwd=cwd.clone();
+            let(received,request_received)=mpsc::sync_channel(1);let(allow_reply,reply_ready)=mpsc::sync_channel(1);let(allow_completion,completion_ready)=mpsc::sync_channel(1);
+            let completed_early=matches!(early,"completed"|"compacted"|"itemCompleted");
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
+                let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");reply(&mut socket,&resume,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}}));
+                let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");reply(&mut socket,&history,json!({"data":[]}));
+                let compact=read_request(&mut socket);assert_eq!(compact["method"],"thread/compact/start");received.send(()).unwrap();reply_ready.recv_timeout(Duration::from_secs(3)).unwrap();
+                let event=match early {
+                    "started"|"wrongTurn"|"wrongItemTurn"=>Some(json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"compact-turn"}}})),
+                    "idle"=>Some(json!({"method":"thread/status/changed","params":{"threadId":"original","status":{"type":"idle"}}})),
+                    "completed"|"wrongThread"=>Some(json!({"method":"turn/completed","params":{"threadId":if early=="wrongThread"{"foreign"}else{"original"},"turn":{"id":"compact-turn","status":"completed"}}})),
+                    "compacted"=>Some(json!({"method":"thread/compacted","params":{"threadId":"original","turnId":"compact-turn"}})),
+                    "itemCompleted"|"unrelatedItem"=>Some(json!({"method":"item/completed","params":{"threadId":"original","turnId":"compact-turn","item":{"id":"compact-item","type":if early=="unrelatedItem"{"agentMessage"}else{"contextCompaction"}}}})),
+                    _=>None,
+                };
+                if let Some(event)=event {socket.send(Message::Text(event.to_string().into())).unwrap();}
+                if early=="wrongTurn" {socket.send(Message::Text(json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"other-turn","status":"completed"}}}).to_string().into())).unwrap();}
+                if early=="wrongItemTurn" {socket.send(Message::Text(json!({"method":"item/completed","params":{"threadId":"original","turnId":"other-turn","item":{"id":"other-item","type":"contextCompaction"}}}).to_string().into())).unwrap();}
+                reply(&mut socket,&compact,json!({}));
+                if !completed_early {
+                    completion_ready.recv_timeout(Duration::from_secs(3)).unwrap();
+                    socket.send(Message::Text(json!({"method":"item/completed","params":{"threadId":"original","turnId":"compact-turn","item":{"id":"compact-item","type":"contextCompaction"}}}).to_string().into())).unwrap();
+                }
+                assert_closed_without_input(&mut socket);
+            });
+            install_actor(&control,move|state,receiver,cancelled|{serve(&state,&mut rpc,"original",&worker_cwd,receiver,&cancelled,&Mutex::new(None)).unwrap();});
+            control.request("original",&cwd,ConversationRequest::Attach).unwrap();
+            let compact_control=control.clone();let compact_cwd=cwd.clone();let compact=thread::spawn(move||compact_control.request("original",&compact_cwd,ConversationRequest::Compact));
+            request_received.recv_timeout(Duration::from_secs(3)).unwrap();assert!(control.0.unknown.load(Ordering::Acquire));
+            let releasing=control.clone();let release_cwd=cwd.clone();let release=thread::spawn(move||releasing.request("original",&release_cwd,if handoff{ConversationRequest::HandoffToTerminal}else{ConversationRequest::Detach}));
+            let deadline=Instant::now()+Duration::from_secs(3);
+            while !control.0.worker.lock().unwrap().as_ref().is_some_and(|worker|worker.closing.is_some())&&Instant::now()<deadline {thread::yield_now();}
+            assert!(control.0.worker.lock().unwrap().as_ref().unwrap().closing.is_some());allow_reply.send(()).unwrap();
+            assert_eq!(compact.join().unwrap().unwrap(),json!({"status":"started"}));
+            let released=release.join().unwrap();assert_eq!(released.is_ok(),completed_early,"{early}, handoff={handoff}");
+            assert!(!control.0.unknown.load(Ordering::Acquire));
+            if !completed_early {
+                assert!(control.0.owned.load(Ordering::Acquire));assert!(control.terminal_write(||Ok(1)).is_err());
+                assert!(control.0.events.lock().unwrap().context_compaction.is_some());
+                // 최종 release도 worker.stop 전에 거절해 같은 socket을 남긴다.
+                assert!(control.release(false,handoff).is_err());
+                {let worker=control.0.worker.lock().unwrap();let worker=worker.as_ref().unwrap();assert!(!worker.cancelled.load(Ordering::Acquire));assert!(worker.closing.is_none());assert!(!worker.join.as_ref().unwrap().is_finished());}
+                allow_completion.send(()).unwrap();let deadline=Instant::now()+Duration::from_secs(3);
+                while control.0.events.lock().unwrap().context_compaction.is_some()&&Instant::now()<deadline {thread::yield_now();}
+                assert!(control.0.events.lock().unwrap().context_compaction.is_none());
+                control.request("original",&cwd,if handoff{ConversationRequest::HandoffToTerminal}else{ConversationRequest::Detach}).unwrap();
+            }
+            assert!(control.0.worker.lock().unwrap().is_none());assert!(!control.0.owned.load(Ordering::Acquire));assert_eq!(control.terminal_write(||Ok(1)).unwrap(),1);server.join().unwrap();
+        }}
+    }
+    #[test]
+    fn release_guard_preserves_regular_turn_handoff_passive_compaction_and_unknown_results() {
+        let mut events=Events::default();events.gui_protocol=Some(RuntimeProtocol::default());events.context_active=Some(true);events.context_turn=Some("ordinary-turn".into());
+        assert!(!events.blocks_release(false));assert!(!events.blocks_release(true));
+        events.context_compaction=Some((String::new(),String::new()));assert!(events.blocks_release(false));assert!(events.blocks_release(true));
+        events.gui_protocol=Some(extension_protocol());assert!(!events.blocks_release(false));assert!(!events.blocks_release(true));
+        let(control,_rpc,_listener)=fixture();install_finished_worker(&control);control.0.events.lock().unwrap().gui_protocol=Some(RuntimeProtocol::default());control.0.unknown.store(true,Ordering::Release);
+        observe_message(&control.0,"original",json!({"method":"thread/status/changed","params":{"threadId":"original","status":{"type":"idle"}}})).unwrap();
+        observe_message(&control.0,"original",json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"compact-turn","status":"completed"}}})).unwrap();
+        assert!(control.0.unknown.load(Ordering::Acquire));assert!(control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).is_err());assert!(control.0.owned.load(Ordering::Acquire));control.cancel();
     }
     #[test]
     fn context_snapshot_uses_existing_observer_without_draining_or_connecting() {

@@ -101,6 +101,69 @@ for (const completion of ['turn/completed', 'item/completed', 'thread/compacted'
   });
 }
 
+for (const release of ['handoff', 'detach'] as const) for (const unknown of [false, true]) {
+  test(`표준 압축 중 ${release} 거절은 관측을 보존하고 완료 뒤 복구한다: 결과 미확인 ${unknown}`, async ({ page }) => {
+    await conversation(page);
+    const host = view(page);
+    await host.locator('.conversation-input').fill('압축과 인계 거절 뒤 보존할 초안');
+    expect(await page.evaluate(async () => {
+      const state = window as any; const f = state.conversationFixture;
+      f.standardCompact = true; f.rejectHandoff = true; f.rejectDetach = true;
+      return await state.conversation.compact();
+    })).toEqual({ status: 'started' });
+    const pollsBefore = await page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'poll').length);
+    expect(await page.evaluate(async ({ release, unknown }) => {
+      const state = window as any; state.conversationFixture.unknownResult = unknown;
+      try { if (release === 'handoff') await state.conversation.handoffToTerminal(); else await state.conversation.setVisible(false); return false; }
+      catch { return true; }
+    }, { release, unknown })).toBe(true);
+    await expect(host).toBeVisible();
+    await expect(host.locator('.conversation-input')).toHaveValue('압축과 인계 거절 뒤 보존할 초안');
+    await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'poll').length)).toBeGreaterThan(pollsBefore);
+    expect(await page.evaluate(() => (window as any).conversationFixture.owners)).toEqual([true]);
+    await expect(host.locator('.conversation-send')).toBeDisabled();
+    expect(await page.evaluate(() => (window as any).conversation.compact())).toEqual({ status: 'notStarted' });
+    const completed = async (id: string, text: string) => {
+      await page.evaluate(({ id, text }) => {
+        const f = (window as any).conversationFixture;
+        f.queue.push({ seq: f.nextSeq++, method: 'turn/completed', params: { threadId: 'thread-a', turn: { id, status: 'completed' } } });
+        f.queue.push({ seq: f.nextSeq++, method: 'item/completed', params: { item: { id: `${id}-marker`, type: 'agentMessage', text } } });
+      }, { id, text });
+      await expect(host.locator('.conversation-messages')).toContainText(text);
+    };
+    await completed('standard-compact', '같은 연결에서 압축 완료 관측');
+    if (unknown) {
+      await expect(host.locator('.conversation-input')).toBeDisabled();
+      await expect(host.locator('.conversation-send')).toBeDisabled();
+      expect(await page.evaluate(() => (window as any).conversation.compact())).toEqual({ status: 'notStarted' });
+      await page.waitForTimeout(500);
+      await expect(host.locator('.conversation-send')).toBeDisabled();
+      expect(await page.evaluate(() => (window as any).conversationFixture.owners)).toEqual([true]);
+    } else {
+      await expect(host.locator('.conversation-send')).toBeEnabled();
+      expect(await page.evaluate(() => (window as any).conversation.compact())).toEqual({ status: 'started' });
+      await completed('second-compact', '다음 압축 완료 관측');
+      await host.locator('.conversation-send').click();
+      await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'send').length)).toBe(1);
+      await completed('sent-turn', '완료 뒤 전송 정상 복구');
+      await host.locator('.conversation-input').fill('터미널 전환 뒤에도 보존할 초안');
+      await page.evaluate(async release => {
+        const state = window as any; const f = state.conversationFixture;
+        f.rejectHandoff = false; f.rejectDetach = false;
+        if (release === 'handoff') await state.conversation.handoffToTerminal(); else await state.conversation.setVisible(false);
+      }, release);
+      await expect(host).toBeHidden();
+      await expect(host.locator('.conversation-input')).toHaveValue('터미널 전환 뒤에도 보존할 초안');
+      expect(await page.evaluate(() => (window as any).conversationFixture.owners)).toEqual([true, false]);
+    }
+    const requests = await page.evaluate(() => (window as any).conversationFixture.calls.map((entry: any) => entry.args.request?.type));
+    expect(requests.filter((type: string) => type === 'attach')).toHaveLength(1);
+    expect(requests.filter((type: string) => type === (release === 'handoff' ? 'handoffToTerminal' : 'detach'))).toHaveLength(unknown ? 1 : 2);
+    expect(requests.filter((type: string) => type === 'compact')).toHaveLength(unknown ? 1 : 2);
+    expect(requests.filter((type: string) => type === 'send')).toHaveLength(unknown ? 0 : 1);
+  });
+}
+
 async function expectPrivateFailureHidden(page: Page) {
   const html = await view(page).evaluate(node => node.outerHTML);
   for (const marker of ['PRIVATE_INTERNAL_FAILURE', 'private-cli', 'FAKE_AUTH_TOKEN_DO_NOT_DISPLAY']) expect(html).not.toContain(marker);
