@@ -1253,7 +1253,12 @@ mod tests {
                 assert_closed_without_input(&mut socket);
             });
             install_actor(&control,move|state,receiver,cancelled|{serve(&state,&mut rpc,"original",&worker_cwd,receiver,&cancelled,&Mutex::new(None)).unwrap();});
-            control.request("original",&cwd,ConversationRequest::Attach).unwrap();
+            // 설치된 fixture worker의 bootstrap 완료를 기다린다. 공개 Attach는
+            // 이미 등록된 worker를 중복 연결로 거부하는 것이 맞다.
+            let(reply,attached)=mpsc::sync_channel(1);
+            control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();
+            let attached=attached.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+            assert_eq!(attached["owner"],"gui");assert_eq!(attached["threadId"],"original");
             let compact_control=control.clone();let compact_cwd=cwd.clone();let compact=thread::spawn(move||compact_control.request("original",&compact_cwd,ConversationRequest::Compact));
             request_received.recv_timeout(Duration::from_secs(3)).unwrap();assert!(control.0.unknown.load(Ordering::Acquire));
             let releasing=control.clone();let release_cwd=cwd.clone();let release=thread::spawn(move||releasing.request("original",&release_cwd,if handoff{ConversationRequest::HandoffToTerminal}else{ConversationRequest::Detach}));
