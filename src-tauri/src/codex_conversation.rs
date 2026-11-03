@@ -299,10 +299,16 @@ impl ConversationConnection {
     }
     pub(super) fn observer_disconnected(&self) {
         let mut events=self.0.events.lock().unwrap_or_else(|e|e.into_inner());
-        events.observer_connected=false;events.token_usage_fresh=false;events.context_revision+=1;
+        // 표준 GUI가 연결 중이거나 입력을 선점한 bootstrap 중이면 문맥은
+        // GUI 스트림 소유다. 별도 metadata 관찰자의 종료로 지우지 않는다.
+        let gui_context=events.gui_protocol.is_some_and(|protocol|!protocol.extensions.passive_subscription)
+            && (events.connected||self.0.owned.load(Ordering::Acquire));
+        events.observer_connected=false;events.context_revision+=1;
         events.observer_compact_supported=false;
-        events.context_active=None;events.context_compaction=None;
-        events.context_turn=None;events.context_activity_revision+=1;
+        if !gui_context {
+            events.token_usage_fresh=false;events.context_active=None;events.context_compaction=None;
+            events.context_turn=None;events.context_activity_revision+=1;
+        }
     }
     pub(crate) fn cancel(&self) {
         let mut slot = self.0.worker.lock().unwrap_or_else(|e| e.into_inner());
@@ -582,6 +588,11 @@ fn serve_with_protocol<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thr
         if current["thread"]["status"]["activeFlags"].as_array().is_some_and(|flags|flags.iter().any(|flag|matches!(flag.as_str(),Some("waitingOnApproval" | "waitingOnUserInput")))) {
             return Err("터미널에서 대기 중인 질문의 응답 소유권을 승계할 수 없습니다. 원래 터미널에서 처리한 뒤 대화 화면으로 전환하세요.".into());
         }
+        // 빈 loaded thread도 rollout이 없어 resume가 거절될 수 있다. 읽기
+        // 실패는 변경 요청 전에 멈춘다. 성공 자료는 attach나 최신 상태의
+        // 증거로 재사용하지 않고, 아래 resume 및 그 뒤 이력 검증을 유지한다.
+        let preflight=call(control,rpc,thread_id,"thread/turns/list",json!({"threadId":thread_id,"limit":1,"sortDirection":"desc","itemsView":"summary"}),cancelled)?;
+        let _=bounded_page(preflight,1)?;
     }
     let context_activity={
         let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
@@ -1030,6 +1041,11 @@ mod tests {
     fn reply(socket: &mut WebSocket<TcpStream>,request: &Value,result: Value) {
         socket.send(Message::Text(json!({"id":request["id"],"result":result}).to_string().into())).unwrap();
     }
+    fn standard_history_preflight(socket: &mut WebSocket<TcpStream>) {
+        let request=read_request(socket);assert_eq!(request["method"],"thread/turns/list");
+        assert_eq!(request["params"],json!({"threadId":"original","limit":1,"sortDirection":"desc","itemsView":"summary"}));
+        reply(socket,&request,json!({"data":[]}));
+    }
     fn assert_closed_without_input(socket: &mut WebSocket<TcpStream>) {
         let result=socket.get_mut().read(&mut[0u8;1]);
         let closed=match &result {Ok(0)=>true,Err(error)=>matches!(error.kind(),io::ErrorKind::ConnectionAborted|io::ErrorKind::ConnectionReset),_=>false};
@@ -1047,6 +1063,7 @@ mod tests {
                 assert_eq!(read_request(&mut socket)["method"],"initialized");
                 let request=read_request(&mut socket);assert_eq!(request["method"],"thread/read");assert_eq!(request["params"],json!({"threadId":"original","includeTurns":false}));
                 reply(&mut socket,&request,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                standard_history_preflight(&mut socket);
                 let request=read_request(&mut socket);assert_eq!(request["method"],"thread/resume");assert_eq!(request["params"],json!({"threadId":"original","excludeTurns":true}));
                 reply(&mut socket,&request,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}},"model":"actual-model"}));
                 let request=read_request(&mut socket);assert_eq!(request["method"],"thread/turns/list");assert_eq!(request["params"]["limit"],1);reply(&mut socket,&request,json!({"data":[]}));
@@ -1082,6 +1099,7 @@ mod tests {
             let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
             let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
             let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+            standard_history_preflight(&mut socket);
             let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");reply(&mut socket,&resume,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}}));
             let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");
             socket.send(Message::Text(json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"new-live-turn","status":"inProgress"}}}).to_string().into())).unwrap();
@@ -1094,6 +1112,87 @@ mod tests {
         assert_eq!(attached.recv().unwrap().unwrap()["activeTurnId"],"new-live-turn");
         let events=control.0.events.lock().unwrap();assert_eq!(events.context_active,Some(true));assert_eq!(events.pending["7"]["guiOwned"],true);drop(events);
         assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+    }
+    #[test]
+    fn standard_history_preflight_failure_sends_no_resume_and_releases_input_only_after_join() {
+        for outcome in ["invalidRequest","otherMessage","internal","unmaterialized","forgedSuccess","malformed","oversize","eof"] {
+            let(control,mut rpc,listener)=fixture();control.configure(&json!({})).unwrap();
+            let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();let worker_cwd=cwd.clone();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
+                let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                let preflight=read_request(&mut socket);assert_eq!(preflight["method"],"thread/turns/list");assert_eq!(preflight["params"],json!({"threadId":"original","limit":1,"sortDirection":"desc","itemsView":"summary"}));
+                match outcome {
+                    "eof"=>return,
+                    "unmaterialized"=>{socket.send(Message::Text(json!({"id":preflight["id"],"error":{"code":-32600,"data":{"kind":"historyProjectionUnavailable","reason":"unmaterialized"}}}).to_string().into())).unwrap();},
+                    "forgedSuccess"=>reply(&mut socket,&preflight,json!({"historyUnavailable":true,"reason":"unmaterialized","data":[]})),
+                    "malformed"=>reply(&mut socket,&preflight,json!({"data":{}})),
+                    "oversize"=>reply(&mut socket,&preflight,json!({"data":[{},{}]})),
+                    _=>{socket.send(Message::Text(json!({"id":preflight["id"],"error":{"code":if outcome=="internal"{-32603}else{-32600},"message":if outcome=="invalidRequest"{"not materialized"}else{"arbitrary unrelated text"}}).to_string().into())).unwrap();},
+                }
+                assert_closed_without_input(&mut socket);
+            });
+            let(failed,failure)=mpsc::sync_channel(1);let(finish,finished)=mpsc::sync_channel(1);let(start,started)=mpsc::sync_channel(1);
+            install_actor(&control,move|state,receiver,cancelled|{
+                started.recv_timeout(Duration::from_secs(3)).unwrap();
+                let error=serve(&state,&mut rpc,"original",&worker_cwd,receiver,&cancelled,&Mutex::new(None)).unwrap_err();
+                failed.send((error,rpc.next_id)).unwrap();finished.recv_timeout(Duration::from_secs(3)).unwrap();drop(rpc);
+            });
+            let(reply,attached)=mpsc::sync_channel(1);control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();
+            start.send(()).unwrap();
+            let(error,sent)=failure.recv_timeout(Duration::from_secs(3)).unwrap();assert!(!error.is_empty());assert_eq!(sent,3,"resume 전에 실패해야 한다: {outcome}");assert!(attached.recv_timeout(Duration::from_secs(3)).is_err());
+            assert!(!control.0.unknown.load(Ordering::Acquire));assert!(control.terminal_write(||Ok(1)).is_err());
+            assert!(control.request("original",&cwd,ConversationRequest::Detach).is_err(),"bootstrap 실패와 worker join 완료는 다른 경계다");
+            assert!(control.0.owned.load(Ordering::Acquire));assert!(control.terminal_write(||Ok(1)).is_err());
+            finish.send(()).unwrap();let deadline=Instant::now()+Duration::from_secs(3);
+            while !control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished()&&Instant::now()<deadline {thread::yield_now();}
+            assert!(control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished());
+            control.request("original",&cwd,ConversationRequest::Detach).unwrap();assert!(!control.0.owned.load(Ordering::Acquire));assert_eq!(control.terminal_write(||Ok(1)).unwrap(),1);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn standard_resume_failure_after_successful_preflight_preserves_unknown_and_pending_ownership() {
+        for outcome in ["invalidRequest","internal","malformed","pendingError","eof"] {
+            let(control,mut rpc,listener)=fixture();control.configure(&json!({})).unwrap();
+            let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();let worker_cwd=cwd.clone();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
+                let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));standard_history_preflight(&mut socket);
+                let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");assert_eq!(resume["params"],json!({"threadId":"original","excludeTurns":true}));
+                if outcome=="eof" {return;}
+                if outcome=="pendingError" {socket.send(Message::Text(json!({"id":17,"method":"item/tool/requestUserInput","params":{"threadId":"original","questions":[]}}).to_string().into())).unwrap();}
+                if outcome=="malformed" {reply(&mut socket,&resume,json!({}));}
+                else {socket.send(Message::Text(json!({"id":resume["id"],"error":{"code":if outcome=="internal"{-32603}else{-32600},"message":"arbitrary resume error"}}).to_string().into())).unwrap();}
+                assert_closed_without_input(&mut socket);
+            });
+            let(failed,failure)=mpsc::sync_channel(1);let(start,started)=mpsc::sync_channel(1);
+            install_actor(&control,move|state,receiver,cancelled|{started.recv_timeout(Duration::from_secs(3)).unwrap();let error=serve(&state,&mut rpc,"original",&worker_cwd,receiver,&cancelled,&Mutex::new(None)).unwrap_err();failed.send((error,rpc.next_id)).unwrap();});
+            let(reply,attached)=mpsc::sync_channel(1);control.0.worker.lock().unwrap().as_ref().unwrap().sender.try_send(Work{request:ConversationRequest::Attach,reply,deadline:Instant::now()+RPC_TIMEOUT,send_context:None}).ok().unwrap();
+            start.send(()).unwrap();
+            let(error,sent)=failure.recv_timeout(Duration::from_secs(3)).unwrap();assert!(!error.is_empty());assert_eq!(sent,4);assert!(attached.recv_timeout(Duration::from_secs(3)).is_err());
+            control.observer_read_state(&json!({"thread":{"status":{"type":"idle"}}})).unwrap();control.observer_disconnected();
+            observe_message(&control.0,"original",json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"irrelevant-turn","status":"completed"}}})).unwrap();
+            assert!(control.0.unknown.load(Ordering::Acquire));
+            let deadline=Instant::now()+Duration::from_secs(3);while !control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished()&&Instant::now()<deadline {thread::yield_now();}
+            assert!(control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished());
+            assert!(control.request("original",&cwd,ConversationRequest::HandoffToTerminal).is_err());assert!(control.0.owned.load(Ordering::Acquire));assert!(control.terminal_write(||Ok(1)).is_err());
+            assert_eq!(control.pending_snapshot().unwrap().2.len(),usize::from(outcome=="pendingError"));server.join().unwrap();control.cancel();
+        }
+    }
+    #[test]
+    fn standard_resume_timeout_after_transmission_remains_unknown_without_retry() {
+        let(control,mut rpc,listener)=fixture();install_finished_worker(&control);
+        let(ready,waiting)=mpsc::sync_channel(1);
+        let server=thread::spawn(move||{
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            ready.send(()).unwrap();
+            let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");assert_closed_without_input(&mut socket);
+        });
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();rpc.deadline=Some(Instant::now()+Duration::from_secs(1));
+        assert!(call(&control.0,&mut rpc,"original","thread/resume",json!({"threadId":"original","excludeTurns":true}),&AtomicBool::new(false)).is_err());
+        assert_eq!(rpc.next_id,1);assert!(control.0.unknown.load(Ordering::Acquire));assert!(control.request("original",Path::new("."),ConversationRequest::HandoffToTerminal).is_err());assert!(control.terminal_write(||Ok(1)).is_err());drop(rpc);server.join().unwrap();control.cancel();
     }
 
     #[test]
@@ -1110,6 +1209,7 @@ mod tests {
                 let init=read_request(&mut socket);assert_eq!(init["method"],"initialize");reply(&mut socket,&init,initialized);assert_eq!(read_request(&mut socket)["method"],"initialized");
                 if !passive {
                     let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                    standard_history_preflight(&mut socket);
                 }
                 let attach=read_request(&mut socket);assert_eq!(attach["method"],if passive{PASSIVE_SUBSCRIBE}else{"thread/resume"});
                 let mut response=json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}});
@@ -1231,6 +1331,7 @@ mod tests {
                 let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
                 let init=read_request(&mut socket);reply(&mut socket,&init,json!({}));assert_eq!(read_request(&mut socket)["method"],"initialized");
                 let read=read_request(&mut socket);assert_eq!(read["method"],"thread/read");reply(&mut socket,&read,json!({"thread":{"id":"original","cwd":expected_cwd,"status":{"type":"idle"}}}));
+                standard_history_preflight(&mut socket);
                 let resume=read_request(&mut socket);assert_eq!(resume["method"],"thread/resume");reply(&mut socket,&resume,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"idle"}}}));
                 let history=read_request(&mut socket);assert_eq!(history["method"],"thread/turns/list");reply(&mut socket,&history,json!({"data":[]}));
                 let compact=read_request(&mut socket);assert_eq!(compact["method"],"thread/compact/start");received.send(()).unwrap();reply_ready.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -1271,6 +1372,13 @@ mod tests {
             if !completed_early {
                 assert!(control.0.owned.load(Ordering::Acquire));assert!(control.terminal_write(||Ok(1)).is_err());
                 assert!(control.0.events.lock().unwrap().context_compaction.is_some());
+                control.0.events.lock().unwrap().observer_connected=true;
+                let before=control.request("original",&cwd,ConversationRequest::ContextStatus).unwrap();
+                control.observer_disconnected();
+                let after=control.request("original",&cwd,ConversationRequest::ContextStatus).unwrap();
+                assert_eq!(after["compacting"],true);assert_eq!(after["guiConnected"],true);
+                assert_eq!(after["active"],before["active"]);assert_eq!(after["tokenUsageFresh"],before["tokenUsageFresh"]);
+                assert!(control.request("original",&cwd,if handoff{ConversationRequest::HandoffToTerminal}else{ConversationRequest::Detach}).is_err(),"metadata 단절 뒤에도 압축 완료 전에는 해제하면 안 된다");
                 // 최종 release도 worker.stop 전에 거절해 같은 socket을 남긴다.
                 assert!(control.release(false,handoff).is_err());
                 {let worker=control.0.worker.lock().unwrap();let worker=worker.as_ref().unwrap();assert!(!worker.cancelled.load(Ordering::Acquire));assert!(worker.closing.is_none());assert!(!worker.join.as_ref().unwrap().is_finished());}
@@ -1377,6 +1485,55 @@ mod tests {
         // 연결 여부만 다시 true로 해도 과거값이 fresh로 부활하지 않는다.
         control.0.events.lock().unwrap().observer_connected=true;assert_eq!(control.context_status("original").unwrap()["tokenUsageFresh"],false);
         println!("수신 순서: observer 56000 → GUI 99000 무시 → observer 모델 변경 미확인 → 12000 감소 수락 → GUI 인계 후 8000 갱신 → 단절/재연결 과거값 미확인");
+    }
+    #[test]
+    fn standard_gui_context_survives_metadata_disconnect_during_bootstrap_and_live_usage() {
+        for bootstrap in [false,true] {
+            let(control,_rpc,_listener)=fixture();let(finish,finished)=mpsc::sync_channel(1);
+            install_actor(&control,move|_state,_receiver,_cancelled|{finished.recv_timeout(Duration::from_secs(3)).unwrap();});
+            {let mut events=control.0.events.lock().unwrap();events.gui_protocol=Some(RuntimeProtocol::default());events.connected=!bootstrap;events.observer_connected=true;}
+            observe_message(&control.0,"original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"gui-turn"}}})).unwrap();
+            observe_message(&control.0,"original",json!({"method":"thread/tokenUsage/updated","params":{"threadId":"original","turnId":"gui-turn","tokenUsage":{"total":{"totalTokens":100,"inputTokens":100,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":100,"inputTokens":100,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}})).unwrap();
+            let before=control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap();
+            let activity=control.0.events.lock().unwrap().context_activity_revision;
+            assert_eq!(before["active"],true);assert_eq!(before["tokenUsageFresh"],!bootstrap);
+            control.observer_disconnected();
+            let after=control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap();
+            assert_eq!(after["active"],true);assert_eq!(after["tokenUsage"],before["tokenUsage"]);assert_eq!(after["tokenUsageFresh"],!bootstrap);
+            assert!(after["revision"].as_u64().unwrap()>before["revision"].as_u64().unwrap());
+            {let events=control.0.events.lock().unwrap();assert_eq!(events.context_turn.as_deref(),Some("gui-turn"));assert_eq!(events.context_activity_revision,activity);assert!(!events.observer_connected);assert!(!events.observer_compact_supported);}
+            if bootstrap {
+                control.0.events.lock().unwrap().connected=true;
+                assert_eq!(control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap()["tokenUsageFresh"],true,"GUI bootstrap에서 관측한 사용량은 metadata 단절로 소실되면 안 된다");
+            }
+            finish.send(()).unwrap();let deadline=Instant::now()+Duration::from_secs(3);
+            while !control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished()&&Instant::now()<deadline {thread::yield_now();}
+            assert!(control.0.worker.lock().unwrap().as_ref().unwrap().join.as_ref().unwrap().is_finished());
+            let disconnected=control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap();
+            assert_eq!(disconnected["guiConnected"],false);assert_eq!(disconnected["tokenUsageFresh"],false,"GUI worker 자체가 끝나면 사용량은 stale이어야 한다");control.cancel();
+        }
+    }
+    #[test]
+    fn metadata_disconnect_still_invalidates_released_passive_and_unowned_context() {
+        for source in ["releasedStandard","passive","noGui"] {
+            let(control,_rpc,_listener)=fixture();
+            {let mut events=control.0.events.lock().unwrap();events.gui_protocol=match source {"releasedStandard"=>Some(RuntimeProtocol::default()),"passive"=>Some(extension_protocol()),_=>None};events.connected=source=="passive";events.observer_connected=true;events.observer_compact_supported=true;}
+            control.0.owned.store(source=="passive",Ordering::Release);
+            for message in [
+                json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"old-turn"}}}),
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"original","turnId":"old-turn","tokenUsage":{"total":{"totalTokens":100,"inputTokens":100,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":100,"inputTokens":100,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
+                json!({"method":"item/started","params":{"threadId":"original","turnId":"old-turn","item":{"id":"old-item","type":"contextCompaction"}}}),
+            ] {
+                if source=="releasedStandard" {observe_message(&control.0,"original",message).unwrap();}
+                else {control.observer_message("original",message).unwrap();}
+            }
+            let before=control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap();assert_eq!(before["active"],true);assert_eq!(before["compacting"],true);
+            control.0.unknown.store(true,Ordering::Release);control.observer_disconnected();
+            let after=control.request("original",Path::new("."),ConversationRequest::ContextStatus).unwrap();
+            assert!(after["active"].is_null(),"{source}");assert_eq!(after["compacting"],false,"{source}");assert_eq!(after["tokenUsageFresh"],false,"{source}");
+            {let events=control.0.events.lock().unwrap();assert!(events.context_turn.is_none());assert!(!events.observer_connected);assert!(!events.observer_compact_supported);assert!(!events.token_usage_fresh);}
+            assert!(control.0.unknown.load(Ordering::Acquire),"observer 종료가 mutation 결과 불명을 해소하면 안 된다");
+        }
     }
     #[test]
     fn context_passive_resubscribe_keeps_old_usage_stale_until_a_new_observer_update() {

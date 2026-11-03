@@ -61,9 +61,10 @@ mobile control and cron are enabled only when their respective contracts are dec
 Unknown extension support stays disabled; version strings do not enable features.
 
 Known official CLI 0.166.0 limitation: before a new thread has its first message,
-switching from its terminal to the conversation view can fail with `no rollout found`.
-The thread can already appear loaded while its saved history is not available for
-`thread/resume`. Use the original terminal for the first message before switching.
+switching from its terminal to the conversation view can fail because history is not
+materialized yet (`no rollout found` or `not materialized`). A loaded thread does not
+prove its saved history is ready. Use the original terminal for your actual first
+message, then retry the view switch manually; this does not guarantee attachment.
 Desktop does not inject a message, replace the thread or treat this error as empty history.
 An advertised capability describes method support; it does not prove a thread is connected.
 Standard connections can answer questions delivered to their own conversation connection.

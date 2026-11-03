@@ -296,10 +296,80 @@ for (const unknown of [false, true]) {
     expect(await page.evaluate(() => (window as any).conversationFixture.owners)).toEqual([true]);
     expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'handoffToTerminal').length)).toBe(1);
     expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((entry: any) => entry.args.request?.type === 'detach').length)).toBe(0);
-    if (unknown) await expect(view(page).locator('.conversation-input')).toBeDisabled();
+    if (unknown) { await expect(view(page).locator('.conversation-input')).toBeDisabled(); await expect(view(page).locator('.conversation-send')).toBeDisabled(); }
     else await expect(view(page).locator('.conversation-input')).toBeEnabled();
+    await page.waitForTimeout(850);
+    const requests = await page.evaluate(() => (window as any).conversationFixture.calls.map((entry: any) => entry.args.request?.type));
+    expect(requests.filter((type: string) => type === 'attach')).toHaveLength(1);
+    expect(requests).not.toContain('send');
   });
 }
+
+test('attach 실패 뒤 명시 터미널 인계와 수동 재연결은 초안과 입력 소유권을 보존한다', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = window as any; state.isTauri = true; state.attachRecoveryCalls = [];
+    let callback = 0;
+    state.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+    state.__TAURI_INTERNALS__ = {
+      transformCallback() { return ++callback; }, unregisterCallback() {},
+      async invoke(command: string, args: any = {}) {
+        state.attachRecoveryCalls.push({ command, args });
+        if (command === 'plugin:event|listen') return callback;
+        if (command === 'get_ui_language') return 'ko';
+        if (command === 'load_layout') return { version: 1, columns: 1, sessions: [] };
+        if (command === 'list_projects') return [];
+        if (command === 'list_sessions') return [{ id: 'attach-recovery', generation: 1, title: '연결 복구 시험', cwd: 'D:\\Work', threadId: 'existing-thread', state: 'idle', active: true, runtimeFeatures: { conversation: true } }];
+        if (command === 'conversation_request') {
+          const request = args.request;
+          if (request.type === 'attach') {
+            if (state.failAttach) throw Error('fixture resume rejected before sending');
+            return { threadId: 'existing-thread', activeTurnKnown: true, activeTurnId: null };
+          }
+          if (['page', 'items', 'models'].includes(request.type)) return { data: [], nextCursor: null };
+          if (request.type === 'poll') return { events: [], pendingRequests: [], connected: true, gap: false };
+          return {};
+        }
+        return null;
+      },
+    };
+  });
+  await page.goto('/');
+  const card = page.locator('.terminal-card[data-id="attach-recovery"]');
+  const toggle = card.locator('.conversation-toggle'); const input = card.locator('.conversation-input');
+  await toggle.click();
+  await input.fill('연결 실패와 수동 복구 사이 보존할 미전송 초안');
+  await toggle.click();
+  await expect(card.locator('.terminal-host')).toBeVisible();
+  await page.evaluate(() => { (window as any).failAttach = true; });
+  await toggle.click();
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveValue('연결 실패와 수동 복구 사이 보존할 미전송 초안');
+  await expect(card.locator('.terminal-host')).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForTimeout(850);
+  const requests = () => page.evaluate(() => (window as any).attachRecoveryCalls.filter((entry: any) => entry.command === 'conversation_request').map((entry: any) => entry.args.request.type));
+  expect((await requests()).filter((type: string) => type === 'attach')).toHaveLength(2);
+  expect(await page.evaluate(() => (window as any).attachRecoveryCalls.some((entry: any) => entry.command === 'session_write' || entry.args.request?.type === 'send'))).toBe(false);
+  await toggle.click();
+  await expect(card.locator('.terminal-host')).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(input).toHaveValue('연결 실패와 수동 복구 사이 보존할 미전송 초안');
+  await card.locator('.xterm-helper-textarea').press('z');
+  await expect.poll(() => page.evaluate(() => (window as any).attachRecoveryCalls.some((entry: any) => entry.command === 'session_write' && entry.args.id === 'attach-recovery' && entry.args.generation === 1 && entry.args.data === 'z'))).toBe(true);
+  await page.evaluate(() => { (window as any).failAttach = false; });
+  await toggle.click();
+  await expect(card.locator('.terminal-host')).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(input).toBeEnabled();
+  await expect(input).toHaveValue('연결 실패와 수동 복구 사이 보존할 미전송 초안');
+  await expect(card.locator('.conversation-send')).toBeEnabled();
+  const types = await requests();
+  expect(types.filter((type: string) => type === 'attach')).toHaveLength(3);
+  expect(types.filter((type: string) => type === 'handoffToTerminal')).toHaveLength(2);
+  expect(types).not.toContain('detach');
+  expect(types).not.toContain('send');
+  expect(await page.evaluate(() => (window as any).attachRecoveryCalls.some((entry: any) => entry.command === 'start_session'))).toBe(false);
+});
 
 test('지연 항목 스냅샷은 먼저 표시된 실시간 완료·델타를 덮지 않는다', async ({ page }) => {
   await conversation(page);
