@@ -1129,7 +1129,7 @@ mod tests {
                     "forgedSuccess"=>reply(&mut socket,&preflight,json!({"historyUnavailable":true,"reason":"unmaterialized","data":[]})),
                     "malformed"=>reply(&mut socket,&preflight,json!({"data":{}})),
                     "oversize"=>reply(&mut socket,&preflight,json!({"data":[{},{}]})),
-                    _=>{socket.send(Message::Text(json!({"id":preflight["id"],"error":{"code":if outcome=="internal"{-32603}else{-32600},"message":if outcome=="invalidRequest"{"not materialized"}else{"arbitrary unrelated text"}}).to_string().into())).unwrap();},
+                    _=>{socket.send(Message::Text(json!({"id":preflight["id"],"error":{"code":if outcome=="internal"{-32603}else{-32600},"message":if outcome=="invalidRequest"{"not materialized"}else{"arbitrary unrelated text"}}}).to_string().into())).unwrap();},
                 }
                 assert_closed_without_input(&mut socket);
             });
