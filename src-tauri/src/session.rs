@@ -1118,18 +1118,24 @@ impl Engine {
     pub fn list_pending_questions(&self) -> Result<serde_json::Value,String> {
         let sessions: Vec<_> = self.inner.sessions.lock().map_err(|_| "session registry lock poisoned")?.values().cloned().collect();
         let mut items = Vec::new();
+        let mut complete = true;
         for session in sessions {
             let info = session.info()?;
             let process = session.process.lock().map_err(|_| "session process lock poisoned")?.clone();
             let connection = process.as_ref().map(|process|process.adapter.lock().map_err(|_| "session adapter lock poisoned").map(|adapter|adapter.as_ref().and_then(CodexSession::conversation_connection))).transpose()?.flatten();
             if connection.as_ref().is_some_and(|connection|connection.is_deleted()) { continue; }
-            let (owned,connected,pending) = connection.as_ref().map(|connection|connection.pending_snapshot()).transpose()?.unwrap_or((false,false,Vec::new()));
+            let (owned,connected,pending,metadata_complete) = connection.as_ref().map(|connection|connection.question_snapshot()).transpose()?.unwrap_or((false,false,Vec::new(),!info.active));
+            if info.active && !metadata_complete {complete=false;}
             for request in &pending {
                 let method = request["method"].as_str().unwrap_or("");
-                let kind = match method {"item/tool/requestUserInput" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"};
+                let kind = match method {"item/tool/requestUserInput" | "opendiy/asyncQuestion" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"};
                 let request_id = request["requestId"].as_str().ok_or("대기 요청 식별자가 없습니다.")?;
                 let mut item = serde_json::json!({"id":format!("{}:{}:{}:{}",info.id,info.thread_id.as_deref().unwrap_or(""),info.generation,request_id),"threadId":info.thread_id,"sessionId":info.id,"generation":info.generation,"requestId":request_id,"kind":kind,"sessionTitle":info.title,"title":if kind=="question" {"사용자 답변 대기"} else if kind=="approval" {"사용자 승인 대기"} else {"터미널에서 확인할 요청"},"message":request["params"]["reason"].as_str().or_else(||request["params"]["command"].as_str()).unwrap_or(""),"canRespond":owned&&connected&&request["guiOwned"]==true&&kind!="unsupported"&&request["responded"]!=true,"responded":request["responded"]==true});
                 if kind=="question" {item["questions"]=request["params"]["questions"].clone();}
+                if request["source"]=="async" {
+                    item["source"]=serde_json::json!("async");item["turnId"]=request["turnId"].clone();item["questionItemId"]=request["questionItemId"].clone();
+                    item["canRespond"]=serde_json::json!(owned&&connected&&metadata_complete&&request["inputAvailable"]==true&&request["metadataAvailable"]==true&&request["responded"]!=true);
+                }
                 item["metadataAvailable"]=request["metadataAvailable"].clone();
                 if kind=="approval" {
                     let options=codex::ConversationConnection::approval_decisions(&request["params"]).into_iter().map(|decision|serde_json::json!({"id":decision,"label":match decision {"accept"=>"승인","acceptForSession"=>"이 세션에서 승인","decline"=>"거절",_=>"취소"}})).collect::<Vec<_>>();
@@ -1142,7 +1148,7 @@ impl Engine {
                 items.push(serde_json::json!({"id":format!("{}:{}:{}:terminal",info.id,info.thread_id.as_deref().unwrap_or(""),info.generation),"threadId":info.thread_id,"sessionId":info.id,"generation":info.generation,"kind":"unsupported","title":"터미널에서 답변할 요청","message":"현재 연결에서 질문 원문을 확인할 수 없습니다. 원래 터미널에서 확인하세요.","sessionTitle":info.title,"canRespond":false}));
             }
         }
-        Ok(serde_json::json!({"items":items}))
+        Ok(serde_json::json!({"items":items,"complete":complete}))
     }
 
     pub fn list_external(&self) -> Result<Vec<codex::ExternalSession>, String> {
