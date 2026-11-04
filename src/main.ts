@@ -297,16 +297,22 @@ function visibleOrder() { return order.filter(id => isVisible(id)); }
 function visibleSessions() { return visibleOrder().map(id => sessions.get(id)!); }
 function isVisible(id: string) { const session = sessions.get(id); return !!session && (!selectedProject || sessionProjectKey(session, importedProjects) === selectedProject); }
 function selectProject(key: string, scrollExisting = false) {
+  const projectChanged = key !== selectedProject;
   const previousVisible = new Set(visibleOrder().filter(id => !terminals.get(id)!.card.hidden));
   projectSelectionVersion++; selectedProject = key; maximized = ''; dragging = '';
   if (!isVisible(active)) active = visibleOrder()[0] ?? '';
   for (const [id, view] of terminals) { view.input.cancelPending(); view.resize.cancelPending(); clearTimeout(view.resizeTimer); refreshInputState(id); if (!isVisible(id)) view.terminal.blur(); }
   bindText($('#search-result'), '', '');
-  const newlyVisible = new Set(visibleOrder().filter(id => scrollExisting || !previousVisible.has(id)));
+  const newlyVisible = new Set(visibleOrder().filter(id => projectChanged || scrollExisting || !previousVisible.has(id)));
   renderAll();
   const selectionVersion = projectSelectionVersion;
   for (const id of newlyVisible) {
     const view = terminals.get(id)!; const generation = sessions.get(id)!.generation;
+    // Already visible conversation cards do not reload through setForeground.
+    const conversation = conversations.get(id);
+    if (conversation && previousVisible.has(id)) void conversation.revealLatest(() =>
+      projectSelectionVersion === selectionVersion && terminals.get(id) === view &&
+      sessions.get(id)?.generation === generation && !view.card.hidden && conversations.get(id) === conversation);
     // 선행 출력 파싱 뒤, 현재 선택과 터미널에만 최신 화면 위치를 적용한다.
     view.terminal.write('', () => {
       if (projectSelectionVersion !== selectionVersion || terminals.get(id) !== view || sessions.get(id)?.generation !== generation || view.card.hidden) return;

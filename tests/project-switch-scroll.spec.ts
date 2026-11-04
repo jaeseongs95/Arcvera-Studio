@@ -9,7 +9,7 @@ async function workspace(page: Page) {
     const response = await route.fetch();
     let body = await response.text();
     const original = body;
-    body = body.replace('visibleOrder().filter((id) => scrollExisting || !previousVisible.has(id))', 'visibleOrder()');
+    body = body.replace('visibleOrder().filter((id) => projectChanged || scrollExisting || !previousVisible.has(id))', 'visibleOrder()');
     expect(body, 'isolated mutation must change the served module').not.toBe(original);
     await route.fulfill({ response, body });
   });
@@ -68,6 +68,29 @@ test('PS-1 newly revealed terminal reaches bottom without stealing project tab f
   await expect(rows).not.toContainText('LATEST_MARKER');
   await tab(page, 'beta').click(); await tab(page, 'alpha').click();
   await expect(rows).toContainText('LATEST_MARKER');
+  await expect(tab(page, 'alpha')).toBeFocused();
+});
+
+test('PS-6 switching from all projects to an already visible project still reveals the latest message', async ({ page }) => {
+  await workspace(page); await terminalHistory(page);
+  const rows = card(page).locator('.xterm-rows');
+  await expect(rows).toContainText('LATEST_MARKER');
+  await card(page).locator('.xterm-helper-textarea').press('Shift+PageUp');
+  await expect(rows).not.toContainText('LATEST_MARKER');
+  await tab(page, 'alpha').click();
+  await expect(rows).toContainText('LATEST_MARKER');
+  await expect(tab(page, 'alpha')).toBeFocused();
+});
+
+test('PS-7 switching from all projects resets an already visible structured conversation to its latest message', async ({ page }) => {
+  await workspace(page); await card(page).locator('.conversation-toggle').click();
+  const messages = card(page).locator('.conversation-messages');
+  await expect(messages.locator('article')).toHaveCount(30);
+  await messages.evaluate(el => el.scrollTop = 0);
+  await card(page).locator('.conversation-input').fill('preserved draft');
+  await tab(page, 'alpha').click();
+  await expect.poll(() => gap(messages)).toBeLessThan(2);
+  await expect(card(page).locator('.conversation-input')).toHaveValue('preserved draft');
   await expect(tab(page, 'alpha')).toBeFocused();
 });
 

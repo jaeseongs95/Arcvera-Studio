@@ -9,6 +9,8 @@
 | PS-3 | 구조화 대화 Alpha→Beta→Alpha, 늦은 items 응답 | 응답 렌더 완료 후 최하단, 초안·탭 초점 유지 |
 | PS-4 | 지연 응답 중 Alpha→Beta→Alpha | 숨은 뷰에 이전 요청이 적용되지 않으며 현재 선택만 갱신 |
 | PS-5 | 이력 지연 중 세션 inactive 관측→닫기 | 늦은 요청이 카드를 복원하거나 초점을 탈취하지 않음 |
+| PS-6 | 전체 목록에서 과거 내용으로 스크롤한 뒤 Alpha 선택 | 이미 표시 중이던 카드라도 다른 프로젝트 키로 전환하면 마지막 메시지로 이동 |
+| PS-7 | 전체 목록에서 구조화 대화를 위로 읽은 뒤 Alpha 선택 | 숨김·재조회가 없는 명시 프로젝트 전환에서도 마지막 메시지로 이동하고 초안·탭 초점 유지 |
 
 실행: `npx playwright test tests/project-switch-scroll.spec.ts --reporter=line`. 기존 playwright.config.ts와 Vite 1420 사용, 병렬 워커 1. 종료 코드와 원시 출력은 root에 전달한다. 브라우저 격리 응답에서 표적 mutation을 적용해 같은 시험이 결함을 탐지하는지 확인한다. 네이티브 프로세스·실제 모델과 실제 사용자 부하는 검증 범위 밖이다.
 
@@ -29,3 +31,15 @@
 - 최초 terminal oracle은 `.xterm-viewport` DOM scrollHeight를 읽어 2개가 실패했다. 설치된 xterm 6의 실제 UI는 별도 scrollable element를 사용함을 소스와 기존 시험에서 확인하고, `Shift+PageUp`과 실제 `.xterm-rows`에 나타난 메시지로 교체했다. 이 최초 실패를 제품 결함 재현으로 세지 않는다.
 - 최초 mutation은 스크롤 callback이 끝나기 전 negative assertion이 통과했다. 출력 seq2 ACK 뒤 2 animation frame의 렌더 barrier를 두어 실제 완료 후 검사하도록 보강했다. 이후 동일 최종 시험에서 RED/GREEN을 확인했다. 고정 sleep이나 timeout 증가는 사용하지 않았다.
 - 중간 후보 `npm run build`는 최초 visibilitychange 인자 타입 오류 후 수정하여 종료 0이었다. 최종 후보의 통합 build와 기존 명시 move 회귀 시험은 root가 실행한다. 브라우저 합성 RPC 검사이며 실제 앱·모델·사용자 부하는 NOT_RUN이다.
+
+## 추가 경계에서 확인한 결함과 수정
+
+독립 UI 리뷰가 `전체 → Alpha` 경계를 추가로 확인했다. 앞선 PS-1은 `Beta → Alpha`만 검증해, 이미 보이던 카드가 프로젝트 전환 이후에도 보이는 경우를 놓쳤다.
+
+- 후보 318a8e6의 terminal은 previousVisible 차집합 때문에 이 명시 전환을 잘못 제외했다. 프로젝트 키가 바뀌면 대상 세션 전체를 이동하고, 동일 키 재선택만 읽기 위치를 보존하도록 수정했다.
+- 구조화 대화도 같은 전환에서 `setForeground(true)`가 기존 true 상태로 즉시 반환했다. 독립 판별검사에서 후보와 base의 selectProject를 각각 브라우저에 적용해도 scrollTop 0, 하단 gap 6037, 항목 조회 1회였으며, Beta→Alpha 대조만 gap 0으로 돌아왔다. 두 revision의 conversation.ts blob은 같았다. 따라서 이 경계는 기존 결함 근거이며, 사용자 실제 창의 원인을 확정한 것은 아니다.
+- PS-6 terminal, PS-7 구조화 사례를 제품 수정 전에 실행해 각각 FAIL(exit 1)을 확인했다. trace는 `artifacts/project-all-switch-red`, `artifacts/project-all-structured-red`에 보존했다.
+- 구조화 컨트롤러의 기존 최신 구간 탐색을 공개 메서드로 재사용한다. 이미 보이던 대화에만 명시 탐색을 연결하며, 현재 프로젝트 선택·컨트롤러·프로세스 세대·이력 조회 순서 확인 후 마지막 위치를 적용한다. 초안과 탭 초점은 바꾸지 않는다. 숨김에서 복귀하는 기존 경로는 중복 조회하지 않는다.
+- 독립 재현 원본: `D:/codex/build/odHooksSchema/review-ui/reproduction.json`, `structured-reproduction.json`. 최초 5사례로 원증상을 재현했다고 해석하지 않는다.
+- 전체 404사례 검사는 후보 수정 필요로 146번째 통과 후 본인이 생성한 시험 프로세스만 중단했다(exit 1). 미완료 실행을 전체 통과로 세지 않는다. 최종 후보의 전체 검증은 CI로 이어간다.
+- 수정 후 `npx playwright test tests/project-switch-scroll.spec.ts tests/project-tabs.spec.ts --output=artifacts/project-all-switch-green`: 38 PASS, exit 0, 47.3초. PS-6/7과 기존 세션 이동·프로젝트 필터·읽기 위치·지연 응답을 함께 확인했다. `npm run build` exit 0. 실제 설치 앱의 동작은 아직 이 근거에 포함하지 않는다.
