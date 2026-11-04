@@ -736,14 +736,14 @@ async function resolveOrphan(id: string) {
 function receiveOutput(output: Output) {
   if (retiredRestartSessions.has(output.id)) { ack(output); return; }
   const session = sessions.get(output.id);
-  if (!session) {
+  if (session && !acceptOutput(session, output)) { ack(output); return; }
+  if (!session || session.state === 'starting') {
     const queue = pending.get(output.id) ?? [];
     // Bound startup metadata races; do not permit an orphan event to grow memory forever.
-    if (pending.size < 32 && queue.reduce((size, part) => size + part.data.length, 0) + output.data.length <= 524288) { queue.push(output); pending.set(output.id, queue); void resolveOrphan(output.id); }
+    if ((pending.has(output.id) || pending.size < 32) && queue.reduce((size, part) => size + part.data.length, 0) + output.data.length <= 524288) { queue.push(output); pending.set(output.id, queue); void resolveOrphan(output.id); }
     else { notify('메타데이터가 없는 터미널 출력이 버퍼 한도를 초과했습니다.', true, 'Terminal output without metadata exceeded the buffer limit.'); ack(output); }
     return;
   }
-  if (!acceptOutput(session, output)) { ack(output); return; }
   session.seq = output.seq;
   const terminal = terminals.get(output.id)?.terminal;
   if (terminal) terminal.write(output.data, () => ack(output)); else ack(output);
