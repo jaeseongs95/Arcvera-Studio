@@ -55,3 +55,7 @@ proof/result: 사전 계획 작성 시 제품 검증은 전부 NOT_RUN이며 red
 
 - C07 회귀 탐지 확인: 의도적으로 선행 finish를 유지한 `cba044b`/CI `41826480978`은 334 PASS·1 FAIL·6 ignored였다. 새 actualEngine.launch 시험만 stopped(slot 잔존)→unknown 두 번의 완료 발표를 검출했다. 이전 두 실패인 출력 overflow 분류와 공유 proxy 회수 경합 시험은 이 후보에서 통과했다.
 - 같은 실패에서 원래 child handle의 미신호 완료가 드러나 upstream WinChild의 exit-code 단독 종료판정을 별도 판별했다. 실제 kill/JobTerminate 각128회에서 wait가 signal 전에 반환하는 RED를 확인했고, signal 우선 판정으로 변경 후 각128회 조기반환0 및 exit259 회귀를 확인했다. 이 부분 standalone은 library9 PASS·fixture entry1 ignored·doctest1 PASS이며 전체 후보의 통합 GREEN은 별도로 확인한다.
+
+- O04 보강: 실제 child·Job·파이프를 가진 상태에서 pty-output/pty-reaper/Proxy deadline·reader/CLI stdout·stderr 각 worker 설치를 1회 실패시킨다. 시험에만 포함되는 caller-thread-local scope가 주입하며, 원래 process/Job handle·진입 marker·앞서 생성한 worker의 실제 시작/종료·완료 이벤트를 관측한다. 생산 코드는 표준 Builder.spawn 오류를 반환하고 reaper 설치 실패에도 reader JoinHandle을 ProcessControl이 보유·회수한다. 이 추가 회귀는 최종 후보 CI에서 실행해야 한다.
+- `a4a1c1d`는 native 335 PASS·6 ignored 및 vendor9 PASS·1 ignored 뒤 E2E 384 PASS·1 FAIL·1 skipped였다. trace의 직접 실패는 xterm SearchAddon 개발 모듈 요청의 net::ERR_NO_BUFFER_SPACE와 빈 #app이며, 기능 버튼 oracle에 도달하지 못했다. 원시 실패를 보존하고 브라우저/네이티브 검증을 별도 Windows 실행기로 분리한다. 기존 required windows job은 양쪽 성공을 확인한 뒤에만 패키징한다.
+- CI의 화면 검증은 같은 npm build 배포 번들을 preview로 제공한다. 기존 사례·timeout·기대값은 변경하지 않는다. 이 PC에서 번들 모드의 원래 capability 5사례를 실행해5 PASS·exit0을 확인했으며 전체 E2E와 패키징은 최종 후보 결과를 별도로 확인한다.

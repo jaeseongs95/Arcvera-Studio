@@ -55,6 +55,7 @@ struct ProcessControl {
     // pipe. ClosePseudoConsole tears down that pipe and wakes the writer.
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
+    reader: Mutex<Option<thread::JoinHandle<Result<(), String>>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     job: Mutex<Option<ProcessJob>>,
     adapter: Mutex<Option<CodexSession>>,
@@ -96,6 +97,7 @@ impl Drop for LaunchGuard {
             process.close_io();
             let adapter = process.adapter.lock().unwrap_or_else(|e| e.into_inner()).take();
             drop(adapter);
+            let _ = process.join_reader();
         }
         let _ = self.session.finish("error");
     }
@@ -118,6 +120,11 @@ impl ProcessControl {
         drop(master); // Reader keeps draining during ClosePseudoConsole.
         let writer = self.writer.lock().unwrap_or_else(|e| e.into_inner()).take();
         drop(writer);
+    }
+
+    fn join_reader(&self) -> Option<thread::Result<Result<(), String>>> {
+        let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
+        reader.map(|reader| reader.join())
     }
 
     fn terminate(&self) -> Result<(), String> {
@@ -444,7 +451,7 @@ impl Engine {
             let child = OwnedChild { child: raw_child, reaped: false };
             drop(pair.slave);
             let killer = child.child.clone_killer();
-            let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
+            let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), reader: Mutex::new(None), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
                 #[cfg(windows)] cron:Mutex::new(None),
                 termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false) });
             *session.process.lock().map_err(|_| "session process lock poisoned")? = Some(process.clone());
@@ -471,7 +478,7 @@ impl Engine {
             Err(error) => return Err(error),
         };
         let reading = session.clone();
-        let reader_thread = thread::Builder::new().name("pty-output".into()).spawn(move || -> Result<(), String> {
+        let reader_thread = crate::owned_worker::spawn("pty-output", move || -> Result<(), String> {
             let mut decoder = Utf8Decoder::default();
             let mut buffer = [0u8; 8192];
             let mut delivering = true;
@@ -496,9 +503,12 @@ impl Engine {
             if delivering { if let Err(error) = reading.output(decoder.decode(&[], true)) { reading.fail_reader(); return Err(error); } }
             Ok(())
         }).map_err(|e| format!("start PTY reader: {e}"))?;
+        // A failed reaper spawn drops its task captures. Keep the reader's join
+        // ownership in ProcessControl so LaunchGuard still reaps it on error.
+        *process.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader_thread);
         let waiting = session.clone();
         let launching_process = process.clone();
-        thread::Builder::new().name("pty-reaper".into()).spawn(move || {
+        crate::owned_worker::spawn("pty-reaper", move || {
             let waited = child.wait();
             // 공유 turn의 중단 판정 전에 PTY 종료를 세션 중단 완료로 발표하지 않는다.
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,12 +524,12 @@ impl Engine {
             drop(job);
             process.close_io();
             drop(adapter); // No registry/metadata lock is held across observer join.
-            let read_result = reader_thread.join();
+            let read_result = process.join_reader();
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());
             waiting.cleanup_failed.fetch_or(process.shared_cleanup_failed.load(Ordering::Acquire), Ordering::AcqRel);
             waiting.process.lock().unwrap_or_else(|e| e.into_inner()).take();
             let stopped = waiting.stop_requested.load(Ordering::Acquire);
-            let failed = !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Ok(Ok(())));
+            let failed = !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Some(Ok(Ok(()))));
             let state = if stopped { "stopped" } else if failed { "error" } else { "exited" };
             let shared_unconfirmed = shared && !process.shared_stop_attempted.load(Ordering::Acquire);
             drop(termination);

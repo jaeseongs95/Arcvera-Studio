@@ -6,6 +6,7 @@ mod flow;
 #[cfg(test)]
 mod launch_gate;
 mod owned_process;
+mod owned_worker;
 mod project;
 pub mod process_job;
 mod owned_tui_control;

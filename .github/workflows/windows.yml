@@ -7,14 +7,48 @@ on:
 permissions:
   contents: read
 jobs:
-  windows:
+  frontend:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install chromium
+      - name: Resource snapshot frontend-before
+        shell: pwsh
+        run: |
+          $sample = @{ phase = 'frontend-before'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
+          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
+          $sample | ConvertTo-Json -Depth 4 -Compress
+      - run: npm run test:e2e
+        env:
+          AGENT_GRID_BUNDLED_FRONTEND_TEST: '1'
+      - name: Resource snapshot frontend-after
+        if: always()
+        shell: pwsh
+        run: |
+          $sample = @{ phase = 'frontend-after'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
+          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
+          $sample | ConvertTo-Json -Depth 4 -Compress
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-validation-evidence
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+  native:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
-      # Bound simultaneous Windows process/PTY fixtures without changing their
-      # deadlines or the concurrency exercised inside each race test.
       RUST_TEST_THREADS: 2
     steps:
       - uses: actions/checkout@v4
@@ -26,15 +60,28 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: windows
           cache-on-failure: true
       - run: npm ci
       - run: node scripts/notices.mjs
-      - run: npm test
       - run: npm run build
+      - name: Resource snapshot native-before
+        shell: pwsh
+        run: |
+          $sample = @{ phase = 'native-before'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
+          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
+          $sample | ConvertTo-Json -Depth 4 -Compress
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
       - run: cargo test --locked --manifest-path src-tauri/vendor/portable-pty/Cargo.toml --lib -- --nocapture
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Resource snapshot native-after
+        if: always()
+        shell: pwsh
+        run: |
+          $sample = @{ phase = 'native-after'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
+          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
+          $sample | ConvertTo-Json -Depth 4 -Compress
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -44,8 +91,34 @@ jobs:
             src-tauri/target/debug/deps/agent_grid_lib-*.exe
           if-no-files-found: warn
           retention-days: 14
-      - run: npx playwright install chromium
-      - run: npm run test:e2e
+  windows:
+    needs: [frontend, native]
+    if: ${{ always() }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 2
+    steps:
+      # Preserve the existing required windows check: neither failed nor
+      # skipped validation may permit packaging.
+      - name: Require both validation jobs
+        if: ${{ needs.frontend.result != 'success' || needs.native.result != 'success' }}
+        run: throw 'Frontend and native validation must both succeed'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - run: node scripts/notices.mjs
       - run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
       - name: Prepare portable executable and checksums
         shell: pwsh
@@ -67,15 +140,4 @@ jobs:
           name: opendiy-desktop-windows-x64
           path: artifacts/
           if-no-files-found: error
-          retention-days: 14
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: validation-evidence
-          path: |
-            src-tauri/Cargo.lock
-            src-tauri/target/debug/opendiy-desktop.exe
-            test-results/
-            artifacts/self-test.json
-          if-no-files-found: warn
           retention-days: 14

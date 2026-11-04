@@ -595,7 +595,7 @@ impl ProxyExpiry {
     fn new(job: &Arc<ProcessJob>, deadline: Option<Instant>, cancelled: Option<Arc<AtomicBool>>) -> Result<Self, String> {
         let job = Arc::downgrade(job);
         let (cancel, receiver) = mpsc::channel();
-        let worker = thread::Builder::new().name("codex-proxy-deadline".into()).spawn(move || {
+        let worker = crate::owned_worker::spawn("codex-proxy-deadline", move || {
             loop {
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline)
                     || cancelled.as_ref().is_some_and(|flag| flag.load(Ordering::Acquire)) {
@@ -687,13 +687,15 @@ impl Proxy {
         command.stdin(OwnedStdio::piped()).stdout(OwnedStdio::piped()).stderr(OwnedStdio::null());
         let job = Arc::new(ProcessJob::new(false)?);
         let (child, pending) = owned_process::spawn_suspended(&mut command, job.as_handle())?;
+        #[cfg(all(test,windows))]
+        worker_failure_tests::observe(&child,&job);
         let mut proxy = Self {child,job:Some(job),rpc:None,reader:None,expiry:None,finished:false};
         let result=(|| {
         if overall.is_some() || cancelled.is_some() { proxy.expiry = Some(ProxyExpiry::new(proxy.job.as_ref().unwrap(), overall, cancelled.clone())?); }
         let input = proxy.child.stdin.take().expect("piped stdin");
         let mut output = proxy.child.stdout.take().expect("piped stdout");
         let (sender, receiver) = mpsc::sync_channel(32);
-        let reader = thread::spawn(move || {
+        let reader = crate::owned_worker::spawn("codex-proxy-reader", move || {
             loop {
                 let mut bytes = vec![0; 16 * 1024];
                 let value = match output.read(&mut bytes) {
@@ -704,7 +706,7 @@ impl Proxy {
                 let failed = value.is_err();
                 if sender.send(value).is_err() || failed { break; }
             }
-        });
+        }).map_err(|error|format!("공유 proxy 출력 reader를 시작할 수 없습니다: {error}"))?;
         proxy.reader = Some(reader);
         check_cancelled(cancelled.as_ref())?;
         if overall.is_some_and(|deadline| Instant::now() >= deadline) { return Err("공유 연결 전체 기한이 만료되었습니다.".into()); }
@@ -741,6 +743,10 @@ impl Proxy {
             .map_err(|e| format!("Existing Codex daemon request failed: {e}; no daemon was started"))
     }
 }
+
+#[cfg(all(test,windows))]
+#[path="codex_worker_tests.rs"]
+pub(super) mod worker_failure_tests;
 
 fn external(thread: &Value, observed_at: &str) -> Result<ExternalSession, String> {
     let id = thread["id"].as_str().ok_or("Codex thread list entry has no ID")?.to_owned();
