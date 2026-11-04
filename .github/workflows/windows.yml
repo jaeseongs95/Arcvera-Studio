@@ -26,9 +26,13 @@ jobs:
           $sample = @{ phase = 'frontend-before'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
           try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
           $sample | ConvertTo-Json -Depth 4 -Compress
-      - run: npm run test:e2e
+      - name: Source fixtures and application regressions
+        run: npm run test:e2e
+      - name: Packaged frontend capability regressions
+        run: npm run test:e2e -- tests/conversation-capabilities.spec.ts --grep '^독립 기능 버튼'
         env:
           AGENT_GRID_BUNDLED_FRONTEND_TEST: '1'
+          AGENT_GRID_TEST_OUTPUT: test-results-bundled
       - name: Resource snapshot frontend-after
         if: always()
         shell: pwsh
@@ -40,7 +44,9 @@ jobs:
         if: always()
         with:
           name: frontend-validation-evidence
-          path: test-results/
+          path: |
+            test-results/
+            test-results-bundled/
           if-no-files-found: warn
           retention-days: 14
   native:
