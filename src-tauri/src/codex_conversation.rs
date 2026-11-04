@@ -623,7 +623,9 @@ fn restore_async_questions<S: Read+Write>(control: &Control, rpc: &mut Rpc<S>, t
                 let data=page["data"].as_array().filter(|data|data.len()<=32).ok_or("비동기 질문 이력 페이지의 형식 또는 크기가 올바르지 않습니다.")?;
                 inspected+=data.len();
                 if bytes>async_questions::HISTORY_BYTES || inspected>async_questions::HISTORY_ITEMS {return Err("현재 작업의 질문 이력 조회 상한에 도달했습니다. 전체 미응답 상태를 확인하지 못했습니다.".into());}
-                items.extend(data.iter().filter(|item|matches!(item["type"].as_str(),Some("agentMessage" | "userMessage"))).cloned());
+                // R36 returns ThreadItemEntry {turnId,item,...}. The reducer
+                // validates every envelope before replacing any previous state.
+                items.extend(data.iter().cloned());
                 match page.get("nextCursor") {
                     None|Some(Value::Null)=>break,
                     Some(Value::String(next)) if !next.is_empty()&&next.len()<=1024&&cursors.insert(next.clone())=>cursor=Some(next.clone()),
@@ -1036,7 +1038,8 @@ mod tests {
     use super::*;
     fn supported_initialize() -> Value { json!({"opendiyCapabilities":{"passiveSubscription":true,"compactStartIfIdle":true}}) }
 
-    fn async_item(call: &str) -> Value { json!({"type":"agentMessage","id":call,"delivery":"async","questions":[{"title":"계속할까요?","options":["진행","보류"]}]}) }
+    fn async_item(call: &str) -> Value { json!({"type":"agentMessage","id":call,"text":"계속할까요?","delivery":"async","questions":[{"title":"계속할까요?","options":["진행","보류"]}]}) }
+    fn async_history_entry(item: Value) -> Value {json!({"turnId":"turn-async","item":item,"startedAtMs":null,"completedAtMs":null})}
     fn async_reply_item(id: &str) -> Value { json!({"type":"userMessage","id":"user-answer","content":[{"type":"text","text":format!("<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",json!([{"questionItemId":id,"question":"계속할까요?","answer":"진행"}]))}]}) }
     fn async_notification(item: Value) -> Value { json!({"method":"item/completed","params":{"threadId":"original","turnId":"turn-async","item":item}}) }
 
@@ -1051,9 +1054,9 @@ mod tests {
             let turns=read_request(&mut socket);assert_eq!(turns["method"],"thread/turns/list");assert_eq!(turns["params"],json!({"threadId":"original","limit":1,"sortDirection":"desc","itemsView":"summary"}));
             reply(&mut socket,&turns,json!({"data":[{"id":"turn-async","status":"inProgress"}],"nextCursor":"older-turn-never-read"}));
             let items=read_request(&mut socket);assert_eq!(items["method"],"thread/items/list");assert_eq!(items["params"],json!({"threadId":"original","turnId":"turn-async","cursor":null,"limit":32,"sortDirection":"desc"}));
-            reply(&mut socket,&items,json!({"data":[async_reply_item(answered),async_item("pending")],"nextCursor":"older-items"}));
+            reply(&mut socket,&items,json!({"data":[async_history_entry(async_reply_item(answered)),async_history_entry(async_item("pending")),async_history_entry(json!({"type":"contextCompaction","id":"other-item"}))],"nextCursor":"older-items","backwardsCursor":null}));
             let next=read_request(&mut socket);assert_eq!(next["params"]["cursor"],"older-items");assert_eq!(next["params"]["turnId"],"turn-async");
-            reply(&mut socket,&next,json!({"data":[async_item("already-answered")],"nextCursor":null}));
+            reply(&mut socket,&next,json!({"data":[async_history_entry(async_item("already-answered"))],"nextCursor":null,"backwardsCursor":null}));
             assert_closed_without_input(&mut socket);
         });
         assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());assert!(control.question_metadata_complete().unwrap());
@@ -1079,7 +1082,29 @@ mod tests {
                 assert_closed_without_input(&mut socket);
             });
             assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());assert!(!control.question_metadata_complete().unwrap());
-            let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_eq!(pending[0]["metadataAvailable"],true);assert!(pending[0]["metadataDiagnostic"].is_string());assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+            let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_eq!(pending[0]["metadataAvailable"],true);assert!(pending[0]["metadataDiagnostic"].is_string());assert!(!control.0.unknown.load(Ordering::Acquire));
+            control.observer_message("original",json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"older-turn"}}})).unwrap();assert!(!control.question_metadata_complete().unwrap());assert_eq!(control.pending_snapshot().unwrap().2.len(),1);
+            control.observer_message("original",json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();assert!(control.question_metadata_complete().unwrap());assert!(control.pending_snapshot().unwrap().2.is_empty());
+            control.observer_message("original",async_notification(async_item("retained"))).unwrap();assert!(control.pending_snapshot().unwrap().2.is_empty());
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn async_public_history_rejects_every_malformed_entry_without_losing_last_questions() {
+        let mut wrong_turn=async_history_entry(async_item("wrong-turn"));wrong_turn["turnId"]=json!("different-turn");
+        for bad in [wrong_turn,json!({"item":async_item("missing-turn")}),json!({"turnId":"turn-async"}),async_history_entry(Value::Null),async_history_entry(json!("not-an-item")),async_history_entry(json!({"id":"no-type"})),async_history_entry(json!({"id":"bad-type","type":false})),async_history_entry(json!({"type":"reasoning"})),async_history_entry(json!({"type":"contextCompaction","id":""})),async_item("raw-item-is-not-entry")] {
+            let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();control.observer_message("original",async_notification(async_item("retained"))).unwrap();
+            let server=thread::spawn(move|| {
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let subscribe=read_request(&mut socket);assert_eq!(subscribe["method"],PASSIVE_SUBSCRIBE);reply(&mut socket,&subscribe,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"active","activeFlags":[]}}}));
+                let turns=read_request(&mut socket);assert_eq!(turns["method"],"thread/turns/list");reply(&mut socket,&turns,json!({"data":[{"id":"turn-async","status":"inProgress"}],"nextCursor":null}));
+                let items=read_request(&mut socket);assert_eq!(items["method"],"thread/items/list");assert_eq!(items["params"]["turnId"],"turn-async");
+                reply(&mut socket,&items,json!({"data":[async_history_entry(async_item("must-not-partially-replace")),bad],"nextCursor":null,"backwardsCursor":null}));assert_closed_without_input(&mut socket);
+            });
+            assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());assert!(!control.question_metadata_complete().unwrap());
+            let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_eq!(pending[0]["requestId"],r#"["request_user_input_async","retained",0]"#);assert!(pending[0]["metadataDiagnostic"].is_string());assert_eq!(rpc.next_id,3);
+            drop(rpc);server.join().unwrap();
         }
     }
     #[test]
@@ -1093,7 +1118,7 @@ mod tests {
                 if attempt==0 {socket.send(Message::Text(async_notification(async_item("live-newer")).to_string().into())).unwrap();}
                 reply(&mut socket,&turns,json!({"data":[{"id":"turn-async","status":"inProgress"}]}));
                 let items=read_request(&mut socket);assert_eq!(items["method"],"thread/items/list");
-                reply(&mut socket,&items,if attempt==0 {json!({"data":[async_item("history-older")]})}else{json!({"data":[async_item("live-newer"),async_item("history-older")]})});
+                reply(&mut socket,&items,if attempt==0 {json!({"data":[async_history_entry(async_item("history-older"))],"nextCursor":null,"backwardsCursor":null})}else{json!({"data":[async_history_entry(async_item("live-newer")),async_history_entry(async_item("history-older"))],"nextCursor":null,"backwardsCursor":null})});
             }
             assert_closed_without_input(&mut socket);
         });

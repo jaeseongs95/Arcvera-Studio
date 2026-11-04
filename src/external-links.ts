@@ -66,29 +66,63 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
     provideLinks(y, callback) {
       if (disposed) { callback(undefined); return; }
       const buffer = terminal.buffer.active;
-      let first = y - 1; let last = first; let count = 0;
-      // Bounded lookup: at most one maximum URL's context on either side.
-      while (first > 0 && buffer.getLine(first)?.isWrapped && count < MAX_URL_LENGTH) { first--; count += buffer.getLine(first)?.translateToString(true).length ?? 0; }
-      count = 0;
-      while (last + 1 < buffer.length && buffer.getLine(last + 1)?.isWrapped && count < MAX_URL_LENGTH) { last++; count += buffer.getLine(last)?.translateToString(true).length ?? 0; }
-      let text = '';
+      const readRow = (row: number) => {
+        const line = buffer.getLine(row);
+        return line ? { row, line, text: line.translateToString(true, 0, MAX_URL_LENGTH) } : undefined;
+      };
+      const current = readRow(y - 1);
+      if (!current) { callback(undefined); return; }
+      const rows = [current];
+      let cells = Math.min(current.line.length, MAX_URL_LENGTH);
+      let clippedStart = false; let clippedEnd = current.line.length > MAX_URL_LENGTH;
+      // Cell width is the progress measure even for erased, wrapped blank rows.
+      // Stop at whitespace: earlier/later tokens cannot cross the requested row.
+      while (rows[0].row > 0 && rows[0].line.isWrapped && rows[0].text && !/^\s/u.test(rows[0].text)) {
+        const previous = readRow(rows[0].row - 1); if (!previous) break;
+        if (cells + previous.line.length > MAX_URL_LENGTH) { clippedStart = true; break; }
+        rows.unshift(previous); cells += previous.line.length;
+        if (!previous.text || /\s/u.test(previous.text)) break;
+      }
+      while (!clippedEnd) {
+        const next = readRow(rows.at(-1)!.row + 1);
+        if (!next?.line.isWrapped) break;
+        // Prefer the requested row's nearby suffix over far-away prefix context.
+        while (cells + next.line.length > MAX_URL_LENGTH && rows[0].row < current.row) {
+          cells -= rows.shift()!.line.length; clippedStart = true;
+        }
+        if (cells + next.line.length > MAX_URL_LENGTH) { clippedEnd = true; break; }
+        rows.push(next); cells += next.line.length;
+        if (!next.text || /\s/u.test(next.text)) break;
+      }
+      let text = ''; let reads = 0;
       const starts: { x: number; y: number }[] = []; const ends: { x: number; y: number }[] = [];
-      for (let row = first; row <= last; row++) {
-        const line = buffer.getLine(row); if (!line) continue;
-        const length = line.translateToString(true).length;
+      const cell = buffer.getNullCell();
+      mapping: for (let index = 0; index < rows.length; index++) {
+        const { row, line, text: trimmed } = rows[index];
         let used = 0;
         for (let column = 0; column < line.length; column++) {
-          const cell = line.getCell(column); if (!cell || !cell.getWidth()) continue;
-          const chars = cell.getChars();
-          // A wide character can leave an empty padding cell before wrapping.
-          if (!chars && column === line.length - 1 && buffer.getLine(row + 1)?.isWrapped && buffer.getLine(row + 1)?.getCell(0)?.getWidth() === 2) continue;
-          if (row === last && used >= length) break;
+          if (index === rows.length - 1 && used >= trimmed.length) break;
+          if (reads++ >= MAX_URL_LENGTH) { clippedEnd = true; break mapping; }
+          if (!line.getCell(column, cell)) continue;
+          const width = cell.getWidth(); const chars = cell.getChars();
+          if (!width) continue;
+          const next = rows[index + 1];
+          if (!chars && column === line.length - 1 && next?.line.isWrapped) {
+            if (reads++ >= MAX_URL_LENGTH) { clippedEnd = true; break mapping; }
+            if (next.line.getCell(0, cell)?.getWidth() === 2) continue;
+          }
           const value = chars || ' ';
-          for (let unit = 0; unit < value.length; unit++) { starts.push({ x: column + 1, y: row + 1 }); ends.push({ x: column + cell.getWidth(), y: row + 1 }); }
+          if (text.length + value.length > MAX_URL_LENGTH) { clippedEnd = true; break mapping; }
+          const start = { x: column + 1, y: row + 1 }; const end = { x: column + width, y: row + 1 };
+          for (let unit = 0; unit < value.length; unit++) { starts.push(start); ends.push(end); }
           text += value; used += value.length;
         }
       }
+      const boundary = /[\s<>"'`\\]/u;
       const links: ILink[] = linksIn(text).flatMap(link => {
+        // Never reinterpret the middle/end of a clipped token as another URL.
+        if (clippedStart && !boundary.test(text.slice(0, link.index))) return [];
+        if (clippedEnd && !boundary.test(text.slice(link.index + link.text.length))) return [];
         const start = starts[link.index]; const end = ends[link.index + link.text.length - 1];
         return start && end && start.y <= y && end.y >= y ? [{ text: link.text, range: { start, end }, activate, hover, leave }] : [];
       });

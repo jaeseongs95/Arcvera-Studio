@@ -1,5 +1,6 @@
 import { locale, onLanguageChange, t } from './i18n';
 import { appendLinkifiedText } from './external-links';
+import { MAX_WORKSPACE_SESSIONS } from './model';
 import './question-center.css';
 
 export interface PendingQuestion {
@@ -17,11 +18,13 @@ interface QuestionCenterHost {
 }
 interface Draft { values: Record<string, { selected?: string; text?: string }>; phase?: 'sending' | 'sent' | 'uncertain'; openFailed?: boolean }
 const interval = 3_000;
+// Each native session retains at most 32 RPC requests plus 32 async questions.
+const maxPendingItems = MAX_WORKSPACE_SESSIONS * (32 + 32);
 const key = (item: PendingQuestion) => JSON.stringify([item.sessionId, item.threadId ?? '', item.generation, item.requestId ?? item.id]);
 
 function readItems(value: unknown): PendingQuestion[] {
   const items = (value as { items?: unknown })?.items;
-  if (!Array.isArray(items) || items.length > 1024) throw new Error(t('질문 목록 형식이 올바르지 않습니다.', 'Invalid question list.'));
+  if (!Array.isArray(items) || items.length > maxPendingItems) throw new Error(t('질문 목록 형식이 올바르지 않습니다.', 'Invalid question list.'));
   const result = new Map<string, PendingQuestion>();
   for (const item of items as PendingQuestion[]) {
     if (!item || typeof item.id !== 'string' || typeof item.sessionId !== 'string' || !Number.isSafeInteger(item.generation)

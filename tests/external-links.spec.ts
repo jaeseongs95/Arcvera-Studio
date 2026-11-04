@@ -228,3 +228,53 @@ test('EL-12 main terminal-output → pointer → native opener → 실패 toast 
   await expect(page.locator('.toast.error')).toContainText('외부 링크 열기 실패');
   expect(await page.context().pages()).toHaveLength(1);
 });
+
+test('EL-13/14 실제 xterm의 wrapped 공백·긴 token 탐색과 좌표 생성은 상한을 지킨다', async ({ page }) => {
+  await setup(page);
+  const probes = await page.evaluate(async () => {
+    const state = (window as any).externalTest; const terminal = state.terminal;
+    terminal.options.scrollback = 10000;
+    const probe = async (y: number) => {
+      const buffer = terminal.buffer.active; const original = buffer.getLine.bind(buffer);
+      const metrics = { rows: 0, cells: 0 };
+      buffer.getLine = (row: number) => {
+        metrics.rows++;
+        const line = original(row); if (!line) return line;
+        return new Proxy(line, { get(target, key) {
+          if (key === 'getCell') return (...args: any[]) => { metrics.cells++; return target.getCell(...args); };
+          const value = target[key]; return typeof value === 'function' ? value.bind(target) : value;
+        } });
+      };
+      try { return { y, links: (await state.atLine(y)).map((link: any) => link.text), metrics }; }
+      finally { buffer.getLine = original; }
+    };
+    // Erasing a filled wrapped row leaves zero trimmed characters while keeping
+    // its wrap metadata, as terminal applications can do while redrawing output.
+    await state.write((' '.repeat(40) + '\u001b[1K').repeat(3000) + 'https://example.com/bounded');
+    const blank = await probe(terminal.buffer.active.baseY + terminal.buffer.active.cursorY + 1);
+    terminal.reset();
+    await state.write((' '.repeat(40) + '\u001b[1K').repeat(6000) + 'https://example.com/bounded');
+    const doubledBlank = await probe(terminal.buffer.active.baseY + terminal.buffer.active.cursorY + 1);
+    terminal.reset();
+    const long = 'https://example.com/' + 'a'.repeat(12000) + 'https://other.example/short';
+    await state.write(long + ' https://example.com/nearby');
+    const lastY = terminal.buffer.active.baseY + terminal.buffer.active.cursorY + 1;
+    const last = await probe(lastY);
+    const middle = await probe(Math.floor(lastY / 2));
+    terminal.reset();
+    const nearbyWrapped = 'https://example.com/' + 'nearby'.repeat(12);
+    await state.write(long + ' ' + nearbyWrapped);
+    const crossing = await probe(Math.floor((long.length + 1) / 40) + 1);
+    return { blank, doubledBlank, last, middle, crossing, nearbyWrapped };
+  });
+  console.log('EL-13/14 actual xterm probe:', JSON.stringify(probes));
+  expect(probes.blank.links).toEqual(['https://example.com/bounded']);
+  expect(probes.blank.metrics.cells).toBeLessThanOrEqual(8192);
+  expect(probes.blank.metrics.rows).toBeLessThanOrEqual(430);
+  expect(probes.doubledBlank.links).toEqual(['https://example.com/bounded']);
+  expect(probes.doubledBlank.metrics).toEqual(probes.blank.metrics);
+  expect(probes.last.links).toEqual(['https://example.com/nearby']);
+  expect(probes.middle.links).toEqual([]);
+  expect(probes.crossing.links).toEqual([probes.nearbyWrapped]);
+  for (const probe of [probes.last, probes.middle, probes.crossing]) expect(probe.metrics.cells).toBeLessThanOrEqual(8192);
+});

@@ -12,7 +12,7 @@
 | AQ4 | 답변 UserMessage가 원본 질문보다 먼저 도착 | 답변 → 질문 관측 | 해결된 stable id는 pending에 나타나지 않음 | NOT_RUN |
 | AQ5 | 진행 질문과 turn/completed, 뒤늦은 같은 turn item | 종료 후 item 재생 | 종료 turn 질문이 복원되지 않음; 다른 현재 turn은 보존 | NOT_RUN |
 | AQ6 | 진행 turn 하나의 bounded history, 질문과 답변 혼합 | 구독 시 최신 turn/list, 현재 turn item/list만 조회 | 미답변만 복원; 완료 turn은 pending으로 취급하지 않음 | NOT_RUN |
-| AQ7 | history 조회 실패/미지원/상한/단절 | 기존 질문 이후 실패 | 마지막 항목 보존, complete=false, metadataAvailable=false; 확정 0건으로 표시하지 않음 | NOT_RUN |
+| AQ7 | history 조회 실패/미지원/상한/단절 | 기존 질문 이후 실패 | 마지막 항목 보존, complete=false; metadataAvailable은 관측 연결 여부와 일치. 확정 0건으로 표시하지 않음 | NOT_RUN |
 | AQ8 | 다른 thread 및 새 connection/session generation | 잘못된 thread 알림과 새 state 조회 | 다른 thread 무시, 이전 세대 질문 유출 없음 | NOT_RUN |
 | AQ9 | oversized 질문/옵션/고유 id 반복 | 설정 상한을 넘기는 metadata 투입 | bounded state와 명시 진단 유지, 조용한 정상 빈 목록 금지 | NOT_RUN |
 | AQ10 | 기존 blocking request/approval | 기존 observer와 GUI request fixture | 기존 requestId/응답 소유권/응답 검증 보존 | NOT_RUN |
@@ -41,3 +41,39 @@ CS 조건: DIST-ORDER-004(중복/순서/turn 세대), DIST-ACK-001(전송과 해
 로컬 작은 runner는 기존 MSVC/Rust 환경 exporter를 재사용하며 새 dependency는 제품에 추가하지 않았다. 실행 명령은 `node D:/codex/build/odAsyncProbe1104/run.cjs`이며 실제 Cargo 인수는 `test --offline --manifest-path D:/codex/build/odAsyncProbe1104/Cargo.toml -- --nocapture`다. 결과 원문은 해당 경로의 `result.json`에 있다. 전체 Tauri crate 및 공개 WS 시험을 실행한 것으로 확대하지 않는다. 기존 결함 상태의 같은 시험 실행은 하지 않았으므로 red/green 증거는 NOT_RUN이다.
 
 처음 작은 runner를 작업 트리 `artifacts/async-backend-probe` 안에서 실행했을 때, 통합 담당의 Vite watcher가 MSVC 임시 linker 파일의 EBUSY로 종료했다. 이는 제품 assertion 실패와 다르다. 통합 담당이 원본 로그를 보존하고 runner를 작업 트리 밖 `D:/codex/build/odAsyncProbe1104`로 옮겼으며 이후 빌드는 그 위치만 쓴다. 원래 시험 실패를 재실행 성공으로 덮지 않는다.
+
+## 29a 리뷰 후 선작성한 추가 회귀 계획
+
+아래 사례는 추가 수정 전에 작성했다. 기존 `artifacts/async-source-review/review.md`의 ASYNC-CR-001/002와 CHANGES_REQUESTED 원문, `artifacts/question-fix/async-first-native.log`의 354 PASS / 1 FAIL / 6 ignored를 보존한다. 실패는 `shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutdown` fixture가 읽기 전용 `thread/turns/list`를 예상하지 못한 panic이며, 기존 unknown/회수/observer join 판정을 완화하지 않는다.
+
+| ID | 입력 / 사전조건 | 절차 | 기대 결과 / 합격 조건 | 실제 결과 |
+|---|---|---|---|---|
+| AQ12 / CR-001 | R36 실제 `{turnId,item,startedAtMs,completedAtMs}` entry 배열, 질문 1개와 답변 및 질문 외 항목 | 진행 turn의 history 복원 → snapshot | 모든 entry를 검증하고 inner item으로 환원; 미답변 원문/안정 id 보존, complete=true의 거짓 빈 목록 금지 | NOT_RUN |
+| AQ13 / CR-001 | 이전 pending 2개, entry의 다른 turn/turn 누락/item 누락/null/scalar/type 누락·비문자열/id 누락·비문자열·빈값·상한초과; 질문 외 항목도 포함 | malformed 페이지를 복원 | 명시 오류 또는 incomplete, 이전 질문 2개 보존. 정상 질문 뒤 malformed가 있어도 부분 교체 금지 | NOT_RUN |
+| AQ14 / CR-002 | 종료 ID 1024개로 상한 포화, 새 현재 turn 시작/질문/종료 | 같은 turn의 지연 item/completed와 turn/started, history 재생 | bounded 현재 종료 표식으로 pending=0 유지. 새 turn은 정상 표시, 이전 포화 종료 turn의 지연 알림이 새 pending을 지우지 않음 | NOT_RUN |
+| AQ15 | 현재 질문 2개를 관측한 뒤 history 실패로 complete=false/진단 존재 | 다른 turn/completed → 현재 turn/completed → 늦은 item | 다른 turn 종료는 원상 유지. 권위 있는 현재 종료에서 pending=0/complete=true/진단 없음; 늦은 item 재등장 없음. 포화 상태에도 같음 | NOT_RUN |
+| AQ16 / 29a CI | shutdown race fixture는 active 구독이며 thread/read에서 PTY activation 신호를 기다림 | 실제 active turn summary와 R36 item entry 읽기 응답을 허용한 뒤 원래 reaper/observer join 경합 실행 | 조회 RPC의 정확한 thread/turn/limit/sort 검증, 기존 unknown·재전송 금지·동일 PID 종료·추가 연결 금지 assertion 유지 | NOT_RUN |
+
+pure 회귀는 같은 수정 후 테스트 블록을 격리된 수정 전 모듈 사본과 수정 후 모듈에 적용해 비교한다. 기존 6 PASS의 `D:/codex/build/odAsyncProbe1104/result.json`은 덮어쓰지 않는다. 새 실행은 같은 격리 경로의 별도 evidence 파일에 기록한다. 공개 WebSocket 및 실제 shutdown race는 root의 Windows CI에서 실행하고 그 전까지 NOT_RUN으로 남긴다.
+
+## 추가 수정의 실제 결과
+
+`git show 1b441423baf713d144647d5be37525f7d9cc03c0:codex-rs/app-server-protocol/src/protocol/v2/thread.rs`의 `ThreadItemEntry`/`ThreadItemsListResponse`, 같은 commit의 `request_processors/thread_processor.rs`의 `thread_items_list_response_inner`/`stored_thread_item_to_entry`, `v2/tests.rs`의 `thread_items_list_round_trips`를 직접 대조했다. 복원 경로는 이제 모든 entry를 `State::restore`에 전달하며, requested turn 일치/inner object/id/type을 검사한 뒤 처리한다. 질문 외 entry에도 같은 검사를 적용한다. 알 수 없는 유형이나 필요한 agent text/user content 형식도 조용히 무시하지 않는다. 검증 실패 시 이전 pending을 교체하지 않고 incomplete로 남긴다.
+
+종료 상태는 bounded old-ID set과 별도로 현재 turn의 `current_closed` flag 하나를 보존한다. 따라서 old-ID set이 포화해도 현재 종료 turn의 item·start·history 재생을 거부한다. 현재 turn의 권위 있는 종료는 pending을 비우고 complete=true/진단 없음으로 복구하며, 다른 turn 종료는 현재 pending/complete/진단을 바꾸지 않는다. 포화 전 일반 종료의 known-zero 복구는 기존 코드에도 있었으며, 이번 회귀는 일반 경계와 포화 경계를 구분했다.
+
+| 추가 사례 | 실제 결과 |
+|---|---|
+| AQ12 | pure `history_entry_envelopes_restore_questions_and_answers_instead_of_false_empty`: 수정 전 FAIL(0건이 반환되어 기대 1건과 다름), 수정 후 PASS. 실제 entry 2페이지를 쓰는 공개 WS 시험은 작성, 새 후보 CI NOT_RUN. |
+| AQ13 | pure `malformed_history_entries_fail_without_replacing_previous_questions`: 수정 전 FAIL(다른 turn entry 수락), 수정 후 16종 malformed에 PASS. 공개 WS 10종 malformed/부분 교체 금지는 작성, 새 후보 CI NOT_RUN. |
+| AQ14 | pure `saturated_closed_ids_do_not_reopen_the_current_completed_turn`: 수정 전 FAIL(종료 질문 재등장), 수정 후 PASS. old-ID set 1024개 상한 유지도 assertion으로 확인. |
+| AQ15 | pure `authoritative_current_completion_recovers_unknown_while_other_completion_preserves_it`: 수정 전 포화 상태에서 FAIL(다른 turn 종료가 기존 진단을 덮어씀), 수정 후 포화 전·후 모두 PASS. 공개 history 실패 시험에 다른 turn 종료 보존/현재 종료 known-zero/late item 차단 assertion 추가, 새 후보 CI NOT_RUN. |
+| AQ16 | active subscribe 및 원래 `thread/read`의 `activated.recv_timeout` 경계를 유지했다. 정확한 현재 turn summary와 reasoning entry 읽기 응답만 추가하고 최종 RPC 순서 assertion도 두 조회를 포함하도록 강화했다. unknown/reaper/observer join/동일 PID/추가 연결 금지 assertion의 변경 없음은 diff로 확인했다. 실제 Windows race 실행은 새 후보 CI NOT_RUN. |
+
+실행:
+
+- `node D:/codex/build/odAsyncProbe1104/review-fix/run.cjs before`: node exit 1, Cargo exit 101, **5 PASS / 5 FAIL**. 실제 assertion 실패이며 compiler/runner 오류가 아니다. 원문 `review-fix/result-before.json`.
+- `node D:/codex/build/odAsyncProbe1104/review-fix/run.cjs after`: node/Cargo exit 0, **10 PASS / 0 FAIL**. 원문 `review-fix/result-after.json`. 기존 6개 시험을 포함하며 이력 복원 fixture는 실제 entry envelope로 보정했다.
+- 두 실행의 테스트 블록 SHA-256은 동일한 `693fb20721d9150904e309976d8367e56811326698f3cc1638d0bb6abaaac6ec`다. 수정 후 production 모듈 SHA-256은 `8529590f00d7ae589b7b154cb7b4dacfd500ea1f18aaa5c7fe656734de7100ec`다. 수정 전 구현과 같은 최종 테스트를 결합한 `before-with-regressions.rs`는 격리 경로에 남겼다.
+- 원래 `result.json` 및 보존 사본 `review-fix/original-six-pass.json`의 SHA-256이 모두 `d8c6c4425cae74a1fd5e94599bb6cce4606f5f153b9b125eb9664c85e2813f97`임을 직접 확인했다. 기존 6 PASS 원문을 덮어쓰지 않았다.
+- 세 Rust 파일은 `rustfmt --edition 2021 --emit stdout --config skip_children=true <path>`를 파일 쓰기 없이 실행해 각각 구문 parse exit 0을 확인했다. 이는 타입 검사나 전체 Rust 시험이 아니다. `git diff --check` exit 0. 실행 후 D: 여유 공간 약 274.6 GB. 검증·복구 자료와 원래 리뷰/CI 실패 기록을 보존했다.

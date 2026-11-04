@@ -47,6 +47,75 @@ fn open_url_with(value: &str, launch: impl FnOnce(&str) -> Result<(), String>) -
 #[cfg(test)]
 mod tests {
     use super::{open_url_with, validated_url};
+    /// Opt-in only: opens one real default-browser tab; never closes browser tabs.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "explicit OS browser launch; set OPENDIY_REAL_BROWSER_TEST=1 and select this exact test"]
+    fn real_windows_default_browser_reaches_own_loopback() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+
+        assert_eq!(std::env::var("OPENDIY_REAL_BROWSER_TEST").ok().as_deref(), Some("1"),
+            "실제 기본 브라우저 시험에는 OPENDIY_REAL_BROWSER_TEST=1이 필요합니다.");
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("자체 loopback listener 생성 실패");
+        listener.set_nonblocking(true).expect("listener nonblocking 설정 실패");
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let target = format!("/opendiy-link-smoke/{nonce}?source=native-command");
+        let url = format!("http://127.0.0.1:{}{target}", listener.local_addr().unwrap().port());
+        println!("EL-10 native command target: {url}");
+        tauri::async_runtime::block_on(super::open_external_url(url)).expect("실제 native 외부 링크 명령 실패");
+        println!("EL-10 native command: PASS; waiting for default-browser HTTP GET");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut received = false;
+        while Instant::now() < deadline {
+            let mut stream: TcpStream = match listener.accept() {
+                Ok((stream, peer)) => {
+                    assert!(peer.ip().is_loopback(), "자체 loopback 외부의 연결을 거부했습니다.");
+                    stream
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
+                Err(error) => panic!("자체 loopback accept 실패: {error}"),
+            };
+            stream.set_nonblocking(true).expect("수신 socket nonblocking 설정 실패");
+            // Bounded headers are consumed for a complete HTTP exchange, never
+            // retained or printed. Only the synthetic request line is evidence.
+            let mut request = Vec::new();
+            let mut headers_complete = false;
+            while Instant::now() < deadline && request.len() < 8192 {
+                let mut chunk = [0_u8; 1024];
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(bytes) => {
+                        request.extend_from_slice(&chunk[..bytes]);
+                        if request.windows(4).any(|part| part == b"\r\n\r\n") { headers_complete = true; break; }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(25)),
+                    Err(error) => panic!("자체 loopback HTTP 수신 실패: {error}"),
+                }
+            }
+            if !headers_complete { continue; }
+            let request_line = request.split(|byte| *byte == b'\n').next().unwrap_or_default();
+            let expected = format!("GET {target} HTTP/1.1\r");
+            let matches = request_line == expected.as_bytes();
+            let body = if matches { "OpenDIY Desktop 외부 링크 시험을 확인했습니다. 이 탭은 직접 닫아도 됩니다." } else { "페이지를 찾을 수 없습니다." };
+            let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", if matches { "200 OK" } else { "404 Not Found" }, body.len());
+            stream.write_all(response.as_bytes()).expect("자체 loopback HTTP 응답 실패");
+            stream.flush().expect("자체 loopback HTTP 응답 flush 실패");
+            if matches {
+                println!("EL-10 default-browser HTTP receive: PASS ({})", expected.trim_end());
+                received = true;
+                break;
+            }
+        }
+        assert!(received, "기본 브라우저의 정확한 nonce HTTP GET을 20초 안에 확인하지 못했습니다.");
+        // Drop only the owned listener/socket. Browser tabs/processes stay open.
+    }
+
     #[test]
     fn native_launch_boundary_rejects_before_launch_and_preserves_failure() {
         assert!(open_url_with("javascript:alert(1)", |_| panic!("invalid URL launched")).is_err());
