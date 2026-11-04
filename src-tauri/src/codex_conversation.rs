@@ -1109,6 +1109,26 @@ mod tests {
         }
     }
     #[test]
+    fn async_public_subscribe_history_failure_only_confirms_the_observed_current_turn_end() {
+        for completed_turn in ["other-old-turn","turn-async"] {
+            let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+            control.observer_message("original",async_notification(async_item("retained"))).unwrap();
+            let server=thread::spawn(move|| {
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let subscribe=read_request(&mut socket);assert_eq!(subscribe["method"],PASSIVE_SUBSCRIBE);reply(&mut socket,&subscribe,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"active","activeFlags":[]}}}));
+                let turns=read_request(&mut socket);assert_eq!(turns["method"],"thread/turns/list");assert_eq!(turns["params"],json!({"threadId":"original","limit":1,"sortDirection":"desc","itemsView":"summary"}));
+                socket.send(Message::Text(json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":completed_turn}}}).to_string().into())).unwrap();
+                socket.send(Message::Text(json!({"id":turns["id"],"error":{"code":-32601,"message":"fixture history method unsupported"}}).to_string().into())).unwrap();assert_closed_without_input(&mut socket);
+            });
+            assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());
+            let (_,_,pending,complete)=control.question_snapshot().unwrap();
+            if completed_turn=="turn-async" {assert!(complete);assert!(pending.is_empty());}
+            else {assert!(!complete,"an unrelated old completion cannot confirm the current question inbox as empty");assert_eq!(pending.len(),1);assert_eq!(pending[0]["requestId"],r#"["request_user_input_async","retained",0]"#);assert_eq!(pending[0]["params"]["questions"][0]["question"],"계속할까요?");assert!(pending[0]["metadataDiagnostic"].is_string());}
+            assert_eq!(rpc.next_id,2);assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
     fn async_public_history_rejects_every_malformed_entry_without_losing_last_questions() {
         let mut wrong_turn=async_history_entry(async_item("wrong-turn"));wrong_turn["turnId"]=json!("different-turn");
         for bad in [wrong_turn,json!({"item":async_item("missing-turn")}),json!({"turnId":"turn-async"}),async_history_entry(Value::Null),async_history_entry(json!("not-an-item")),async_history_entry(json!({"id":"no-type"})),async_history_entry(json!({"id":"bad-type","type":false})),async_history_entry(json!({"type":"reasoning"})),async_history_entry(json!({"type":"contextCompaction","id":""})),async_item("raw-item-is-not-entry")] {
