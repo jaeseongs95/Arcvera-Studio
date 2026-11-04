@@ -77,3 +77,23 @@ pure 회귀는 같은 수정 후 테스트 블록을 격리된 수정 전 모듈
 - 두 실행의 테스트 블록 SHA-256은 동일한 `693fb20721d9150904e309976d8367e56811326698f3cc1638d0bb6abaaac6ec`다. 수정 후 production 모듈 SHA-256은 `8529590f00d7ae589b7b154cb7b4dacfd500ea1f18aaa5c7fe656734de7100ec`다. 수정 전 구현과 같은 최종 테스트를 결합한 `before-with-regressions.rs`는 격리 경로에 남겼다.
 - 원래 `result.json` 및 보존 사본 `review-fix/original-six-pass.json`의 SHA-256이 모두 `d8c6c4425cae74a1fd5e94599bb6cce4606f5f153b9b125eb9664c85e2813f97`임을 직접 확인했다. 기존 6 PASS 원문을 덮어쓰지 않았다.
 - 세 Rust 파일은 `rustfmt --edition 2021 --emit stdout --config skip_children=true <path>`를 파일 쓰기 없이 실행해 각각 구문 parse exit 0을 확인했다. 이는 타입 검사나 전체 Rust 시험이 아니다. `git diff --check` exit 0. 실행 후 D: 여유 공간 약 274.6 GB. 검증·복구 자료와 원래 리뷰/CI 실패 기록을 보존했다.
+
+## ee2d30e 재리뷰 후 정상 tuple 유형 회귀 계획
+
+추가 수정 전 선작성. 고정 R36 `codex-rs/app-server-protocol/src/protocol/v2/item.rs`의 `ThreadItemPayload` 전체를 직접 읽었다. 일반 struct variant 16종 외에 `WebSearch(WebSearchItem)`, `Sleep(SleepItem)`, `ImageGeneration(ImageGenerationItem)` tuple variant 3종이 있다. 기존 `{` 형태 중심 대조가 이 3종을 놓쳤다. 실제 필드는 같은 commit의 `codex-rs/ext/items/src/{web_search,sleep,image_generation}.rs`로 확인했다. 원래 리뷰·CI·RED/GREEN 기록을 보존한다.
+
+| ID | 입력 / 사전조건 | 절차 | 기대 결과 / 합격 조건 | 실제 결과 |
+|---|---|---|---|---|
+| AQ17 | 실제 R36 `webSearch`(query/action/results), `sleep`(durationMs), `imageGeneration`(status/revisedPrompt/result/failure/generationId) 각 item을 `{turnId,item,startedAtMs,completedAtMs}`로 포장하고 async pending 질문과 혼합 | 3종 각각 및 3종 동시 이력을 동일 State.restore로 복원; 공개 WS에서도 같은 실제 envelope를 사용 | 정상 3종 때문에 complete=false가 되지 않음. 질문 2개 pure/질문 1개 WS와 원문·stable id 유지. 기존 malformed·다른 turn·unknown 유형 거절과 원래 10개 회귀 결과 유지 | NOT_RUN |
+
+R36 전체 wire 유형 대조 목록(19종): userMessage, hookPrompt, agentMessage, functionCallOutput, plan, reasoning, commandExecution, fileChange, mcpToolCall, dynamicToolCall, collabAgentToolCall, subAgentActivity, webSearch, imageView, sleep, imageGeneration, enteredReviewMode, exitedReviewMode, contextCompaction. 검증 목록은 정확히 이 정본에 맞추며 추정한 유형을 허용하지 않는다.
+
+AQ17 실제 결과: 동일 `r36_tuple_variants_preserve_pending_questions_in_complete_history` 회귀를 수정 전 구현과 수정 후 production 모듈에 실행했다. 수정 전에는 기존 10개 PASS / 신규 1개 FAIL(Cargo exit 101, node exit 1)이었고, 정상 `webSearch` entry에서 잘못된 유형 오류가 났다. whitelist에 정본의 3종만 추가한 후 기존 10개와 신규 1개 모두 PASS(Cargo/node exit 0)였다. 신규 시험은 3종 각각 및 3종 동시 entry + async 질문 2개를 검사한다. 기존 malformed/failure/complete/종료/포화 assertion은 바꾸지 않았다.
+
+실행 명령과 원문:
+
+- `node D:/codex/build/odAsyncProbe1104/tuple-variants-fix/run.cjs before` → `tuple-variants-fix/result-before.json`.
+- `node D:/codex/build/odAsyncProbe1104/tuple-variants-fix/run.cjs after` → `tuple-variants-fix/result-after.json`.
+- 두 실행의 테스트 블록 SHA-256은 동일한 `1e625215f084079152509900ba95472a2cc57c3a891386746338044469349128`, 수정 후 모듈 SHA-256은 `72926bb4dd22e76f274dbfe2e8fbf5a507d8b144a20322303520449ca7efbb19`다. 이전 `result.json`, `review-fix/result-before.json`, `review-fix/result-after.json`은 덮어쓰지 않았다.
+- immutable enum 전체의 struct와 tuple variant 양쪽을 포함해 추출한 19종을 production 검증 목록과 비교하여 누락 0종을 확인했다. 원문은 `tuple-variants-fix/enum-comparison.json`이다.
+- 공개 WS `async_public_history_accepts_r36_tuple_variants_beside_pending_questions`는 정확한 R36 entry/필드를 사용하며 신규 후보 CI NOT_RUN이다. 진행 중이던 이전 후보 CI 결과로 대체하지 않는다. 변경 Rust 2파일의 파일 쓰기 없는 rustfmt parse exit 0, `git diff --check` exit 0을 확인했다.

@@ -1067,6 +1067,25 @@ mod tests {
         control.observer_disconnected();assert!(!control.question_metadata_complete().unwrap());drop(rpc);server.join().unwrap();
     }
     #[test]
+    fn async_public_history_accepts_r36_tuple_variants_beside_pending_questions() {
+        let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+        let server=thread::spawn(move|| {
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            let subscribe=read_request(&mut socket);assert_eq!(subscribe["method"],PASSIVE_SUBSCRIBE);reply(&mut socket,&subscribe,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"active","activeFlags":[]}}}));
+            let turns=read_request(&mut socket);assert_eq!(turns["method"],"thread/turns/list");reply(&mut socket,&turns,json!({"data":[{"id":"turn-async","status":"inProgress"}],"nextCursor":null}));
+            let items=read_request(&mut socket);assert_eq!(items["method"],"thread/items/list");assert_eq!(items["params"],json!({"threadId":"original","turnId":"turn-async","cursor":null,"limit":32,"sortDirection":"desc"}));
+            reply(&mut socket,&items,json!({"data":[
+                async_history_entry(async_item("pending")),
+                async_history_entry(json!({"type":"webSearch","id":"search-1","query":"fixture query","action":{"type":"search","query":"fixture query","queries":null},"results":[]})),
+                async_history_entry(json!({"type":"sleep","id":"sleep-1","durationMs":1000})),
+                async_history_entry(json!({"type":"imageGeneration","id":"image-1","status":"completed","revisedPrompt":null,"result":"fixture-image","transparentBackground":false,"failure":null,"generationId":null}))
+            ],"nextCursor":null,"backwardsCursor":null}));assert_closed_without_input(&mut socket);
+        });
+        assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());assert!(control.question_metadata_complete().unwrap());
+        let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_eq!(pending[0]["requestId"],r#"["request_user_input_async","pending",0]"#);assert_eq!(pending[0]["params"]["questions"][0]["question"],"계속할까요?");assert!(pending[0]["metadataDiagnostic"].is_null());
+        drop(rpc);server.join().unwrap();
+    }
+    #[test]
     fn async_public_history_error_preserves_last_questions_without_claiming_zero() {
         for failure in ["unsupported","unmaterialized","cursorCycle"] {
             let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();

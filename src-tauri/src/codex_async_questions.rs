@@ -187,7 +187,7 @@ fn history_item<'a>(entry: &'a Value, turn: &str) -> Result<&'a Value,String> {
     match item["type"].as_str() {
         Some("agentMessage") if item["text"].is_string()=>{},
         Some("userMessage") if item["content"].as_array().is_some_and(|content|content.iter().all(|input|input.is_object() && input["type"].is_string() && (input["type"]!="text" || input["text"].is_string())))=>{},
-        Some("hookPrompt" | "functionCallOutput" | "plan" | "reasoning" | "commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" | "subAgentActivity" | "imageView" | "enteredReviewMode" | "exitedReviewMode" | "contextCompaction")=>{},
+        Some("hookPrompt" | "functionCallOutput" | "plan" | "reasoning" | "commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" | "subAgentActivity" | "webSearch" | "imageView" | "sleep" | "imageGeneration" | "enteredReviewMode" | "exitedReviewMode" | "contextCompaction")=>{},
         _=>return Err("질문 이력의 내부 항목 유형 또는 필수 원문 형식이 올바르지 않습니다.".into()),
     }
     Ok(item)
@@ -268,6 +268,22 @@ mod tests {
         assert!(state.complete());assert_eq!(state.snapshot(true).len(),1);
         assert_eq!(state.snapshot(true)[0]["requestId"],r#"["request_user_input_async","call-1",1]"#);
         assert_eq!(state.snapshot(true)[0]["params"]["questions"][0]["question"],"다음 질문");
+    }
+    #[test]
+    fn r36_tuple_variants_preserve_pending_questions_in_complete_history() {
+        let variants=vec![
+            json!({"type":"webSearch","id":"search-1","query":"fixture query","action":{"type":"search","query":"fixture query","queries":null},"results":[]}),
+            json!({"type":"sleep","id":"sleep-1","durationMs":1000}),
+            json!({"type":"imageGeneration","id":"image-1","status":"completed","revisedPrompt":null,"result":"fixture-image","transparentBackground":false,"failure":null,"generationId":null}),
+        ];
+        let mut groups=variants.iter().map(|item|vec![item.clone()]).collect::<Vec<_>>();groups.push(variants);
+        for group in groups {
+            let mut state=State::default();let mut entries=vec![entry(item())];entries.extend(group.into_iter().map(entry));
+            assert!(state.restore(0,Some("turn-1"),&entries).unwrap(),"normal R36 item must not make question metadata incomplete");
+            assert!(state.complete());assert!(state.diagnostic().is_none());assert_eq!(state.snapshot(true).len(),2);
+            assert_eq!(state.snapshot(true)[0]["requestId"],r#"["request_user_input_async","call-1",0]"#);
+            assert_eq!(state.snapshot(true)[1]["params"]["questions"][0]["question"],"다음 질문");
+        }
     }
     #[test]
     fn malformed_history_entries_fail_without_replacing_previous_questions() {
