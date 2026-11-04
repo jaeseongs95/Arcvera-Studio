@@ -951,6 +951,10 @@ impl Engine {
         self.with_extension_operation(|exe, permit| codex::extensions_list_with_executable(exe, cwd, permit))
     }
 
+    pub fn extensions_list_with_catalog_query(&self, cwd: Option<String>, catalog_query: Option<String>) -> Result<codex::ExtensionsSnapshot, String> {
+        self.with_extension_operation(|exe, permit| codex::extensions_list_with_catalog_query(exe, cwd, catalog_query, permit))
+    }
+
     pub fn extensions_mutate(&self, cwd: Option<String>, request: codex::ExtensionMutation) -> Result<codex::ExtensionsSnapshot, String> {
         self.with_extension_operation(|exe, permit| codex::extensions_mutate_with_executable(exe, cwd, request, permit))
     }
