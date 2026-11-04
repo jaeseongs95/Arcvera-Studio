@@ -132,6 +132,11 @@ pub(super) fn mutate(directory: &Path, key: &str, current_hash: &str, change: Ho
     let selected = before.items.iter().find(|hook| hook.key == key).ok_or("선택한 Hook이 현재 목록에 없습니다. 변경하지 않았습니다.")?;
     if selected.current_hash != current_hash { return Err("Hook 내용이 바뀌었습니다. 새 내용을 검토하기 전에는 변경할 수 없습니다.".into()); }
     if selected.is_managed || selected.trust_status == "managed" { return Err("관리 Hook은 사용자 설정으로 변경할 수 없습니다.".into()); }
+    // MCP metadata omits input and prompt/agent metadata omits the body. Their
+    // opaque hashes cannot substitute for reviewing all executable content.
+    if matches!(change, HookChange::Trust) && selected.handler_type != "command" {
+        return Err("이 Hook 형식은 실행 내용 전체를 조회할 수 없어 이 화면에서 신뢰 승인할 수 없습니다.".into());
+    }
     if matches!(change, HookChange::Enabled(true)) && selected.trust_status != "trusted" {
         return Err("Hook 내용을 검토하고 현재 해시를 신뢰 승인한 뒤 활성화하세요.".into());
     }
@@ -178,6 +183,16 @@ mod tests {
     }
     fn inventory(hooks: Vec<Value>) -> Value {
         json!({"data":[{"cwd":directory(),"hooks":hooks,"warnings":[],"errors":[]}]})
+    }
+    fn handler_hook(handler: &str) -> Value {
+        let mut hook = hook();
+        hook["handlerType"] = json!(handler);
+        if handler != "command" {
+            hook.as_object_mut().unwrap().remove("command");
+            hook.as_object_mut().unwrap().remove("async");
+        }
+        if handler == "mcpTool" { hook["server"] = json!("fixture-server"); hook["tool"] = json!("fixture-tool"); }
+        hook
     }
     fn config() -> Value {
         json!({"layers":[{"name":{"type":"user","file":directory().join("config.toml"),"profile":null},"version":"version-before"}]})
@@ -264,31 +279,64 @@ mod tests {
     // HK04: trust binds the opaque hash and never changes enablement.
     #[test]
     fn trust_only_upserts_current_opaque_hash_without_enabling() {
-        let mut before = hook(); before["trustStatus"] = json!("modified"); before["enabled"] = json!(false);
-        let mut after = before.clone(); after["trustStatus"] = json!("trusted");
-        let (result, requests) = exercise(before, after, HookChange::Trust, Ok(write_response()));
-        result.unwrap();
-        assert_eq!(requests[2].1["edits"][0]["value"], json!({"project.x.\"quoted\"":{"trusted_hash":"opaque:plugin:hash"}}));
-        assert!(requests[2].1["edits"][0]["value"]["project.x.\"quoted\""].get("enabled").is_none());
+        for trust in ["untrusted", "modified"] {
+            let mut before = hook(); before["trustStatus"] = json!(trust); before["enabled"] = json!(false);
+            let mut after = before.clone(); after["trustStatus"] = json!("trusted");
+            let (result, requests) = exercise(before, after, HookChange::Trust, Ok(write_response()));
+            result.unwrap();
+            assert_eq!(requests[2].1["edits"][0]["value"], json!({"project.x.\"quoted\"":{"trusted_hash":"opaque:plugin:hash"}}));
+            assert!(requests[2].1["edits"][0]["value"]["project.x.\"quoted\""].get("enabled").is_none());
+        }
+    }
+    #[test]
+    fn incomplete_handler_metadata_cannot_authorize_trust() {
+        for handler in ["mcpTool", "prompt", "agent"] {
+            for trust in ["untrusted", "modified"] {
+                let mut before = handler_hook(handler); before["trustStatus"] = json!(trust);
+                let mut after = before.clone(); after["trustStatus"] = json!("trusted");
+                let (result, requests) = exercise(before, after, HookChange::Trust, Ok(write_response()));
+                assert!(result.unwrap_err().contains("실행 내용 전체"));
+                assert_eq!(requests.len(), 2, "{handler} must never reach config/batchWrite");
+            }
+        }
+    }
+    #[test]
+    fn already_trusted_mcp_hook_toggle_keeps_exact_write_and_readback_contract() {
+        for enabled in [false, true] {
+            let mut before = handler_hook("mcpTool"); before["enabled"] = json!(!enabled);
+            let mut after = before.clone(); after["enabled"] = json!(enabled);
+            let (result, requests) = exercise(before, after, HookChange::Enabled(enabled), Ok(write_response()));
+            result.unwrap();
+            assert_eq!(requests.len(), 4);
+            assert_eq!(requests[2].1["edits"][0], json!({"keyPath":"hooks.state","value":{"project.x.\"quoted\"":{"enabled":enabled}},"mergeStrategy":"upsert"}));
+            assert_eq!(requests[2].1["expectedVersion"], "version-before");
+            assert_eq!(requests[3].0, "hooks/list");
+        }
     }
     #[test]
     fn modified_or_untrusted_hook_cannot_be_enabled_but_can_be_disabled() {
-        for trust in ["modified", "untrusted"] {
-            let mut before = hook(); before["trustStatus"] = json!(trust);
-            let (result, requests) = exercise(before.clone(), hook(), HookChange::Enabled(true), Ok(write_response()));
-            assert!(result.is_err()); assert_eq!(requests.len(), 2);
-            let mut after = before.clone(); after["enabled"] = json!(false);
-            exercise(before, after, HookChange::Enabled(false), Ok(write_response())).0.unwrap();
+        for handler in ["command", "mcpTool", "prompt", "agent"] {
+            for trust in ["modified", "untrusted"] {
+                let mut before = handler_hook(handler); before["trustStatus"] = json!(trust);
+                let (result, requests) = exercise(before.clone(), before.clone(), HookChange::Enabled(true), Ok(write_response()));
+                assert!(result.is_err()); assert_eq!(requests.len(), 2);
+                let mut after = before.clone(); after["enabled"] = json!(false);
+                exercise(before, after, HookChange::Enabled(false), Ok(write_response())).0.unwrap();
+            }
         }
     }
     // HK04 / HK11: policy or content changes must fail before any write.
     #[test]
     fn managed_policy_and_stale_hash_reject_every_mutation_before_write() {
         for change in [HookChange::Enabled(false), HookChange::Enabled(true), HookChange::Trust] {
-            for field in ["isManaged", "trustStatus", "currentHash"] {
-                let mut before = hook(); before[field] = match field { "isManaged" => json!(true), "trustStatus" => json!("managed"), _ => json!("new-hash") };
-                let (result, requests) = exercise(before, hook(), change, Ok(write_response()));
-                assert!(result.is_err()); assert_eq!(requests.len(), 2);
+            for handler in ["command", "mcpTool", "prompt", "agent"] {
+                for field in ["isManaged", "trustStatus", "currentHash"] {
+                    let mut before = handler_hook(handler); before[field] = match field { "isManaged" => json!(true), "trustStatus" => json!("managed"), _ => json!("new-hash") };
+                    let (result, requests) = exercise(before, hook(), change, Ok(write_response()));
+                    let error = result.unwrap_err();
+                    assert!(error.contains(if field == "currentHash" { "내용이 바뀌었습니다" } else { "관리 Hook" }));
+                    assert_eq!(requests.len(), 2);
+                }
             }
         }
     }

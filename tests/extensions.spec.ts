@@ -229,6 +229,30 @@ test('a hook changed after review is not reported as successfully trusted', asyn
   expect(await extensionCalls(page)).toHaveLength(1);
 });
 
+for (const handlerType of ['mcpTool', 'prompt', 'agent']) test(`incomplete ${handlerType} execution metadata never offers trust approval while trusted activation remains available`, async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(handlerType => {
+    const hook = (window as any).extensionsFixture.hooks[1];
+    Object.assign(hook, { handlerType, command: null, server: 'fixture-server', tool: 'fixture-tool' });
+  }, handlerType);
+  await open(page); await page.locator('#extensions-tab-hooks').click();
+  await page.locator('[data-extension-id="project.review"]').click();
+  await expect(page.locator('#extensions-hook-trust')).toHaveCount(0);
+  await expect(page.locator('#extensions-detail')).toContainText('실행 입력을 모두 확인할 수 없어');
+  await expect(page.locator('#extensions-hook-toggle')).toHaveCount(0);
+  expect(await extensionCalls(page)).toEqual([]);
+  await page.evaluate(() => { const hook = (window as any).extensionsFixture.hooks[1]; hook.enabled = true; });
+  await page.locator('#extensions-refresh').click();
+  await expect(page.locator('#extensions-dialog')).toHaveAttribute('aria-busy', 'false');
+  await page.locator('#extensions-hook-toggle').click(); await confirm(page);
+  expect((await extensionCalls(page))[0].args.request).toEqual({ operation: 'setHookEnabled', key: 'project.review', currentHash: 'opaque-project:v1', enabled: false });
+  await page.evaluate(() => { (window as any).extensionsFixture.hooks[1].trustStatus = 'trusted'; });
+  await page.locator('#extensions-refresh').click();
+  await expect(page.locator('#extensions-dialog')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#extensions-hook-toggle')).toHaveText('사용');
+  await expect(page.locator('#extensions-hook-trust')).toHaveCount(0);
+});
+
 test('all four extension tabs remain keyboard reachable without catalog discovery', async ({ page }) => {
   await fixture(page); await open(page); const before = await extensionCalls(page, 'extensions_list');
   await page.locator('#extensions-tab-plugins').focus(); await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight');

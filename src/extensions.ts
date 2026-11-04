@@ -171,7 +171,10 @@ export function createExtensionsManager(host: ExtensionsHost) {
       } else {
         const needsReview = hook.trustStatus === 'untrusted' || hook.trustStatus === 'modified';
         if (hook.enabled || !needsReview) action(actions, 'extensions-hook-toggle', hook.enabled ? '사용 안 함' : '사용', hook.enabled ? 'Disable' : 'Enable', () => review({ operation: 'setHookEnabled', key: hook.key, currentHash: hook.currentHash, enabled: !hook.enabled }, hookReview(hook), 'Hook 사용 설정', 'Change hook activation', ...userScope));
-        if (needsReview) action(actions, 'extensions-hook-trust', '내용 검토 후 신뢰…', 'Review and trust…', () => review({ operation: 'trustHook', key: hook.key, currentHash: hook.currentHash }, hookReview(hook), '이 Hook의 현재 내용을 신뢰할까요?', 'Trust the current contents of this hook?', '등록 파일과 실행 내용을 확인하세요. 현재 내용만 승인하며 사용 상태는 바꾸지 않습니다.', 'Review its definition file and handler. Only these contents are trusted; activation is unchanged.'));
+        if (needsReview && hook.handlerType === 'command') action(actions, 'extensions-hook-trust', '내용 검토 후 신뢰…', 'Review and trust…', () => review({ operation: 'trustHook', key: hook.key, currentHash: hook.currentHash }, hookReview(hook), '이 Hook의 현재 내용을 신뢰할까요?', 'Trust the current contents of this hook?', '등록 파일과 실행 내용을 확인하세요. 현재 내용만 승인하며 사용 상태는 바꾸지 않습니다.', 'Review its definition file and handler. Only these contents are trusted; activation is unchanged.'));
+        else if (needsReview) {
+          const unavailable = document.createElement('p'); bindText(unavailable, '실행 입력을 모두 확인할 수 없어 이 앱에서는 신뢰 승인할 수 없습니다. 등록 파일과 사용 중인 CLI의 지원 범위를 확인하세요.', 'The complete execution input is unavailable, so this app cannot approve trust. Review the definition file and the capabilities of your CLI.'); detail.append(unavailable);
+        }
       }
     } else {
       const marketplace = row.item as ExtensionMarketplace;
