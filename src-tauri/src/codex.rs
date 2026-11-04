@@ -638,11 +638,14 @@ impl Proxy {
         let job=self.job.take();
         if let Some(job)=job.as_ref() {if let Err(error)=job.terminate(){errors.push(format!("공유 proxy Job 종료 실패: {error}"));}}
         else {errors.push("공유 proxy의 소유 Job 종료를 확인할 수 없습니다.".into());}
-        match self.child.try_wait() {
-            Ok(Some(_))=>{},
-            Ok(None)=>if let Err(error)=self.child.kill(){if !matches!(self.child.try_wait(),Ok(Some(_))) {errors.push(format!("공유 proxy 직접 자식 종료 실패: {error}"));}},
-            Err(error)=>errors.push(format!("공유 proxy 직접 자식 상태 확인 실패: {error}")),
-        }
+        // Job termination is asynchronous. TerminateProcess may report access
+        // denied while the same owned handle is still becoming signalled;
+        // decide cleanup by its bounded wait, not that intermediate request.
+        let kill_error = match self.child.try_wait() {
+            Ok(Some(_))=>None,
+            Ok(None)=>self.child.kill().err(),
+            Err(error)=>{errors.push(format!("공유 proxy 직접 자식 상태 확인 실패: {error}"));None},
+        };
         let mut child_done=false;
         #[cfg(windows)] let mut job_empty=false;
         loop {
@@ -653,7 +656,10 @@ impl Proxy {
             if complete || Instant::now()>=deadline {break;}
             thread::sleep(Duration::from_millis(10));
         }
-        if !child_done {errors.push("공유 proxy 직접 자식의 3초 내 정산을 확인하지 못했습니다.".into());}
+        if !child_done {
+            if let Some(error)=kill_error {errors.push(format!("공유 proxy 직접 자식 종료 실패: {error}"));}
+            errors.push("공유 proxy 직접 자식의 3초 내 정산을 확인하지 못했습니다.".into());
+        }
         #[cfg(windows)] if !job_empty {errors.push("공유 proxy의 자기 Job ActiveProcesses=0을 3초 내 확인하지 못했습니다.".into());}
         if let Some(reader)=self.reader.take() {
             while !reader.is_finished()&&Instant::now()<deadline {thread::sleep(Duration::from_millis(10));}

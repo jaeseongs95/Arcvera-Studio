@@ -39,8 +39,16 @@ C01/C04/C03과 C02의 crash 분기만 새 launch 실패경계 때문에 추가�
 3. `src-tauri/tests/native_pty.rs`와 clean packaged self-test로 C08/C09를 실행한다. 운영 앱·기존 daemon에 연결하는 native smoke 전체를 임의 실행하지 않는다.
 4. 각 실행에 commit SHA, 정확한 명령, 종료 코드, fixture PID+생성시각, assertion 원시 stdout/stderr, report 경로를 보존한다. assertion FAIL, launcher/env ERROR, deadline TIMEOUT, 미실행 NOT_RUN을 분리한다. 기존 실패를 성공 재실행으로 덮지 않는다.
 
-proof/result: 현재 제품 검증은 전부 NOT_RUN이며 red/green 또는 mutation 근거가 없다. 계획·CS JSON 구조 검사 성공은 제품 PASS, API 실현성, 실제 자원 회수 증거가 아니다. 구현 뒤 가능하면 C01의 Job 적용 제거/늦춤, C02 kill-on-close 제거, C06 취소·output 상한 제거에 해당하는 표적 반례를 격리 사본에서 실행해 해당 assertion이 실패하는지 확인한다. 운영 소스 reset이나 필수 기대값 완화는 하지 않는다.
+proof/result: 사전 계획 작성 시 제품 검증은 전부 NOT_RUN이며 red/green 또는 mutation 근거가 없었다. 계획·CS JSON 구조 검사 성공은 제품 PASS, API 실현성, 실제 자원 회수 증거가 아니다. 구현 뒤 가능하면 C01의 Job 적용 제거/늦춤, C02 kill-on-close 제거, C06 취소·output 상한 제거에 해당하는 표적 반례를 격리 사본에서 실행해 해당 assertion이 실패하는지 확인한다. 운영 소스 reset이나 필수 기대값 완화는 하지 않는다.
 
 ## CS 적용 범위
 
 `OS-LIFETIME-001`(draft)은 실제 Windows 프로세스 통합으로 process/thread/pipe/ConPTY/Job handle의 획득·해제 주체가 바뀌기 때문에 명시적으로 도입한다. `CONC-CANCEL-004`는 launch/stop/finish 경합, `CONC-LOCK-003`은 process/termination/writer/adapter/cron lock 아래 cleanup·join의 대기에만 적용한다. claim/DB/메시징/파일 게시/시계점프 카드는 이 변경에 새 의무를 만들지 않는다. lock 검증 O10은 정적 획득 순서·락 아래 blocking I/O/join 검토이며 실제 정체 취소는 C08의 기존 fixture로 관측한다.
+
+
+## 구현 후 확인 기록
+
+- 첫 통합 후보 `151b6c4`: Windows CI `41823806866`에서 E2E 385 PASS·1 skipped, Rust 332 PASS·2 FAIL·6 ignored. 직접 부모·Job·빠른 종료·시작 실패·정상/강제 앱 종료 사례는 실행됐으며, 전체 성공으로 판정하지 않는다. 원시 기록은 작업 사본 artifacts/ci-151b6c4.log에 보존한다.
+- 대량 출력 실패는 CreatePipe 기본 버퍼와 기존 20ms polling의 상호작용을 원본 C# 8MiB+1KiB 출력 및 제품 capture 함수 그대로 재현했다. timeout10초와 8MiB 상한을 보존한 채 64KiB 버퍼로 바꿔 판별했다. 이 소규모 실행은 전체 제품 수용을 대신하지 않는다.
+- C07에는 실제 Engine.launch의 process slot 설치 직후 실패를 주입해 완료 Changed 시점의 slot 제거·원래 child handle 종료·unknown 1회 발표를 검사하는 회귀를 추가했다. 선행 finish를 유지한 후보를 먼저 실행해 탐지능력을 확인한 다음 해당 한 줄을 제거한다. cfg(test) one-shot probe만 사용하며 생산 빌드에 주입 기능을 넣지 않는다.
+- 이후 후보의 전체 CI·패키징·독립감사는 각 고정 SHA의 별도 실행 근거로 판정한다. 진행 중인 사용자 앱·daemon·개인 설정과 인증은 이 시험의 대상이 아니다.

@@ -188,7 +188,9 @@ mod platform {
             Stdio::File(file) => duplicate(file.as_raw_handle(), true)?,
             Stdio::Pipe => {
                 let (mut read, mut write) = (ptr::null_mut(),ptr::null_mut());
-                if unsafe { CreatePipe(&mut read,&mut write,ptr::null(),0) } == 0 { return Err(format!("create owned stdio pipe: {}",io::Error::last_os_error())); }
+                // The capture reader polls empty pipes every 20ms. A 64KiB
+                // window avoids throttling bursts of small console writes.
+                if unsafe { CreatePipe(&mut read,&mut write,ptr::null(),64 * 1024) } == 0 { return Err(format!("create owned stdio pipe: {}",io::Error::last_os_error())); }
                 let read = unsafe { OwnedHandle::from_raw_handle(read) };
                 let write = unsafe { OwnedHandle::from_raw_handle(write) };
                 let (child,parent) = if input { (read,write) } else { (write,read) };

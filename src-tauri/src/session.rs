@@ -308,6 +308,9 @@ struct RuntimeSnapshot { generation: u64, executable: std::ffi::OsString, server
 #[derive(Debug)]
 struct PreparedRuntime { selection: RuntimeSnapshot, preparation: u64 }
 
+#[cfg(test)]
+type PostInstallLaunchProbe = Arc<dyn Fn(&Arc<Session>, &dyn portable_pty::Child) -> Result<(), String> + Send + Sync>;
+
 struct EngineInner {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     store: Arc<Mutex<Store>>,
@@ -315,6 +318,8 @@ struct EngineInner {
     exiting: Arc<AtomicBool>,
     attachments: crate::conversation_attachments::ConversationAttachments,
     runtime: Mutex<RuntimeSelection>,
+    #[cfg(test)]
+    post_install_launch_probe: Mutex<Option<PostInstallLaunchProbe>>,
 }
 
 struct RuntimeTransitionPermit(Arc<EngineInner>);
@@ -339,7 +344,9 @@ impl Engine {
         for info in saved {
             sessions.insert(info.id.clone(), Arc::new(Session { info: Mutex::new(info), phase: AtomicU8::new(3), stop_requested: Arc::new(AtomicBool::new(false)), cleanup_failed:AtomicBool::new(false), process: Mutex::new(None), subagent_receipts: Mutex::new(None), flow: OutputFlow::default(), done: (Mutex::new(true), Condvar::new()), sink: sink.clone(), store: store.clone(), attachments:attachments.clone() }));
         }
-        Ok(Self { inner: Arc::new(EngineInner { sessions: Mutex::new(sessions), store, sink, exiting: Arc::new(AtomicBool::new(false)), attachments, runtime: Mutex::new(RuntimeSelection::default()) }) })
+        Ok(Self { inner: Arc::new(EngineInner { sessions: Mutex::new(sessions), store, sink, exiting: Arc::new(AtomicBool::new(false)), attachments, runtime: Mutex::new(RuntimeSelection::default()),
+            #[cfg(test)] post_install_launch_probe: Mutex::new(None),
+        }) })
     }
 
     fn allocate(&self, request: &StartRequest) -> Result<Arc<Session>, String> {
@@ -441,6 +448,10 @@ impl Engine {
                 #[cfg(windows)] cron:Mutex::new(None),
                 termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false) });
             *session.process.lock().map_err(|_| "session process lock poisoned")? = Some(process.clone());
+            #[cfg(test)] {
+                let probe = self.inner.post_install_launch_probe.lock().map_err(|_| "launch probe lock poisoned")?.take();
+                if let Some(probe) = probe { probe(&session, child.child.as_ref())?; }
+            }
             #[cfg(windows)]
             if let Some(cron)=cron {
                 let weak=Arc::downgrade(&process);
