@@ -310,12 +310,16 @@ impl ConversationConnection {
             rpc.deadline=Some(previous_deadline.unwrap_or_else(||Instant::now()+RPC_TIMEOUT).min(Instant::now()+RPC_TIMEOUT));
             let mut revision=revision;
             for _ in 0..2 {
+                let observed_turn=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?.async_questions.active_turn_id().map(str::to_owned);
                 match restore_async_questions(&self.0,rpc,thread_id,revision) {
                     Ok(true)=>break,
                     Ok(false)=>{revision=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?.async_questions.revision;},
                     Err(error)=>{
                         let mut events=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?;
-                        if events.context_active==Some(false) {events.async_questions.idle();}
+                        // Context status may have no turn identity after subscribe.
+                        // Only the exact previously observed question turn's end
+                        // can turn a failed history read into a confirmed empty inbox.
+                        if observed_turn.as_deref().is_some_and(|turn|events.async_questions.closed_turn_matches(turn)) {events.async_questions.idle();}
                         else {events.async_questions.unavailable(&error);}
                         break;
                     },
@@ -1106,6 +1110,26 @@ mod tests {
             control.observer_message("original",json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();assert!(control.question_metadata_complete().unwrap());assert!(control.pending_snapshot().unwrap().2.is_empty());
             control.observer_message("original",async_notification(async_item("retained"))).unwrap();assert!(control.pending_snapshot().unwrap().2.is_empty());
             drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn async_public_subscribe_history_failure_only_confirms_the_observed_current_turn_end() {
+        for completed_turn in ["other-old-turn","turn-async"] {
+            let(control,mut rpc,listener)=fixture();let cwd=env::current_dir().unwrap().canonicalize().unwrap();let expected_cwd=cwd.clone();
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+            control.observer_message("original",async_notification(async_item("retained"))).unwrap();
+            let server=thread::spawn(move|| {
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let subscribe=read_request(&mut socket);assert_eq!(subscribe["method"],PASSIVE_SUBSCRIBE);reply(&mut socket,&subscribe,json!({"thread":{"id":"original","cwd":expected_cwd,"turns":[],"status":{"type":"active","activeFlags":[]}}}));
+                let turns=read_request(&mut socket);assert_eq!(turns["method"],"thread/turns/list");assert_eq!(turns["params"],json!({"threadId":"original","limit":1,"sortDirection":"desc","itemsView":"summary"}));
+                socket.send(Message::Text(json!({"method":"turn/completed","params":{"threadId":"original","turn":{"id":completed_turn}}}).to_string().into())).unwrap();
+                socket.send(Message::Text(json!({"id":turns["id"],"error":{"code":-32601,"message":"fixture history method unsupported"}}).to_string().into())).unwrap();assert_closed_without_input(&mut socket);
+            });
+            assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());
+            let (_,_,pending,complete)=control.question_snapshot().unwrap();
+            if completed_turn=="turn-async" {assert!(complete);assert!(pending.is_empty());}
+            else {assert!(!complete,"an unrelated old completion cannot confirm the current question inbox as empty");assert_eq!(pending.len(),1);assert_eq!(pending[0]["requestId"],r#"["request_user_input_async","retained",0]"#);assert_eq!(pending[0]["params"]["questions"][0]["question"],"계속할까요?");assert!(pending[0]["metadataDiagnostic"].is_string());}
+            assert_eq!(rpc.next_id,2);assert!(!control.0.unknown.load(Ordering::Acquire));drop(rpc);server.join().unwrap();
         }
     }
     #[test]

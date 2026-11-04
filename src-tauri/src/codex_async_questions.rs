@@ -35,6 +35,8 @@ impl State {
     }
     pub(super) fn clear(&mut self) { *self = Self::default(); }
     pub(super) fn complete(&self) -> bool { self.complete }
+    pub(super) fn active_turn_id(&self) -> Option<&str> { self.turn.as_deref().filter(|_|!self.current_closed) }
+    pub(super) fn closed_turn_matches(&self, turn: &str) -> bool { self.current_closed && self.turn.as_deref()==Some(turn) }
     pub(super) fn diagnostic(&self) -> Option<&str> { self.diagnostic.as_deref() }
     pub(super) fn has_attempt(&self) -> bool { self.pending.values().any(|request|request["responded"]==true) }
     pub(super) fn snapshot(&self, fresh: bool) -> Vec<Value> {

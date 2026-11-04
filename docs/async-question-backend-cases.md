@@ -97,3 +97,20 @@ AQ17 실제 결과: 동일 `r36_tuple_variants_preserve_pending_questions_in_com
 - 두 실행의 테스트 블록 SHA-256은 동일한 `1e625215f084079152509900ba95472a2cc57c3a891386746338044469349128`, 수정 후 모듈 SHA-256은 `72926bb4dd22e76f274dbfe2e8fbf5a507d8b144a20322303520449ca7efbb19`다. 이전 `result.json`, `review-fix/result-before.json`, `review-fix/result-after.json`은 덮어쓰지 않았다.
 - immutable enum 전체의 struct와 tuple variant 양쪽을 포함해 추출한 19종을 production 검증 목록과 비교하여 누락 0종을 확인했다. 원문은 `tuple-variants-fix/enum-comparison.json`이다.
 - 공개 WS `async_public_history_accepts_r36_tuple_variants_beside_pending_questions`는 정확한 R36 entry/필드를 사용하며 신규 후보 CI NOT_RUN이다. 진행 중이던 이전 후보 CI 결과로 대체하지 않는다. 변경 Rust 2파일의 파일 쓰기 없는 rustfmt parse exit 0, `git diff --check` exit 0을 확인했다.
+
+## f9bc 최종 감사 후 구독 경합 회귀 계획
+
+수정 전 선작성. 구독 응답의 active 상태와 이전에 관측한 현재 turn 질문이 있는 상황에서, context 상태와 async 질문의 종료 판정을 혼동하지 않아야 한다. 기존 f9bc 검증·감사 기록을 보존한다.
+
+| ID | 입력 / 사전조건 | 절차 | 기대 결과 / 합격 조건 | 실제 결과 |
+|---|---|---|---|---|
+| AQ18 | turn-async의 retained 질문 1개, subscribePassive는 active | thread/turns/list 응답 대기 중 turn/completed(other-old-turn) 알림 후 -32601 history 오류 | retained stable id와 원문 보존, complete=false, 질문 조회 진단 유지. 다른 turn 완료를 현재 turn idle로 해석해 0건을 확정하지 않음 | NOT_RUN |
+| AQ19 | AQ18과 같은 현재 turn | 대기 중 turn/completed(turn-async) 알림 후 동일 history 오류 | 정확한 현재 turn 종료 근거로 pending=0/complete=true 유지. 다른 turn·새 turn과 혼합하지 않음 | NOT_RUN |
+
+공개 회귀 `async_public_subscribe_history_failure_only_confirms_the_observed_current_turn_end`를 두 입력에 같은 fixture/오류로 실행한다. 회귀를 추가한 수정 전 `codex_conversation.rs` 전체를 `artifacts/async-subscribe-race-fix/red-codex_conversation.rs`에 보존하고 root가 격리 native RED 시험에 사용한다. 로컬에서 실행하지 않은 RPC 시험을 RED/PASS로 보고하지 않는다.
+
+AQ18/19 소스 판별 및 최소 수정: 구독이 `context_turn=None`으로 바꾼 뒤 별도 context reducer는 식별되지 않은 old turn 완료로도 `context_active=false`가 될 수 있었다. async reducer는 해당 old 종료에서 현재 pending을 보존했지만, history 오류 처리의 `context_active==false → idle()`가 이를 다시 지워 완전한 0건으로 만들었다. 오류 처리는 이제 복원 시도 직전에 알고 있던 async active turn id를 보존하고, 그 정확한 turn의 종료 표식이 현재 async state에 남아 있을 때만 idle을 확정한다. 다른 turn·현재 id 불명·새 turn 교체에서는 오류 진단과 마지막 질문을 보존한다. 별도 context 기능의 동작은 변경하지 않았다.
+
+같은 원인의 다른 idle 경로도 확인했다. production 호출은 (1) 검증된 passive 응답 자체가 명시 idle이며 구독 중 async revision이 변하지 않은 경우, (2) 이번 exact async turn 종료 확인 후 history 오류 처리뿐이다. `State::restore(None)`도 idle을 호출하지만 production history helper는 진행 turn이 없으면 먼저 오류로 반환하므로 이 경로에 None을 전달하지 않는다. `turn/completed`의 직접 질문 정리는 State의 현재 turn id 일치에서만 실행된다. 선택 thread의 `thread/deleted`는 별도 권위 있는 삭제 알림 경로다. 별도 context의 추정 inactive를 재사용하는 다른 async idle production 경로는 확인한 두 Rust 파일에서 없었다.
+
+로컬 실제 검증은 `node artifacts/async-subscribe-race-fix/run-pure.cjs` exit 0, 기존 pure 회귀 **11 PASS / 0 FAIL**이다. 이 runner는 컴파일 TEMP/target을 기존 `D:/codex/build/odAsyncProbe1104`로 지정하며 Git을 실행하지 않는다. 원문 `artifacts/async-subscribe-race-fix/pure-regressions.json`에 보존했다. 변경 Rust 2파일의 쓰기 없는 rustfmt 구문 parse exit 0도 확인했다. 공개 RPC RED/GREEN은 root CI 담당이 실행하며 현재 이 문서의 로컬 RPC 상태는 NOT_RUN이다. 새 source provenance 및 RED/GREEN 전체 시험 블록 바이트 비교는 `artifacts/async-subscribe-race-fix/provenance.json`에 있다.
