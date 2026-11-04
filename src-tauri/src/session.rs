@@ -317,6 +317,8 @@ struct PreparedRuntime { selection: RuntimeSnapshot, preparation: u64 }
 
 #[cfg(test)]
 type PostInstallLaunchProbe = Arc<dyn Fn(&Arc<Session>, &dyn portable_pty::Child) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+type PreReaderOutputProbe = Arc<dyn Fn(&Arc<Session>) -> Result<(), String> + Send + Sync>;
 
 struct EngineInner {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -327,6 +329,8 @@ struct EngineInner {
     runtime: Mutex<RuntimeSelection>,
     #[cfg(test)]
     post_install_launch_probe: Mutex<Option<PostInstallLaunchProbe>>,
+    #[cfg(test)]
+    pre_reader_output_probe: Mutex<Option<PreReaderOutputProbe>>,
 }
 
 struct RuntimeTransitionPermit(Arc<EngineInner>);
@@ -353,6 +357,7 @@ impl Engine {
         }
         Ok(Self { inner: Arc::new(EngineInner { sessions: Mutex::new(sessions), store, sink, exiting: Arc::new(AtomicBool::new(false)), attachments, runtime: Mutex::new(RuntimeSelection::default()),
             #[cfg(test)] post_install_launch_probe: Mutex::new(None),
+            #[cfg(test)] pre_reader_output_probe: Mutex::new(None),
         }) })
     }
 
@@ -477,6 +482,10 @@ impl Engine {
             Ok(parts) => parts,
             Err(error) => return Err(error),
         };
+        #[cfg(test)] {
+            let probe = self.inner.pre_reader_output_probe.lock().map_err(|_| "pre-reader probe lock poisoned")?.take();
+            if let Some(probe) = probe { probe(&session)?; }
+        }
         let reading = session.clone();
         let reader_thread = crate::owned_worker::spawn("pty-output", move || -> Result<(), String> {
             let mut decoder = Utf8Decoder::default();
@@ -536,7 +545,8 @@ impl Engine {
             let _ = waiting.finish_reaped(state, shared_unconfirmed);
         }).map_err(|e| format!("start PTY reaper: {e}"))?;
         // request_stop uses this same metadata lock. A stop which wins must
-        // never execute the suspended child; no blocking I/O/join is done here.
+        // never execute the suspended child. Process teardown, pending rollback
+        // and close/drain/join run only after releasing this metadata lock.
         let info = session.info.lock().map_err(|_| "session metadata lock poisoned")?;
         if session.stop_requested.load(Ordering::Acquire) {
             drop(info);
@@ -2268,6 +2278,10 @@ mod lifecycle_tests {
         std::fs::remove_dir(directory).unwrap();
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "session_startup_output_tests.rs"]
+mod startup_output_tests;
 
 #[cfg(all(test, windows))]
 mod settings_tests {
