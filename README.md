@@ -42,9 +42,8 @@ in their original language; the app does not change the CLI or OS locale.
 Download the portable ZIP or per-user installer from
 [Releases](https://github.com/jaeseongs95/opendiy-desktop/releases). Windows x64 and
 WebView2 are required. The application is unsigned.
-Extract the whole portable ZIP and run `opendiy-desktop.exe`. Keep
-`opendiy-desktop-helper.exe` beside it: Windows requires a console process for the
-terminal side while the main application uses a normal desktop window.
+Extract the whole portable ZIP and run `opendiy-desktop.exe`. The application
+directly owns its terminal and protocol children; no Desktop helper executable is required.
 
 Install and sign in to OpenDIY Codex or a compatible official Codex CLI first. Desktop
 packages do not bundle a CLI binary, and the app does not download one. Open **⚙ Settings**
@@ -264,10 +263,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run tauri -- dev
 ```
 
-Package the console helper before the desktop bundle:
+Package the desktop bundle:
 
 ```powershell
-cargo build --locked --manifest-path src-tauri/Cargo.toml --release --bin opendiy-desktop-helper
 npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
 ```
 If Unicode workspace paths cause native tool failures, build in a separate

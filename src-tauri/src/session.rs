@@ -1,4 +1,4 @@
-use crate::{codex::{self, CodexEvent, CodexSession}, flow::{OutputFlow, Utf8Decoder}, process_job::{LaunchGate, ProcessJob}, storage::Store};
+use crate::{codex::{self, CodexEvent, CodexSession}, flow::{OutputFlow, Utf8Decoder}, process_job::ProcessJob, storage::Store};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::{Read, Write}, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, AtomicU8, Ordering}, Arc, Condvar, Mutex}, thread, time::{Duration, Instant}};
@@ -63,7 +63,6 @@ struct ProcessControl {
     termination: Mutex<()>,
     shared_cleanup_failed: AtomicBool,
     shared_stop_attempted: AtomicBool,
-    _gate: LaunchGate,
 }
 
 /// Child's library handle does not terminate on Drop. Every failed thread spawn
@@ -424,18 +423,23 @@ impl Engine {
             let pair = native_pty_system().openpty(size(cols, rows)).map_err(|e| format!("open native PTY: {e}"))?;
             let reader = pair.master.try_clone_reader().map_err(|e| format!("open PTY reader: {e}"))?;
             let writer = pair.master.take_writer().map_err(|e| format!("open PTY writer: {e}"))?;
-            let (command, gate) = LaunchGate::wrap_pty(command)?;
-            let raw_child = pair.slave.spawn_command(command).map_err(|e| format!("spawn owned PTY process: {e}"))?;
+            // Only the opted-in TUI may receive its one-use cron control credentials.
+            if !command.get_argv().iter().skip(1).any(|arg| arg == "--desktop-cron-control=pipe-v1") {
+                command.env_remove("CODEX_DESKTOP_CRON_BOOTSTRAP");
+                command.env_remove("CODEX_DESKTOP_CRON_TOKEN");
+            }
+            let job = ProcessJob::new(false)?;
+            #[cfg(windows)]
+            let (raw_child, pending) = pair.slave.spawn_command_in_job_suspended(command, job.as_handle())
+                .map_err(|e| format!("spawn owned PTY process: {e}"))?.into_parts();
+            #[cfg(not(windows))]
+            let (raw_child, pending) = (pair.slave.spawn_command(command).map_err(|e| format!("spawn owned PTY process: {e}"))?, ());
             let child = OwnedChild { child: raw_child, reaped: false };
             drop(pair.slave);
-            let job = match ProcessJob::assign_pty(child.child.as_ref()) {
-                Ok(job) => job,
-                Err(error) => return Err(error),
-            };
             let killer = child.child.clone_killer();
             let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
                 #[cfg(windows)] cron:Mutex::new(None),
-                termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false), _gate: gate });
+                termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false) });
             *session.process.lock().map_err(|_| "session process lock poisoned")? = Some(process.clone());
             #[cfg(windows)]
             if let Some(cron)=cron {
@@ -449,26 +453,12 @@ impl Engine {
                 });
                 *process.cron.lock().map_err(|_|"예약 제어 설치 상태 오류")?=Some(cron.start(verify)?);
             }
-            // 소유 Job·제어 연결·정리 경로를 모두 설치한 뒤 도우미를 실행한다.
-            process._gate.release()?;
-            Ok((child, reader, process))
+            Ok((child, reader, process, pending))
         };
-        let (mut child, mut reader, process) = match launch() {
+        let (mut child, mut reader, process, mut pending) = match launch() {
             Ok(parts) => parts,
             Err(error) => { session.finish(if session.stop_requested.load(Ordering::Acquire) { "stopped" } else { "error" })?; return Err(error); }
         };
-        // Installation and stop serialize through the process slot. A stop that
-        // won during prepare/openpty must also terminate the newly installed child.
-        if session.stop_requested.load(Ordering::Acquire) { process.terminate()?; }
-        else {
-            // Process liveness does not prove the vendor is running a turn.
-            // Publish the latest preparation observation only after installation,
-            // under the same metadata lock that decides stop/finish ownership.
-            session.update(|info| {
-                session.phase.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
-                if info.state == "starting" { info.state = "unknown".into(); }
-            }, true)?;
-        }
         let reading = session.clone();
         let reader_thread = thread::Builder::new().name("pty-output".into()).spawn(move || -> Result<(), String> {
             let mut decoder = Utf8Decoder::default();
@@ -496,6 +486,7 @@ impl Engine {
             Ok(())
         }).map_err(|e| format!("start PTY reader: {e}"))?;
         let waiting = session.clone();
+        let launching_process = process.clone();
         thread::Builder::new().name("pty-reaper".into()).spawn(move || {
             let waited = child.wait();
             // 공유 turn의 중단 판정 전에 PTY 종료를 세션 중단 완료로 발표하지 않는다.
@@ -523,6 +514,26 @@ impl Engine {
             drop(termination);
             let _ = waiting.finish_reaped(state, shared_unconfirmed);
         }).map_err(|e| format!("start PTY reaper: {e}"))?;
+        // request_stop uses this same metadata lock. A stop which wins must
+        // never execute the suspended child; no blocking I/O/join is done here.
+        let info = session.info.lock().map_err(|_| "session metadata lock poisoned")?;
+        if session.stop_requested.load(Ordering::Acquire) {
+            drop(info);
+            drop(pending);
+            launching_process.terminate()?;
+        } else {
+            #[cfg(windows)]
+            let resumed = pending.try_resume().map_err(|e| format!("resume owned PTY process: {e}"));
+            #[cfg(not(windows))] let _ = pending;
+            drop(info);
+            // Failed resume retains the pending owner. Its bounded rollback
+            // runs after releasing metadata, including during unwinding.
+            #[cfg(windows)] resumed?;
+            session.update(|info| {
+                session.phase.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
+                if info.state == "starting" { info.state = "unknown".into(); }
+            }, true)?;
+        }
         guard.armed = false;
         session.info()
     }

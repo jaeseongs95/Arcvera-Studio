@@ -93,7 +93,7 @@ fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<TcpSt
 }
 
 struct CliProcess {
-    child: Child, job: Option<ProcessJob>, _gate: LaunchGate,
+    child: Child, job: Option<ProcessJob>,
     readers: Vec<JoinHandle<Result<Vec<u8>, String>>>, stop_capture: Arc<AtomicBool>,
 }
 impl Drop for CliProcess {
@@ -194,18 +194,19 @@ fn command_stdout_with_job(exe: &OsString, cwd: &Path, args: &[String], deadline
 fn command_output_with_job(exe: &OsString, cwd: &Path, args: &[String], deadline: Instant, cancelled: Option<&Arc<AtomicBool>>, daemon_launcher: bool) -> Result<CliCommandOutput, String> {
     check_cancelled(cancelled)?;
     if Instant::now() >= deadline { return Err("Codex command timed out; its result is unknown. Refresh before retrying".into()); }
-    let (mut command, gate) = LaunchGate::wrap_std(exe.as_os_str())?;
+    let mut command = background_command(exe.as_os_str());
     // 조회용 CLI에는 TUI의 일회 제어 자격을 상속하지 않는다.
     command.env_remove("CODEX_DESKTOP_CRON_BOOTSTRAP").env_remove("CODEX_DESKTOP_CRON_TOKEN");
-    command.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    hidden(&mut command);
-    let child = command.spawn().map_err(|e| format!("Start Codex command: {e}"))?;
-    let mut process = CliProcess { child, job: None, _gate: gate, readers: Vec::new(), stop_capture: Arc::new(AtomicBool::new(false)) };
-    process.job = Some(if daemon_launcher { ProcessJob::assign_daemon_launcher(&process.child)? } else { ProcessJob::assign_std(&process.child)? });
+    command.args(args).current_dir(cwd).stdin(OwnedStdio::null()).stdout(OwnedStdio::piped()).stderr(OwnedStdio::piped());
+    let job = ProcessJob::new(daemon_launcher)?;
+    let (child, pending) = owned_process::spawn_suspended(&mut command, job.as_handle())?;
+    let mut process = CliProcess { child, job: Some(job), readers: Vec::new(), stop_capture: Arc::new(AtomicBool::new(false)) };
     let overflow = Arc::new(AtomicBool::new(false));
     process.readers.push(capture_pipe(process.child.stdout.take().ok_or("Codex stdout pipe is missing")?, overflow.clone(), process.stop_capture.clone()));
     process.readers.push(capture_pipe(process.child.stderr.take().ok_or("Codex stderr pipe is missing")?, overflow.clone(), process.stop_capture.clone()));
-    process._gate.release()?;
+    check_cancelled(cancelled)?;
+    if Instant::now() >= deadline { return Err("Codex command timed out; its result is unknown. Refresh before retrying".into()); }
+    pending.resume()?;
     let status = loop {
         check_cancelled(cancelled)?;
         if overflow.load(Ordering::Acquire) { return Err("Codex command output exceeded 8 MiB; operation result may be unknown. Refresh before retrying".into()); }

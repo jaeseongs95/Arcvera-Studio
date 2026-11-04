@@ -3,7 +3,9 @@ mod codex_settings;
 mod conversation_attachments;
 mod executable_picker;
 mod flow;
+#[cfg(test)]
 mod launch_gate;
+mod owned_process;
 mod project;
 pub mod process_job;
 mod owned_tui_control;

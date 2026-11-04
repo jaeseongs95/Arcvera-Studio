@@ -4,6 +4,10 @@ use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
 
 #[test]
 fn failed_launch_guard_preserves_unknown_shared_stop_and_reaps_owned_pty() {
+    for resume_before_stop in [false, true] { failed_launch_guard_case(resume_before_stop); }
+}
+
+fn failed_launch_guard_case(resume_before_stop: bool) {
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink_events = events.clone();
     let sink = Arc::new(move |event| {
@@ -22,22 +26,28 @@ fn failed_launch_guard_preserves_unknown_shared_stop_and_reaps_owned_pty() {
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let mut command = CommandBuilder::new(shell);
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
-    let (command, gate) = LaunchGate::wrap_pty(command).unwrap();
-    let mut child = OwnedChild {child:pair.slave.spawn_command(command).unwrap(),reaped:false};
+    let job = ProcessJob::new(false).unwrap();
+    let suspended = pair.slave.spawn_command_in_job_suspended(command, job.as_handle()).unwrap();
+    let (pty_child, resume) = suspended.into_parts();
+    let mut resume = Some(resume);
+    let mut child = OwnedChild {child:pty_child,reaped:false};
     drop(pair.slave);
-    let job = ProcessJob::assign_pty(child.child.as_ref()).unwrap();
-    let handle = unsafe { OpenProcess(0x00100000, 0, child.child.process_id().unwrap()) };
+    let owned_pid = child.child.process_id().unwrap();
+    let handle = unsafe { OpenProcess(0x00100000, 0, owned_pid) };
     assert!(!handle.is_null());
     let original = unsafe { OwnedHandle::from_raw_handle(handle.cast()) };
-    gate.release().unwrap();
     let process = Arc::new(ProcessControl {master:Mutex::new(Some(pair.master)),writer:Mutex::new(Some(writer)),killer:Mutex::new(child.child.clone_killer()),job:Mutex::new(Some(job)),adapter:Mutex::new(None),
         #[cfg(windows)] cron:Mutex::new(None),
-        termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(true),shared_stop_attempted:AtomicBool::new(true),_gate:gate});
+        termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(true),shared_stop_attempted:AtomicBool::new(true)});
     // 공유 RPC가 불명 결과를 기록한 인계 플래그만 주입한다. 이후 adapter가 이미
     // 회수되었더라도 추가 owned 정리가 그 불명을 성공으로 바꾸면 안 된다.
     *session.process.lock().unwrap() = Some(process.clone());
+    if resume_before_stop { resume.take().unwrap().resume().unwrap(); }
     session.request_stop().unwrap();
     drop(LaunchGuard {session:session.clone(),armed:true});
+    // Cancellation before commit and failure after commit must both reap the
+    // same direct PTY. The retained token cannot revive a stopped generation.
+    drop(resume);
     assert_eq!(unsafe { WaitForSingleObject(original.as_raw_handle().cast(), 1000) }, 0, "원래 소유 PTY는 실패 정리 반환 전에 종료되어야 한다");
     child.wait().unwrap();
     drainer.join().unwrap();
@@ -49,4 +59,5 @@ fn failed_launch_guard_preserves_unknown_shared_stop_and_reaps_owned_pty() {
     assert!(*session.done.0.lock().unwrap());
     assert!(!events.lock().unwrap().iter().any(|state| state == "stopped"));
     assert!(engine.stop(&info.id, info.generation).unwrap_err().contains("재전송하지 않았습니다"));
+    println!("시작 실패 guard: resumeBeforeStop={resume_before_stop}, ownedPid={owned_pid}, state=unknown, active=false, done=true, stoppedNotPublished=true");
 }

@@ -480,9 +480,9 @@ fn fixture_tail(output: &str) -> String {
 
 #[cfg(windows)]
 fn unrelated_listener_receives_no_authentication() -> Result<(), String> {
-    use crate::{codex, process_job::{LaunchGate, ProcessJob}};
-    use std::{io::Read, net::TcpListener, os::windows::process::CommandExt, process::{Child, Stdio}};
-    struct OwnedSleeper { child: Child, job: Option<ProcessJob>, gate: LaunchGate }
+    use crate::{codex, process_job::ProcessJob, owned_process::{self, Child, Command, Stdio}};
+    use std::{io::Read, net::TcpListener};
+    struct OwnedSleeper { child: Child, job: Option<ProcessJob> }
     impl Drop for OwnedSleeper {
         fn drop(&mut self) {
             if let Some(job) = self.job.take() { let _ = job.terminate(); }
@@ -497,13 +497,13 @@ fn unrelated_listener_receives_no_authentication() -> Result<(), String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let endpoint = format!("ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
     let executable = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot is not defined")?).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let (mut command, gate) = LaunchGate::wrap_std(executable.as_os_str())?;
+    let mut command = Command::new(executable.as_os_str());
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(0x08000000);
-    let child = command.spawn().map_err(|e| format!("spawn isolated ownership fixture: {e}"))?;
-    let mut sleeper = OwnedSleeper { child, job: None, gate };
-    sleeper.job = Some(ProcessJob::assign_std(&sleeper.child)?);
-    sleeper.gate.release()?;
+    let job = ProcessJob::new(false)?;
+    let (child, pending) = owned_process::spawn_suspended(&mut command, job.as_handle())?;
+    let mut sleeper = OwnedSleeper { child, job: Some(job) };
+    pending.resume()?;
     let receiving = thread::spawn(move || -> Result<usize, String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut socket = loop {
