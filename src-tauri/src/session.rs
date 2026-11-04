@@ -468,7 +468,7 @@ impl Engine {
         };
         let (mut child, mut reader, process, mut pending) = match launch() {
             Ok(parts) => parts,
-            Err(error) => { session.finish(if session.stop_requested.load(Ordering::Acquire) { "stopped" } else { "error" })?; return Err(error); }
+            Err(error) => return Err(error),
         };
         let reading = session.clone();
         let reader_thread = thread::Builder::new().name("pty-output".into()).spawn(move || -> Result<(), String> {

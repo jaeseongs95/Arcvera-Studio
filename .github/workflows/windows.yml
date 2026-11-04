@@ -33,15 +33,17 @@ jobs:
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -p portable-pty --lib -- --nocapture
-      - run: npx playwright install chromium
-      - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: native-probe-executable
-          path: src-tauri/target/debug/opendiy-desktop.exe
+          path: |
+            src-tauri/target/debug/opendiy-desktop.exe
+            src-tauri/target/debug/deps/agent_grid_lib-*.exe
           if-no-files-found: warn
           retention-days: 14
+      - run: npx playwright install chromium
+      - run: npm run test:e2e
       - run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
       - name: Prepare portable executable and checksums
         shell: pwsh

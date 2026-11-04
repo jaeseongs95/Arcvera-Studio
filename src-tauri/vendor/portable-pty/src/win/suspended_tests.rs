@@ -364,6 +364,92 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
 }
 
 #[test]
+fn wait_after_kill_or_job_termination_observes_original_handle_signaled() {
+    let mut early = Vec::new();
+    for mode in ["kill", "job"] {
+        let harness = Harness::new();
+        for iteration in 0..128 {
+            let suspended = harness
+                .pair
+                .as_ref()
+                .unwrap()
+                .slave
+                .spawn_command_in_job_suspended(harness.command(), harness.job())
+                .unwrap();
+            let (mut child, token) = suspended.into_parts();
+            let raw = child.as_raw_handle().unwrap() as _;
+            assert_eq!(unsafe { WaitForSingleObject(raw, 0) }, 258);
+            if mode == "kill" {
+                child.kill().unwrap();
+            } else {
+                assert_ne!(
+                    unsafe { TerminateJobObject(harness.job.as_raw_handle() as _, 1) },
+                    0
+                );
+            }
+            let status = child.wait().unwrap();
+            let signaled_at_return = unsafe { WaitForSingleObject(raw, 0) };
+            if signaled_at_return != 0 {
+                let mut observed_exit = 0;
+                let queried = unsafe {
+                    winapi::um::processthreadsapi::GetExitCodeProcess(raw, &mut observed_exit)
+                };
+                early.push((
+                    mode,
+                    iteration,
+                    child.process_id(),
+                    status.exit_code(),
+                    signaled_at_return,
+                    queried,
+                    observed_exit,
+                ));
+            }
+            // Record the original observation before awaiting actual cleanup.
+            // Keep the same original handle alive throughout the comparison.
+            assert_eq!(unsafe { WaitForSingleObject(raw, 10_000) }, 0);
+            drop(token);
+        }
+        eprintln!(
+            "actual wait boundary: mode={mode}, iterations=128, early_returns={}",
+            early.iter().filter(|entry| entry.0 == mode).count()
+        );
+    }
+    assert!(
+        early.is_empty(),
+        "wait returned before its original process handle signaled: {:?}",
+        early
+    );
+}
+
+#[test]
+fn try_wait_recognizes_signaled_process_with_exit_code_259() {
+    let harness = Harness::new();
+    let mut command = harness.command();
+    command.env("PORTABLE_PTY_SUSPENDED_EXIT_CODE", "259");
+    let suspended = harness
+        .pair
+        .as_ref()
+        .unwrap()
+        .slave
+        .spawn_command_in_job_suspended(command, harness.job())
+        .unwrap();
+    let (mut child, token) = suspended.into_parts();
+    token.resume().unwrap();
+    assert_eq!(
+        unsafe { WaitForSingleObject(child.as_raw_handle().unwrap() as _, 10_000) },
+        0
+    );
+    assert_eq!(
+        child
+            .try_wait()
+            .unwrap()
+            .expect("a signaled process is complete even when its exit code is STILL_ACTIVE")
+            .exit_code(),
+        259
+    );
+}
+
+#[test]
 #[ignore = "isolated suspended launch child entry point"]
 fn fixture_child() {
     let directory = PathBuf::from(std::env::var_os("PORTABLE_PTY_SUSPENDED_FIXTURE").unwrap());
@@ -411,5 +497,9 @@ fn fixture_child() {
         );
         std::io::stdout().flush().unwrap();
     }
-    std::process::exit(7);
+    let exit = std::env::var("PORTABLE_PTY_SUSPENDED_EXIT_CODE")
+        .ok()
+        .map(|value| value.parse().unwrap())
+        .unwrap_or(7);
+    std::process::exit(exit);
 }

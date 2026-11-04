@@ -52,3 +52,6 @@ proof/result: 사전 계획 작성 시 제품 검증은 전부 NOT_RUN이며 red
 - 대량 출력 실패는 CreatePipe 기본 버퍼와 기존 20ms polling의 상호작용을 원본 C# 8MiB+1KiB 출력 및 제품 capture 함수 그대로 재현했다. timeout10초와 8MiB 상한을 보존한 채 64KiB 버퍼로 바꿔 판별했다. 이 소규모 실행은 전체 제품 수용을 대신하지 않는다.
 - C07에는 실제 Engine.launch의 process slot 설치 직후 실패를 주입해 완료 Changed 시점의 slot 제거·원래 child handle 종료·unknown 1회 발표를 검사하는 회귀를 추가했다. 선행 finish를 유지한 후보를 먼저 실행해 탐지능력을 확인한 다음 해당 한 줄을 제거한다. cfg(test) one-shot probe만 사용하며 생산 빌드에 주입 기능을 넣지 않는다.
 - 이후 후보의 전체 CI·패키징·독립감사는 각 고정 SHA의 별도 실행 근거로 판정한다. 진행 중인 사용자 앱·daemon·개인 설정과 인증은 이 시험의 대상이 아니다.
+
+- C07 회귀 탐지 확인: 의도적으로 선행 finish를 유지한 `cba044b`/CI `41826480978`은 334 PASS·1 FAIL·6 ignored였다. 새 actualEngine.launch 시험만 stopped(slot 잔존)→unknown 두 번의 완료 발표를 검출했다. 이전 두 실패인 출력 overflow 분류와 공유 proxy 회수 경합 시험은 이 후보에서 통과했다.
+- 같은 실패에서 원래 child handle의 미신호 완료가 드러나 upstream WinChild의 exit-code 단독 종료판정을 별도 판별했다. 실제 kill/JobTerminate 각128회에서 wait가 signal 전에 반환하는 RED를 확인했고, signal 우선 판정으로 변경 후 각128회 조기반환0 및 exit259 회귀를 확인했다. 이 부분 standalone은 library9 PASS·fixture entry1 ignored·doctest1 PASS이며 전체 후보의 통합 GREEN은 별도로 확인한다.

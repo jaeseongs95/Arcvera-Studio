@@ -6,10 +6,10 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 use winapi::shared::minwindef::DWORD;
-use winapi::um::minwinbase::STILL_ACTIVE;
+use winapi::shared::winerror::WAIT_TIMEOUT;
 use winapi::um::processthreadsapi::*;
 use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::winbase::INFINITE;
+use winapi::um::winbase::{INFINITE, WAIT_OBJECT_0};
 
 pub mod conpty;
 mod procthreadattr;
@@ -29,17 +29,24 @@ pub struct WinChild {
 
 impl WinChild {
     fn is_complete(&mut self) -> IoResult<Option<ExitStatus>> {
-        let mut status: DWORD = 0;
         let proc = self.proc.lock().unwrap().try_clone().unwrap();
+        // TerminateProcess can publish an exit code before teardown signals the
+        // process handle. Only that signal is the completion boundary; 259 is
+        // also a valid exit code once a process has actually terminated.
+        match unsafe { WaitForSingleObject(proc.as_raw_handle() as _, 0) } {
+            WAIT_OBJECT_0 => Self::exit_status(&proc).map(Some),
+            WAIT_TIMEOUT => Ok(None),
+            _ => Err(IoError::last_os_error()),
+        }
+    }
+
+    fn exit_status(proc: &OwnedHandle) -> IoResult<ExitStatus> {
+        let mut status: DWORD = 0;
         let res = unsafe { GetExitCodeProcess(proc.as_raw_handle() as _, &mut status) };
         if res != 0 {
-            if status == STILL_ACTIVE {
-                Ok(None)
-            } else {
-                Ok(Some(ExitStatus::with_exit_code(status)))
-            }
+            Ok(ExitStatus::with_exit_code(status))
         } else {
-            Ok(None)
+            Err(IoError::last_os_error())
         }
     }
 
@@ -95,19 +102,10 @@ impl Child for WinChild {
     }
 
     fn wait(&mut self) -> IoResult<ExitStatus> {
-        if let Ok(Some(status)) = self.try_wait() {
-            return Ok(status);
-        }
         let proc = self.proc.lock().unwrap().try_clone().unwrap();
-        unsafe {
-            WaitForSingleObject(proc.as_raw_handle() as _, INFINITE);
-        }
-        let mut status: DWORD = 0;
-        let res = unsafe { GetExitCodeProcess(proc.as_raw_handle() as _, &mut status) };
-        if res != 0 {
-            Ok(ExitStatus::with_exit_code(status))
-        } else {
-            Err(IoError::last_os_error())
+        match unsafe { WaitForSingleObject(proc.as_raw_handle() as _, INFINITE) } {
+            WAIT_OBJECT_0 => Self::exit_status(&proc),
+            _ => Err(IoError::last_os_error()),
         }
     }
 
