@@ -612,7 +612,9 @@ test('세션 상단은 확인된 압축 진행 상태만 표시하고 완료·�
   await page.evaluate(session => { const f = (window as any).tabsFixture; delete f.contextSnapshots.a1; f.emit('session-changed', { ...session, generation: 8 }); }, owned[0]);
   await expect(badge).toBeHidden();
   await expect(state).toHaveText('Ready');
-  expect(await page.evaluate(() => (window as any).tabsFixture.calls.filter((c: any) => c.command === 'conversation_request' && c.args.request.type !== 'contextStatus'))).toEqual([]);
+  // Clicking the usage icon may query per-thread settings, but must never
+  // change them or request compaction while observing the status badge.
+  expect(await page.evaluate(() => (window as any).tabsFixture.calls.filter((c: any) => c.command === 'conversation_request' && !['contextStatus', 'contextSettings'].includes(c.args.request.type)))).toEqual([]);
 });
 
 
