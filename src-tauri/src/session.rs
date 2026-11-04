@@ -68,7 +68,14 @@ struct ProcessControl {
 
 /// Child's library handle does not terminate on Drop. Every failed thread spawn
 /// must still kill and reap the process rather than detaching it accidentally.
-struct OwnedChild { child: Box<dyn portable_pty::Child + Send + Sync>, reaped: bool }
+struct OwnedChild {
+    child: Box<dyn portable_pty::Child + Send + Sync>, reaped: bool,
+    #[cfg(test)] metadata: std::sync::Weak<Session>,
+}
+#[cfg(test)]
+thread_local! {
+    static OWNED_CHILD_DROP_METADATA: std::cell::RefCell<Vec<(Option<u32>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 impl OwnedChild {
     fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
         let result = self.child.wait();
@@ -78,7 +85,13 @@ impl OwnedChild {
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if !self.reaped { let _ = self.child.kill(); let _ = self.child.wait(); }
+        if !self.reaped {
+            #[cfg(test)] if let Some(session) = self.metadata.upgrade() {
+                let metadata_available = session.info.try_lock().is_ok();
+                OWNED_CHILD_DROP_METADATA.with(|observations| observations.borrow_mut().push((self.child.process_id(), metadata_available)));
+            }
+            let _ = self.child.kill(); let _ = self.child.wait();
+        }
     }
 }
 
@@ -453,7 +466,9 @@ impl Engine {
                 .map_err(|e| format!("spawn owned PTY process: {e}"))?.into_parts();
             #[cfg(not(windows))]
             let (raw_child, pending) = (pair.slave.spawn_command(command).map_err(|e| format!("spawn owned PTY process: {e}"))?, ());
-            let child = OwnedChild { child: raw_child, reaped: false };
+            let child = OwnedChild { child: raw_child, reaped: false,
+                #[cfg(test)] metadata: Arc::downgrade(&session),
+            };
             drop(pair.slave);
             let killer = child.child.clone_killer();
             let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), reader: Mutex::new(None), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
@@ -478,10 +493,14 @@ impl Engine {
             }
             Ok((child, reader, process, pending))
         };
-        let (mut child, mut reader, process, mut pending) = match launch() {
+        let (child, mut reader, process, mut pending) = match launch() {
             Ok(parts) => parts,
             Err(error) => return Err(error),
         };
+        // Retain ownership before the metadata guard. If reaper spawn rejects
+        // its closure, dropping that capture cannot kill/wait under the guard;
+        // this parent's final owner is dropped only after metadata unlocks.
+        let retained_child = Arc::new(Mutex::new(Some(child)));
         // The reader may receive ConPTY's DSR before the child is resumed.
         // output() takes this same lock before delivery, so keep activation and
         // input admission in one boundary. On every error this guard drops
@@ -522,7 +541,9 @@ impl Engine {
         *process.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader_thread);
         let waiting = session.clone();
         let launching_process = process.clone();
+        let waiting_child = retained_child.clone();
         crate::owned_worker::spawn("pty-reaper", move || {
+            let mut child = waiting_child.lock().unwrap_or_else(|e| e.into_inner()).take().expect("PTY reaper takes its retained child once");
             let waited = child.wait();
             // 공유 turn의 중단 판정 전에 PTY 종료를 세션 중단 완료로 발표하지 않는다.
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());

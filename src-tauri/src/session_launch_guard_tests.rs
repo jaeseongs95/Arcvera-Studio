@@ -152,11 +152,11 @@ fn worker_install_failure_case(name: &'static str, expected_readers: usize) {
     let worker = thread::spawn(move || {
         let observed = crate::owned_worker::fail_once(name, || {
             let result = launching_engine.launch(launching_session, command, None, 80, 24);
-            (result, crate::owned_worker::snapshot())
+            (result, crate::owned_worker::snapshot(), OWNED_CHILD_DROP_METADATA.with(|observations| observations.borrow().clone()))
         });
         let _ = send.send(observed);
     });
-    let (result, trace) = receive.recv_timeout(Duration::from_secs(15)).expect("실제 worker 설치 실패 정리가 반환되지 않았습니다. reader/ConPTY 정체를 확인하세요.");
+    let (result, trace, child_drops) = receive.recv_timeout(Duration::from_secs(15)).expect("실제 worker 설치 실패 정리가 반환되지 않았습니다. reader/ConPTY 정체를 확인하세요.");
     worker.join().unwrap();
     assert!(result.unwrap_err().contains(if name == "pty-output" { "start PTY reader:" } else { "start PTY reaper:" }));
     assert_eq!(trace.failed, 1);
@@ -179,9 +179,10 @@ fn worker_install_failure_case(name: &'static str, expected_readers: usize) {
     assert!(*session.done.0.lock().unwrap());
     let identity = original.lock().unwrap();
     let identity = identity.as_ref().unwrap();
+    assert_eq!(child_drops, [(Some(identity.pid), true)], "child drop/wait held metadata or did not observe the original child: {child_drops:?}");
     assert_eq!(unsafe { WaitForSingleObject(identity.child.as_raw_handle(), 0) }, 0);
     assert_eq!(worker_failure_job_active(&identity.job), Some(0));
-    println!("실제 worker 설치 실패: name={name}, ownedPid={}, failed=1, startedReaders={expected_readers}, finishedReaders={expected_readers}, completionCount=1, processSlotEmpty=true, originalChildSignaled=true, jobActive=0", identity.pid);
+    println!("실제 worker 설치 실패: name={name}, ownedPid={}, failed=1, startedReaders={expected_readers}, finishedReaders={expected_readers}, completionCount=1, processSlotEmpty=true, originalChildSignaled=true, jobActive=0, childDropMetadataAvailable=true", identity.pid);
 }
 
 #[test]
@@ -212,7 +213,7 @@ fn failed_launch_guard_case(resume_before_stop: bool) {
     let suspended = pair.slave.spawn_command_in_job_suspended(command, job.as_handle()).unwrap();
     let (pty_child, resume) = suspended.into_parts();
     let mut resume = Some(resume);
-    let mut child = OwnedChild {child:pty_child,reaped:false};
+    let mut child = OwnedChild {child:pty_child,reaped:false,metadata:Arc::downgrade(&session)};
     drop(pair.slave);
     let owned_pid = child.child.process_id().unwrap();
     let handle = unsafe { OpenProcess(0x00100000, 0, owned_pid) };
