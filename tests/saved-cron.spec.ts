@@ -115,6 +115,34 @@ test('다른 대화에는 정의가 나타나지 않고 같은 대화의 새 CLI
   expect((await registers(page))[0].args).toMatchObject({ id: 'session-b', generation: 2, threadId: 'thread-a' });
 });
 
+test('이전 팝업의 늦은 실제 close 이벤트는 새 CLI 팝업의 세션과 저장 정의를 지우지 않는다', async ({ page }) => {
+  await fixture(page); await save(page);
+  await page.evaluate(async () => {
+    const state = window as any; const dialog = document.querySelector('#cron-dialog') as HTMLDialogElement;
+    // open closes an already-open dialog and immediately reopens it. Wait for
+    // that actual queued close event so the failing order is deterministic.
+    const previousClose = new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true }));
+    state.savedCronFixture.session = { ...state.savedCronFixture.session, id: 'session-restarted', generation: 3, title: '다시 시작한 예약 대화' };
+    await state.savedCronManager.open(state.savedCronFixture.session);
+    await previousClose;
+  });
+  await expect(page.locator('#cron-dialog')).toBeVisible();
+  await expect(page.locator('.cron-session')).toHaveText('세션: 다시 시작한 예약 대화');
+  await expect(page.locator('.cron-saved-job')).toHaveCount(1);
+  await expect(page.locator('.cron-prompt')).toBeEnabled();
+  expect(await registers(page)).toEqual([]);
+  await page.getByRole('button', { name: '이 CLI에 수동 등록', exact: true }).click(); await waitIdle(page);
+  expect(await registers(page)).toHaveLength(1);
+  expect((await registers(page))[0].args).toMatchObject({ id: 'session-restarted', generation: 3, threadId: 'thread-a' });
+  await page.evaluate(async () => {
+    const dialog = document.querySelector('#cron-dialog') as HTMLDialogElement;
+    const closed = new Promise<void>(resolve => dialog.addEventListener('close', () => resolve(), { once: true }));
+    dialog.close(); await closed;
+  });
+  await expect(page.locator('.cron-session')).toHaveText('');
+  await expect(page.locator('.cron-saved-job')).toHaveCount(0);
+});
+
 test('만료된 단발 정의는 새 시각으로 같은 정의를 수정할 때까지 등록하지 않는다', async ({ page }) => {
   await fixture(page);
   await page.evaluate(() => { const f = (window as any).savedCronFixture; f.saved = [{ id: 'expired', threadId: 'thread-a', prompt: '일시 작업 원문', schedule: { type: 'at', atUnixMs: 1 }, registration: null }]; });

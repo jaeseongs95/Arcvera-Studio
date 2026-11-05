@@ -294,7 +294,9 @@ export function createCronManager(host: Host) {
   $('.cron-save').onclick = () => saveDraft(false);
   $('.cron-new').onclick = () => resetDraft();
   function clear() { epoch++; selected = undefined; available = false; jobs = []; definitions = []; storageReady = false; rows.clear(); supported = false; connected = false; fresh = false; canCancel = false; hasMore = false; knownList = false; clearTimeout(timer); resetDraft(); $('.cron-error').textContent = ''; $('.cron-error').hidden = true; $('.cron-storage-error').hidden = true; status('', ''); render(); }
-  $('.cron-close').onclick = () => dialog.close(); dialog.addEventListener('close', clear);
+  $('.cron-close').onclick = () => dialog.close();
+  // A queued close from the previous opening must not clear a reopened dialog.
+  dialog.addEventListener('close', () => { if (!dialog.open) clear(); });
   $('.cron-refresh').onclick = () => void refresh(); kind.onchange = mode;
   document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (!document.hidden && dialog.open && visible) void refresh(); });
   const labels: [string, string, string][] = [
