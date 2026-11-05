@@ -970,9 +970,10 @@ fn context_block_reason(control: &Control, events: &Events, closing: bool) -> Op
     else if events.context_compaction.is_some() {Some("compacting")}
     else if !control.compact_supported {Some("unsupported")}
     else if !events.connected && !events.observer_connected {Some("disconnected")}
+    else if !events.connected && !events.observer_compact_supported {Some("unsupported")}
     else if events.context_active==Some(true) {Some("active")}
     else if events.context_active.is_none() {Some("statusUnknown")}
-    else if if events.connected {!events.gui_compact_supported}else{!events.observer_compact_supported} {Some("unsupported")}
+    else if events.connected && !events.gui_compact_supported {Some("unsupported")}
     else {None}
 }
 fn observe_message(control: &Control, thread_id: &str, message: Value) -> Result<(), String> {
@@ -1531,7 +1532,11 @@ mod tests {
             let result=execute_compact(&control.0,&mut rpc,"original",&AtomicBool::new(false),true);
             let known=matches!(outcome,"skippedBusy"|"completeBeforeAck");assert_eq!(result.is_ok(),known,"{outcome}");assert_eq!(control.0.unknown.load(Ordering::Acquire),!known);
             if known {assert_eq!(control.context_status("original").unwrap()["active"],false);assert_eq!(control.context_status("original").unwrap()["compacting"],false);}
-            else {assert_eq!(control.request("original",Path::new("."),ConversationRequest::Compact).unwrap()["reason"],"unknownResult");assert!(control.terminal_write(||Ok(1)).is_err());}
+            else {
+                assert_eq!(control.request("original",Path::new("."),ConversationRequest::Compact).unwrap()["reason"],"unknownResult");
+                assert!(!control.0.owned.load(Ordering::Acquire));assert!(!*control.0.input.lock().unwrap());
+                assert_eq!(control.terminal_write(||Ok(1)).unwrap(),1,"압축 결과 불명이어도 CLI 입력 소유권을 바꾸지 않는다");
+            }
             assert_eq!(rpc.next_id,1);drop(rpc);server.join().unwrap();
         }
     }
