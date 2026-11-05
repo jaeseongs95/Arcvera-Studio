@@ -1,4 +1,4 @@
-use crate::{codex::{self, CodexEvent, CodexSession}, flow::{OutputFlow, Utf8Decoder}, process_job::{LaunchGate, ProcessJob}, storage::Store};
+use crate::{codex::{self, CodexEvent, CodexSession}, flow::{OutputFlow, Utf8Decoder}, process_job::ProcessJob, storage::Store};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::{Read, Write}, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, AtomicU8, Ordering}, Arc, Condvar, Mutex}, thread, time::{Duration, Instant}};
@@ -55,6 +55,7 @@ struct ProcessControl {
     // pipe. ClosePseudoConsole tears down that pipe and wakes the writer.
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
+    reader: Mutex<Option<thread::JoinHandle<Result<(), String>>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     job: Mutex<Option<ProcessJob>>,
     adapter: Mutex<Option<CodexSession>>,
@@ -63,12 +64,18 @@ struct ProcessControl {
     termination: Mutex<()>,
     shared_cleanup_failed: AtomicBool,
     shared_stop_attempted: AtomicBool,
-    _gate: LaunchGate,
 }
 
 /// Child's library handle does not terminate on Drop. Every failed thread spawn
 /// must still kill and reap the process rather than detaching it accidentally.
-struct OwnedChild { child: Box<dyn portable_pty::Child + Send + Sync>, reaped: bool }
+struct OwnedChild {
+    child: Box<dyn portable_pty::Child + Send + Sync>, reaped: bool,
+    #[cfg(test)] metadata: std::sync::Weak<Session>,
+}
+#[cfg(test)]
+thread_local! {
+    static OWNED_CHILD_DROP_METADATA: std::cell::RefCell<Vec<(Option<u32>, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 impl OwnedChild {
     fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
         let result = self.child.wait();
@@ -78,7 +85,13 @@ impl OwnedChild {
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if !self.reaped { let _ = self.child.kill(); let _ = self.child.wait(); }
+        if !self.reaped {
+            #[cfg(test)] if let Some(session) = self.metadata.upgrade() {
+                let metadata_available = session.info.try_lock().is_ok();
+                OWNED_CHILD_DROP_METADATA.with(|observations| observations.borrow_mut().push((self.child.process_id(), metadata_available)));
+            }
+            let _ = self.child.kill(); let _ = self.child.wait();
+        }
     }
 }
 
@@ -97,6 +110,7 @@ impl Drop for LaunchGuard {
             process.close_io();
             let adapter = process.adapter.lock().unwrap_or_else(|e| e.into_inner()).take();
             drop(adapter);
+            let _ = process.join_reader();
         }
         let _ = self.session.finish("error");
     }
@@ -119,6 +133,11 @@ impl ProcessControl {
         drop(master); // Reader keeps draining during ClosePseudoConsole.
         let writer = self.writer.lock().unwrap_or_else(|e| e.into_inner()).take();
         drop(writer);
+    }
+
+    fn join_reader(&self) -> Option<thread::Result<Result<(), String>>> {
+        let reader = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take();
+        reader.map(|reader| reader.join())
     }
 
     fn terminate(&self) -> Result<(), String> {
@@ -309,6 +328,11 @@ struct RuntimeSnapshot { generation: u64, executable: std::ffi::OsString, server
 #[derive(Debug)]
 struct PreparedRuntime { selection: RuntimeSnapshot, preparation: u64 }
 
+#[cfg(test)]
+type PostInstallLaunchProbe = Arc<dyn Fn(&Arc<Session>, &dyn portable_pty::Child) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+type PreReaderOutputProbe = Arc<dyn Fn(&Arc<Session>) -> Result<(), String> + Send + Sync>;
+
 struct EngineInner {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     store: Arc<Mutex<Store>>,
@@ -316,6 +340,10 @@ struct EngineInner {
     exiting: Arc<AtomicBool>,
     attachments: crate::conversation_attachments::ConversationAttachments,
     runtime: Mutex<RuntimeSelection>,
+    #[cfg(test)]
+    post_install_launch_probe: Mutex<Option<PostInstallLaunchProbe>>,
+    #[cfg(test)]
+    pre_reader_output_probe: Mutex<Option<PreReaderOutputProbe>>,
 }
 
 struct RuntimeTransitionPermit(Arc<EngineInner>);
@@ -340,7 +368,10 @@ impl Engine {
         for info in saved {
             sessions.insert(info.id.clone(), Arc::new(Session { info: Mutex::new(info), phase: AtomicU8::new(3), stop_requested: Arc::new(AtomicBool::new(false)), cleanup_failed:AtomicBool::new(false), process: Mutex::new(None), subagent_receipts: Mutex::new(None), flow: OutputFlow::default(), done: (Mutex::new(true), Condvar::new()), sink: sink.clone(), store: store.clone(), attachments:attachments.clone() }));
         }
-        Ok(Self { inner: Arc::new(EngineInner { sessions: Mutex::new(sessions), store, sink, exiting: Arc::new(AtomicBool::new(false)), attachments, runtime: Mutex::new(RuntimeSelection::default()) }) })
+        Ok(Self { inner: Arc::new(EngineInner { sessions: Mutex::new(sessions), store, sink, exiting: Arc::new(AtomicBool::new(false)), attachments, runtime: Mutex::new(RuntimeSelection::default()),
+            #[cfg(test)] post_install_launch_probe: Mutex::new(None),
+            #[cfg(test)] pre_reader_output_probe: Mutex::new(None),
+        }) })
     }
 
     fn allocate(&self, request: &StartRequest) -> Result<Arc<Session>, String> {
@@ -424,19 +455,30 @@ impl Engine {
             let pair = native_pty_system().openpty(size(cols, rows)).map_err(|e| format!("open native PTY: {e}"))?;
             let reader = pair.master.try_clone_reader().map_err(|e| format!("open PTY reader: {e}"))?;
             let writer = pair.master.take_writer().map_err(|e| format!("open PTY writer: {e}"))?;
-            let (command, gate) = LaunchGate::wrap_pty(command)?;
-            let raw_child = pair.slave.spawn_command(command).map_err(|e| format!("spawn owned PTY process: {e}"))?;
-            let child = OwnedChild { child: raw_child, reaped: false };
-            drop(pair.slave);
-            let job = match ProcessJob::assign_pty(child.child.as_ref()) {
-                Ok(job) => job,
-                Err(error) => return Err(error),
+            // Only the opted-in TUI may receive its one-use cron control credentials.
+            if !command.get_argv().iter().skip(1).any(|arg| arg == "--desktop-cron-control=pipe-v1") {
+                command.env_remove("CODEX_DESKTOP_CRON_BOOTSTRAP");
+                command.env_remove("CODEX_DESKTOP_CRON_TOKEN");
+            }
+            let job = ProcessJob::new(false)?;
+            #[cfg(windows)]
+            let (raw_child, pending) = pair.slave.spawn_command_in_job_suspended(command, job.as_handle())
+                .map_err(|e| format!("spawn owned PTY process: {e}"))?.into_parts();
+            #[cfg(not(windows))]
+            let (raw_child, pending) = (pair.slave.spawn_command(command).map_err(|e| format!("spawn owned PTY process: {e}"))?, ());
+            let child = OwnedChild { child: raw_child, reaped: false,
+                #[cfg(test)] metadata: Arc::downgrade(&session),
             };
+            drop(pair.slave);
             let killer = child.child.clone_killer();
-            let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
+            let process = Arc::new(ProcessControl { master: Mutex::new(Some(pair.master)), writer: Mutex::new(Some(writer)), reader: Mutex::new(None), killer: Mutex::new(killer), job: Mutex::new(Some(job)), adapter: Mutex::new(adapter),
                 #[cfg(windows)] cron:Mutex::new(None),
-                termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false), _gate: gate });
+                termination:Mutex::new(()),shared_cleanup_failed:AtomicBool::new(false),shared_stop_attempted:AtomicBool::new(false) });
             *session.process.lock().map_err(|_| "session process lock poisoned")? = Some(process.clone());
+            #[cfg(test)] {
+                let probe = self.inner.post_install_launch_probe.lock().map_err(|_| "launch probe lock poisoned")?.take();
+                if let Some(probe) = probe { probe(&session, child.child.as_ref())?; }
+            }
             #[cfg(windows)]
             if let Some(cron)=cron {
                 let weak=Arc::downgrade(&process);
@@ -449,28 +491,27 @@ impl Engine {
                 });
                 *process.cron.lock().map_err(|_|"예약 제어 설치 상태 오류")?=Some(cron.start(verify)?);
             }
-            // 소유 Job·제어 연결·정리 경로를 모두 설치한 뒤 도우미를 실행한다.
-            process._gate.release()?;
-            Ok((child, reader, process))
+            Ok((child, reader, process, pending))
         };
-        let (mut child, mut reader, process) = match launch() {
+        let (child, mut reader, process, mut pending) = match launch() {
             Ok(parts) => parts,
-            Err(error) => { session.finish(if session.stop_requested.load(Ordering::Acquire) { "stopped" } else { "error" })?; return Err(error); }
+            Err(error) => return Err(error),
         };
-        // Installation and stop serialize through the process slot. A stop that
-        // won during prepare/openpty must also terminate the newly installed child.
-        if session.stop_requested.load(Ordering::Acquire) { process.terminate()?; }
-        else {
-            // Process liveness does not prove the vendor is running a turn.
-            // Publish the latest preparation observation only after installation,
-            // under the same metadata lock that decides stop/finish ownership.
-            session.update(|info| {
-                session.phase.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
-                if info.state == "starting" { info.state = "unknown".into(); }
-            }, true)?;
+        // Retain ownership before the metadata guard. If reaper spawn rejects
+        // its closure, dropping that capture cannot kill/wait under the guard;
+        // this parent's final owner is dropped only after metadata unlocks.
+        let retained_child = Arc::new(Mutex::new(Some(child)));
+        // The reader may receive ConPTY's DSR before the child is resumed.
+        // output() takes this same lock before delivery, so keep activation and
+        // input admission in one boundary. On every error this guard drops
+        // before pending rollback and LaunchGuard's close/drain/join cleanup.
+        let mut info = session.info.lock().map_err(|_| "session metadata lock poisoned")?;
+        #[cfg(test)] {
+            let probe = self.inner.pre_reader_output_probe.lock().map_err(|_| "pre-reader probe lock poisoned")?.take();
+            if let Some(probe) = probe { probe(&session)?; }
         }
         let reading = session.clone();
-        let reader_thread = thread::Builder::new().name("pty-output".into()).spawn(move || -> Result<(), String> {
+        let reader_thread = crate::owned_worker::spawn("pty-output", move || -> Result<(), String> {
             let mut decoder = Utf8Decoder::default();
             let mut buffer = [0u8; 8192];
             let mut delivering = true;
@@ -495,8 +536,14 @@ impl Engine {
             if delivering { if let Err(error) = reading.output(decoder.decode(&[], true)) { reading.fail_reader(); return Err(error); } }
             Ok(())
         }).map_err(|e| format!("start PTY reader: {e}"))?;
+        // A failed reaper spawn drops its task captures. Keep the reader's join
+        // ownership in ProcessControl so LaunchGuard still reaps it on error.
+        *process.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader_thread);
         let waiting = session.clone();
-        thread::Builder::new().name("pty-reaper".into()).spawn(move || {
+        let launching_process = process.clone();
+        let waiting_child = retained_child.clone();
+        crate::owned_worker::spawn("pty-reaper", move || {
+            let mut child = waiting_child.lock().unwrap_or_else(|e| e.into_inner()).take().expect("PTY reaper takes its retained child once");
             let waited = child.wait();
             // 공유 turn의 중단 판정 전에 PTY 종료를 세션 중단 완료로 발표하지 않는다.
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());
@@ -512,17 +559,38 @@ impl Engine {
             drop(job);
             process.close_io();
             drop(adapter); // No registry/metadata lock is held across observer join.
-            let read_result = reader_thread.join();
+            let read_result = process.join_reader();
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());
             waiting.cleanup_failed.fetch_or(process.shared_cleanup_failed.load(Ordering::Acquire), Ordering::AcqRel);
             waiting.process.lock().unwrap_or_else(|e| e.into_inner()).take();
             let stopped = waiting.stop_requested.load(Ordering::Acquire);
-            let failed = !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Ok(Ok(())));
+            let failed = !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Some(Ok(Ok(()))));
             let state = if stopped { "stopped" } else if failed { "error" } else { "exited" };
             let shared_unconfirmed = shared && !process.shared_stop_attempted.load(Ordering::Acquire);
             drop(termination);
             let _ = waiting.finish_reaped(state, shared_unconfirmed);
         }).map_err(|e| format!("start PTY reaper: {e}"))?;
+        // request_stop uses this same metadata lock. A stop which wins must
+        // never execute the suspended child. Process teardown, pending rollback
+        // and close/drain/join run only after releasing this metadata lock.
+        if session.stop_requested.load(Ordering::Acquire) {
+            drop(info);
+            drop(pending);
+            launching_process.terminate()?;
+        } else {
+            #[cfg(windows)]
+            let resumed = pending.try_resume().map_err(|e| format!("resume owned PTY process: {e}"));
+            #[cfg(not(windows))] let _ = pending;
+            // Failed resume retains the pending owner. Its bounded rollback
+            // runs after releasing metadata, including during unwinding.
+            #[cfg(windows)] resumed?;
+            session.phase.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).ok();
+            if info.state == "starting" { info.state = "unknown".into(); }
+            let snapshot = session.snapshot(&info);
+            session.store.lock().map_err(|_| "metadata store lock poisoned")?.save_session(&snapshot)?;
+            drop(info);
+            (session.sink)(BackendEvent::Changed(snapshot))?;
+        }
         guard.armed = false;
         session.info()
     }
@@ -1086,18 +1154,24 @@ impl Engine {
     pub fn list_pending_questions(&self) -> Result<serde_json::Value,String> {
         let sessions: Vec<_> = self.inner.sessions.lock().map_err(|_| "session registry lock poisoned")?.values().cloned().collect();
         let mut items = Vec::new();
+        let mut complete = true;
         for session in sessions {
             let info = session.info()?;
             let process = session.process.lock().map_err(|_| "session process lock poisoned")?.clone();
             let connection = process.as_ref().map(|process|process.adapter.lock().map_err(|_| "session adapter lock poisoned").map(|adapter|adapter.as_ref().and_then(CodexSession::conversation_connection))).transpose()?.flatten();
             if connection.as_ref().is_some_and(|connection|connection.is_deleted()) { continue; }
-            let (owned,connected,pending) = connection.as_ref().map(|connection|connection.pending_snapshot()).transpose()?.unwrap_or((false,false,Vec::new()));
+            let (owned,connected,pending,metadata_complete) = connection.as_ref().map(|connection|connection.question_snapshot()).transpose()?.unwrap_or((false,false,Vec::new(),!info.active));
+            if info.active && !metadata_complete {complete=false;}
             for request in &pending {
                 let method = request["method"].as_str().unwrap_or("");
-                let kind = match method {"item/tool/requestUserInput" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"};
+                let kind = match method {"item/tool/requestUserInput" | "opendiy/asyncQuestion" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"};
                 let request_id = request["requestId"].as_str().ok_or("대기 요청 식별자가 없습니다.")?;
                 let mut item = serde_json::json!({"id":format!("{}:{}:{}:{}",info.id,info.thread_id.as_deref().unwrap_or(""),info.generation,request_id),"threadId":info.thread_id,"sessionId":info.id,"generation":info.generation,"requestId":request_id,"kind":kind,"sessionTitle":info.title,"title":if kind=="question" {"사용자 답변 대기"} else if kind=="approval" {"사용자 승인 대기"} else {"터미널에서 확인할 요청"},"message":request["params"]["reason"].as_str().or_else(||request["params"]["command"].as_str()).unwrap_or(""),"canRespond":owned&&connected&&request["guiOwned"]==true&&kind!="unsupported"&&request["responded"]!=true,"responded":request["responded"]==true});
                 if kind=="question" {item["questions"]=request["params"]["questions"].clone();}
+                if request["source"]=="async" {
+                    item["source"]=serde_json::json!("async");item["turnId"]=request["turnId"].clone();item["questionItemId"]=request["questionItemId"].clone();
+                    item["canRespond"]=serde_json::json!(owned&&connected&&metadata_complete&&request["inputAvailable"]==true&&request["metadataAvailable"]==true&&request["responded"]!=true);
+                }
                 item["metadataAvailable"]=request["metadataAvailable"].clone();
                 if kind=="approval" {
                     let options=codex::ConversationConnection::approval_decisions(&request["params"]).into_iter().map(|decision|serde_json::json!({"id":decision,"label":match decision {"accept"=>"승인","acceptForSession"=>"이 세션에서 승인","decline"=>"거절",_=>"취소"}})).collect::<Vec<_>>();
@@ -1110,7 +1184,7 @@ impl Engine {
                 items.push(serde_json::json!({"id":format!("{}:{}:{}:terminal",info.id,info.thread_id.as_deref().unwrap_or(""),info.generation),"threadId":info.thread_id,"sessionId":info.id,"generation":info.generation,"kind":"unsupported","title":"터미널에서 답변할 요청","message":"현재 연결에서 질문 원문을 확인할 수 없습니다. 원래 터미널에서 확인하세요.","sessionTitle":info.title,"canRespond":false}));
             }
         }
-        Ok(serde_json::json!({"items":items}))
+        Ok(serde_json::json!({"items":items,"complete":complete}))
     }
 
     pub fn list_external(&self) -> Result<Vec<codex::ExternalSession>, String> {
@@ -2230,6 +2304,10 @@ mod lifecycle_tests {
         std::fs::remove_dir(directory).unwrap();
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "session_startup_output_tests.rs"]
+mod startup_output_tests;
 
 #[cfg(all(test, windows))]
 mod settings_tests {

@@ -93,7 +93,7 @@ fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<TcpSt
 }
 
 struct CliProcess {
-    child: Child, job: Option<ProcessJob>, _gate: LaunchGate,
+    child: Child, job: Option<ProcessJob>,
     readers: Vec<JoinHandle<Result<Vec<u8>, String>>>, stop_capture: Arc<AtomicBool>,
 }
 impl Drop for CliProcess {
@@ -107,12 +107,12 @@ impl Drop for CliProcess {
     }
 }
 #[cfg(any(not(windows), test))]
-fn capture(mut pipe: impl Read + Send + 'static, overflow: Arc<AtomicBool>) -> JoinHandle<Result<Vec<u8>, String>> {
-    capture_read(move |block| pipe.read(block), overflow)
+fn capture(name: &'static str, mut pipe: impl Read + Send + 'static, overflow: Arc<AtomicBool>) -> Result<JoinHandle<Result<Vec<u8>, String>>,String> {
+    capture_read(name, move |block| pipe.read(block), overflow)
 }
-fn capture_read(mut read: impl FnMut(&mut [u8]) -> io::Result<usize> + Send + 'static,
-    overflow: Arc<AtomicBool>) -> JoinHandle<Result<Vec<u8>, String>> {
-    thread::spawn(move || {
+fn capture_read(name: &'static str, mut read: impl FnMut(&mut [u8]) -> io::Result<usize> + Send + 'static,
+    overflow: Arc<AtomicBool>) -> Result<JoinHandle<Result<Vec<u8>, String>>,String> {
+    crate::owned_worker::spawn(name, move || {
         let mut bytes = Vec::new();
         let mut block = [0u8; 16 * 1024];
         loop {
@@ -122,14 +122,14 @@ fn capture_read(mut read: impl FnMut(&mut [u8]) -> io::Result<usize> + Send + 's
             bytes.extend_from_slice(&block[..count.min(remaining)]);
             if count > remaining { overflow.store(true, Ordering::Release); }
         }
-    })
+    }).map_err(|error|format!("Start {name} worker: {error}"))
 }
 #[cfg(windows)]
-fn capture_pipe(mut pipe: impl Read + std::os::windows::io::AsRawHandle + Send + 'static,
-    overflow: Arc<AtomicBool>, stop: Arc<AtomicBool>) -> JoinHandle<Result<Vec<u8>, String>> {
+fn capture_pipe(name: &'static str, mut pipe: impl Read + std::os::windows::io::AsRawHandle + Send + 'static,
+    overflow: Arc<AtomicBool>, stop: Arc<AtomicBool>) -> Result<JoinHandle<Result<Vec<u8>, String>>,String> {
     use windows_sys::Win32::{Foundation::ERROR_BROKEN_PIPE, System::Pipes::PeekNamedPipe};
     let mut drain_remaining = None;
-    capture_read(move |block| loop {
+    capture_read(name, move |block| loop {
         // Observe stop before peeking: a stale pre-stop byte count could lose the
         // launcher's final writes. Each read handle is owned by this reader alone.
         let stopping = stop.load(Ordering::Acquire);
@@ -156,8 +156,8 @@ fn capture_pipe(mut pipe: impl Read + std::os::windows::io::AsRawHandle + Send +
     }, overflow)
 }
 #[cfg(not(windows))]
-fn capture_pipe(pipe: impl Read + Send + 'static, overflow: Arc<AtomicBool>, _stop: Arc<AtomicBool>) -> JoinHandle<Result<Vec<u8>, String>> {
-    capture(pipe, overflow)
+fn capture_pipe(name: &'static str, pipe: impl Read + Send + 'static, overflow: Arc<AtomicBool>, _stop: Arc<AtomicBool>) -> Result<JoinHandle<Result<Vec<u8>, String>>,String> {
+    capture(name, pipe, overflow)
 }
 // JSON 명령과 startup 도움말이 같은 프로세스 소유권·출력 상한을 사용한다.
 pub(super) fn command_stdout(exe: &OsString, cwd: &Path, args: &[String], timeout: Duration) -> Result<Vec<u8>, String> {
@@ -194,18 +194,21 @@ fn command_stdout_with_job(exe: &OsString, cwd: &Path, args: &[String], deadline
 fn command_output_with_job(exe: &OsString, cwd: &Path, args: &[String], deadline: Instant, cancelled: Option<&Arc<AtomicBool>>, daemon_launcher: bool) -> Result<CliCommandOutput, String> {
     check_cancelled(cancelled)?;
     if Instant::now() >= deadline { return Err("Codex command timed out; its result is unknown. Refresh before retrying".into()); }
-    let (mut command, gate) = LaunchGate::wrap_std(exe.as_os_str())?;
+    let mut command = background_command(exe.as_os_str());
     // 조회용 CLI에는 TUI의 일회 제어 자격을 상속하지 않는다.
     command.env_remove("CODEX_DESKTOP_CRON_BOOTSTRAP").env_remove("CODEX_DESKTOP_CRON_TOKEN");
-    command.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    hidden(&mut command);
-    let child = command.spawn().map_err(|e| format!("Start Codex command: {e}"))?;
-    let mut process = CliProcess { child, job: None, _gate: gate, readers: Vec::new(), stop_capture: Arc::new(AtomicBool::new(false)) };
-    process.job = Some(if daemon_launcher { ProcessJob::assign_daemon_launcher(&process.child)? } else { ProcessJob::assign_std(&process.child)? });
+    command.args(args).current_dir(cwd).stdin(OwnedStdio::null()).stdout(OwnedStdio::piped()).stderr(OwnedStdio::piped());
+    let job = ProcessJob::new(daemon_launcher)?;
+    let (child, pending) = owned_process::spawn_suspended(&mut command, job.as_handle())?;
+    #[cfg(all(test,windows))]
+    super::worker_failure_tests::observe(&child,&job);
+    let mut process = CliProcess { child, job: Some(job), readers: Vec::new(), stop_capture: Arc::new(AtomicBool::new(false)) };
     let overflow = Arc::new(AtomicBool::new(false));
-    process.readers.push(capture_pipe(process.child.stdout.take().ok_or("Codex stdout pipe is missing")?, overflow.clone(), process.stop_capture.clone()));
-    process.readers.push(capture_pipe(process.child.stderr.take().ok_or("Codex stderr pipe is missing")?, overflow.clone(), process.stop_capture.clone()));
-    process._gate.release()?;
+    process.readers.push(capture_pipe("codex-cli-stdout",process.child.stdout.take().ok_or("Codex stdout pipe is missing")?, overflow.clone(), process.stop_capture.clone())?);
+    process.readers.push(capture_pipe("codex-cli-stderr",process.child.stderr.take().ok_or("Codex stderr pipe is missing")?, overflow.clone(), process.stop_capture.clone())?);
+    check_cancelled(cancelled)?;
+    if Instant::now() >= deadline { return Err("Codex command timed out; its result is unknown. Refresh before retrying".into()); }
+    pending.resume()?;
     let status = loop {
         check_cancelled(cancelled)?;
         if overflow.load(Ordering::Acquire) { return Err("Codex command output exceeded 8 MiB; operation result may be unknown. Refresh before retrying".into()); }
@@ -642,7 +645,7 @@ mod tests {
     #[test]
     fn output_capture_is_bounded() {
         let overflow = Arc::new(AtomicBool::new(false));
-        let output = capture(io::Cursor::new(vec![b'x'; MAX_FRAME + 100]), overflow.clone()).join().unwrap().unwrap();
+        let output = capture("codex-capture-fixture",io::Cursor::new(vec![b'x'; MAX_FRAME + 100]), overflow.clone()).unwrap().join().unwrap().unwrap();
         assert_eq!(output.len(), MAX_FRAME);
         assert!(overflow.load(Ordering::Acquire));
     }

@@ -193,6 +193,18 @@ fn shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutd
                         assert_eq!(request["params"],json!({"threadId":id}),"원래 대화의 수동 구독 외 변경은 허용하지 않는다");
                         json!({"thread":{"id":id,"cwd":server_cwd,"turns":[],"status":{"type":"active"}}})
                     },
+                    "thread/turns/list" => {
+                        assert_eq!(methods.iter().filter(|method|method.as_str()=="thread/subscribePassive").count(),1);
+                        assert_eq!(methods.iter().filter(|method|method.as_str()=="thread/turns/list").count(),1);
+                        assert_eq!(request["params"],json!({"threadId":id,"limit":1,"sortDirection":"desc","itemsView":"summary"}));
+                        json!({"data":[{"id":"active-fixture-turn","status":"inProgress"}],"nextCursor":null})
+                    },
+                    "thread/items/list" => {
+                        assert_eq!(methods.iter().filter(|method|method.as_str()=="thread/turns/list").count(),1);
+                        assert_eq!(methods.iter().filter(|method|method.as_str()=="thread/items/list").count(),1);
+                        assert_eq!(request["params"],json!({"threadId":id,"turnId":"active-fixture-turn","cursor":null,"limit":32,"sortDirection":"desc"}));
+                        json!({"data":[{"turnId":"active-fixture-turn","item":{"type":"reasoning","id":"fixture-metadata-item","summary":[],"content":[]},"startedAtMs":null,"completedAtMs":null}],"nextCursor":null,"backwardsCursor":null})
+                    },
                     "thread/read" => {
                         // 준비 중 running은 외부 starting으로 투영되며 관측자가
                         // 같은 상태를 재발행하지 않는다. 실제 PTY 활성화 뒤에만
@@ -282,7 +294,7 @@ fn shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutd
         assert!(engine.shutdown().is_err());
         assert!(!engine.inner.exiting.load(Ordering::Acquire));
         stage("재시도 반환");
-        assert_eq!(server.join().unwrap(), [vec!["initialize", "initialized"], vec!["initialize", "initialized", "thread/start", "thread/read", "thread/subscribePassive"]]);
+        assert_eq!(server.join().unwrap(), [vec!["initialize", "initialized"], vec!["initialize", "initialized", "thread/start", "thread/read", "thread/subscribePassive", "thread/turns/list", "thread/items/list"]]);
         stage("server 회수");
         no_more_connections.set_nonblocking(true).unwrap();
         assert!(matches!(no_more_connections.accept(), Err(e) if e.kind()==std::io::ErrorKind::WouldBlock), "불명 요청을 다시 연결·전송하면 안 된다");

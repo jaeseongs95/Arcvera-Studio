@@ -17,6 +17,7 @@ import { createMobileControl } from './mobile-control';
 import { createWeeklyUsage } from './weekly-usage';
 import './weekly-usage.css';
 import { createConversation } from './conversation';
+import { installTerminalExternalLinks } from './external-links';
 import { createContextControls } from './context-controls';
 import { createCronManager } from './cron-manager';
 import { createSubagentManager } from './subagent-manager';
@@ -32,7 +33,7 @@ function stateLabels(state: string): [string, string] { return states[state] ?? 
 const sessions = new Map<string, Session>();
 interface QueuedInput { data: string; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
-const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout> }>();
+const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
@@ -537,7 +538,7 @@ function mountConversation(session: Session) {
   toggle.setAttribute('aria-pressed', 'false');
   function getConversation() {
     if (!conversation) {
-      conversation = createConversation({ sessionId: session.id, generation: session.generation, host: conversationHost, call,
+      conversation = createConversation({ sessionId: session.id, generation: session.generation, host: conversationHost, call, onLinkError: error => notifyError('외부 링크 열기 실패', 'Could not open external link', error),
         ownerChanged(owned) { if (conversations.get(session.id) !== conversation) return; if (owned) { conversationOwners.add(session.id); input.cancelPending(); } else conversationOwners.delete(session.id); refreshInputState(session.id); },
       });
       conversations.set(session.id, conversation);
@@ -595,6 +596,7 @@ function createTerminal(session: Session) {
   const terminal = new Terminal({ fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', fontSize: 12, lineHeight: 1.45, cursorBlink: true, scrollback: 10000, disableStdin: !native, allowProposedApi: false, theme: { background: '#141820', foreground: '#ced5e3', cursor: '#a5b4fc', selectionBackground: '#3b4567', black: '#212735', red: '#f78b99', green: '#91d6ad', yellow: '#eac184', blue: '#8eaafb', magenta: '#c4a4f3', cyan: '#87cfd9', white: '#e3e8f0' } });
   const fit = new FitAddon(); const search = new SearchAddon(); terminal.loadAddon(fit); terminal.loadAddon(search);
   $('#grid').append(card); terminal.open(card.querySelector('.terminal-host')!);
+  const links = installTerminalExternalLinks(terminal, error => notifyError('외부 링크 열기 실패', 'Could not open external link', error));
   let frame = 0;
   const observer = new ResizeObserver(() => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => { if (card.offsetWidth && card.offsetHeight) fit.fit(); }); });
   observer.observe(card.querySelector('.terminal-host')!);
@@ -608,7 +610,7 @@ function createTerminal(session: Session) {
     if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || !canType(session.id)) return;
     await call('session_resize', { id: session.id, generation: value.generation, cols: value.cols, rows: value.rows });
   }, error => notifyError('터미널 크기 변경 실패', 'Could not resize terminal', error));
-  terminals.set(session.id, { terminal, fit, search, card, observer, input, resize, inputWarning: false });
+  terminals.set(session.id, { terminal, fit, search, card, observer, links, input, resize, inputWarning: false });
   refreshInputState(session.id);
   mountConversation(session);
   terminal.onData(data => sendInput(session.id, data));
@@ -691,7 +693,7 @@ function removeSession(id: string, preserveRestore = false) {
     workspaceSlots = workspaceSlots.filter(slot => typeof slot === 'string' || !removed.includes(slot));
     updateRestoreBanner();
   }
-  contextControls.get(id)?.dispose(); contextControls.delete(id); workspaceSlots = workspaceSlots.filter(slot => slot !== id); exitResumeIntents.delete(id); failedRestoreCards.delete(id); explicitlyStoppedSessions.delete(id); const view = terminals.get(id); const conversation = conversations.get(id); conversations.delete(id); conversationOwners.delete(id); if (conversation) void conversation.dispose({ sessionEnded: true }).catch(error => notify('대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Conversation cleanup could not be confirmed. Check the session status.')); clearTimeout(view?.resizeTimer); view?.input.dispose(); view?.resize.dispose(); view?.observer.disconnect(); view?.terminal.dispose(); view?.card.remove(); terminals.delete(id); sessions.delete(id); order = order.filter(item => item !== id); if (maximized === id) maximized = ''; if (active === id) active = visibleOrder()[0] ?? ''; renderAll(); scheduleSave(); }
+  contextControls.get(id)?.dispose(); contextControls.delete(id); workspaceSlots = workspaceSlots.filter(slot => slot !== id); exitResumeIntents.delete(id); failedRestoreCards.delete(id); explicitlyStoppedSessions.delete(id); const view = terminals.get(id); const conversation = conversations.get(id); conversations.delete(id); conversationOwners.delete(id); if (conversation) void conversation.dispose({ sessionEnded: true }).catch(error => notify('대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Conversation cleanup could not be confirmed. Check the session status.')); clearTimeout(view?.resizeTimer); view?.input.dispose(); view?.resize.dispose(); view?.observer.disconnect(); view?.links.dispose(); view?.terminal.dispose(); view?.card.remove(); terminals.delete(id); sessions.delete(id); order = order.filter(item => item !== id); if (maximized === id) maximized = ''; if (active === id) active = visibleOrder()[0] ?? ''; renderAll(); scheduleSave(); }
 
 function receiveSession(info: SessionInfo, persist = true) {
   if (retiredRestartSessions.has(info.id)) return;
@@ -734,14 +736,14 @@ async function resolveOrphan(id: string) {
 function receiveOutput(output: Output) {
   if (retiredRestartSessions.has(output.id)) { ack(output); return; }
   const session = sessions.get(output.id);
-  if (!session) {
+  if (session && !acceptOutput(session, output)) { ack(output); return; }
+  if (!session || session.state === 'starting') {
     const queue = pending.get(output.id) ?? [];
     // Bound startup metadata races; do not permit an orphan event to grow memory forever.
-    if (pending.size < 32 && queue.reduce((size, part) => size + part.data.length, 0) + output.data.length <= 524288) { queue.push(output); pending.set(output.id, queue); void resolveOrphan(output.id); }
+    if ((pending.has(output.id) || pending.size < 32) && queue.reduce((size, part) => size + part.data.length, 0) + output.data.length <= 524288) { queue.push(output); pending.set(output.id, queue); void resolveOrphan(output.id); }
     else { notify('메타데이터가 없는 터미널 출력이 버퍼 한도를 초과했습니다.', true, 'Terminal output without metadata exceeded the buffer limit.'); ack(output); }
     return;
   }
-  if (!acceptOutput(session, output)) { ack(output); return; }
   session.seq = output.seq;
   const terminal = terminals.get(output.id)?.terminal;
   if (terminal) terminal.write(output.data, () => ack(output)); else ack(output);
@@ -1238,7 +1240,7 @@ function seedDemo() {
   setActive('demo-0', false);
 }
 
-window.addEventListener('beforeunload', () => { exitInProgress = true; for (const unlisten of unlisteners) unlisten(); for (const view of terminals.values()) { clearTimeout(view.resizeTimer); view.input.dispose(); view.resize.dispose(); view.observer.disconnect(); view.terminal.dispose(); } });
+window.addEventListener('beforeunload', () => { exitInProgress = true; for (const unlisten of unlisteners) unlisten(); for (const view of terminals.values()) { clearTimeout(view.resizeTimer); view.input.dispose(); view.resize.dispose(); view.observer.disconnect(); view.links.dispose(); view.terminal.dispose(); } });
 initialization = initialize();
 
 window.addEventListener('beforeunload', () => questionCenter.dispose());
