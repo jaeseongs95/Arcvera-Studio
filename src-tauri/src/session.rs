@@ -95,13 +95,31 @@ impl Drop for OwnedChild {
     }
 }
 
-struct LaunchGuard { session: Arc<Session>, armed: bool }
+struct LaunchGuard {
+    session: Arc<Session>, armed: bool,
+    // After installation, only the reaper may close/drain/join and publish
+    // completion. It needs activation's result even if the child exits first.
+    reaper: Option<(std::sync::mpsc::Sender<bool>, thread::JoinHandle<()>)>,
+}
 impl Drop for LaunchGuard {
     fn drop(&mut self) {
         if !self.armed { return; }
         // 실패 정리는 사용자 취소 요청과 구분한다. 관측은 정리 중 억제한다.
         let _ = self.session.phase.fetch_update(Ordering::AcqRel, Ordering::Acquire, |phase| if phase < 3 { Some(2) } else { None });
         self.session.flow.cancel();
+        if let Some((launched, reaper)) = self.reaper.take() {
+            let process = self.session.process.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(process) = process {
+                let shared_cleanup_failed = process.shared_cleanup_failed.load(Ordering::Acquire);
+                let _ = process.terminate();
+                self.session.cleanup_failed.fetch_or(shared_cleanup_failed || process.shared_cleanup_failed.load(Ordering::Acquire), Ordering::AcqRel);
+            }
+            // Metadata and the pending resume token have already dropped.
+            // Never compete with the reaper for its reader JoinHandle.
+            let _ = launched.send(false);
+            let _ = reaper.join();
+            return;
+        }
         let process = self.session.process.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(process) = process {
             let shared_cleanup_failed = process.shared_cleanup_failed.load(Ordering::Acquire);
@@ -444,7 +462,7 @@ impl Engine {
         // TERM=dumb. Scope capability declarations to this child environment.
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        let mut guard = LaunchGuard { session: session.clone(), armed: true };
+        let mut guard = LaunchGuard { session: session.clone(), armed: true, reaper: None };
         let launch = || -> Result<_, String> {
             if session.stop_requested.load(Ordering::Acquire) { return Err("session was stopped before launch".into()); }
             #[cfg(windows)]
@@ -542,9 +560,13 @@ impl Engine {
         let waiting = session.clone();
         let launching_process = process.clone();
         let waiting_child = retained_child.clone();
-        crate::owned_worker::spawn("pty-reaper", move || {
+        let (launch_result, launched) = std::sync::mpsc::channel();
+        let reaper = crate::owned_worker::spawn("pty-reaper", move || {
             let mut child = waiting_child.lock().unwrap_or_else(|e| e.into_inner()).take().expect("PTY reaper takes its retained child once");
             let waited = child.wait();
+            // Activation may still fail after resume, metadata save, or sink
+            // delivery. Wait without any metadata/process/termination lock.
+            let launched = launched.recv().unwrap_or(false);
             // 공유 turn의 중단 판정 전에 PTY 종료를 세션 중단 완료로 발표하지 않는다.
             let termination = process.termination.lock().unwrap_or_else(|e| e.into_inner());
             waiting.cleanup_failed.fetch_or(process.shared_cleanup_failed.load(Ordering::Acquire), Ordering::AcqRel);
@@ -564,12 +586,13 @@ impl Engine {
             waiting.cleanup_failed.fetch_or(process.shared_cleanup_failed.load(Ordering::Acquire), Ordering::AcqRel);
             waiting.process.lock().unwrap_or_else(|e| e.into_inner()).take();
             let stopped = waiting.stop_requested.load(Ordering::Acquire);
-            let failed = !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Some(Ok(Ok(()))));
+            let failed = !launched || !matches!(waited, Ok(ref status) if status.success()) || !matches!(read_result, Some(Ok(Ok(()))));
             let state = if stopped { "stopped" } else if failed { "error" } else { "exited" };
             let shared_unconfirmed = shared && !process.shared_stop_attempted.load(Ordering::Acquire);
             drop(termination);
             let _ = waiting.finish_reaped(state, shared_unconfirmed);
         }).map_err(|e| format!("start PTY reaper: {e}"))?;
+        guard.reaper = Some((launch_result, reaper));
         // request_stop uses this same metadata lock. A stop which wins must
         // never execute the suspended child. Process teardown, pending rollback
         // and close/drain/join run only after releasing this metadata lock.
@@ -592,6 +615,7 @@ impl Engine {
             (session.sink)(BackendEvent::Changed(snapshot))?;
         }
         guard.armed = false;
+        if let Some((launched, _reaper)) = guard.reaper.take() { let _ = launched.send(true); }
         session.info()
     }
 
@@ -2030,7 +2054,7 @@ mod lifecycle_tests {
     fn resume_launch_guard_failure_reports_error_without_user_cancel() {
         let engine = Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap();
         let allocated = engine.allocate(&request()).unwrap();
-        drop(LaunchGuard { session: allocated, armed: true });
+        drop(LaunchGuard { session: allocated, armed: true, reaper: None });
         let failed = engine.list().unwrap().pop().unwrap();
         assert_eq!(failed.state, "error");
         assert!(!failed.active);

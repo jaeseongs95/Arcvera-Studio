@@ -61,3 +61,20 @@ proof/result: 사전 계획 작성 시 제품 검증은 전부 NOT_RUN이며 red
 - CI의 화면 검증은 같은 npm build 배포 번들을 preview로 제공한다. 기존 사례·timeout·기대값은 변경하지 않는다. 이 PC에서 번들 모드의 원래 capability 5사례를 실행해5 PASS·exit0을 확인했으며 전체 E2E와 패키징은 최종 후보 결과를 별도로 확인한다.
 - `f518613`의 native는 341 PASS·6 ignored, 실제 실행 파일 통합1 PASS, vendor9 PASS·1 ignored였다. 전체 E2E를 preview로 바꾼 시험 설정은 238 PASS·147 FAIL·1 skipped였으며, 실패 사례는 `/src/*.ts` 직접 import에 의존해 배포 번들 서버에서 해당 fixture를 만들지 못했다. 이 실패는 제품 성공으로 처리하지 않는다.
 - 수정한 시험 실행 계약: 원래 386개 사례는 개발 서버를 필요로 하는 소스 fixture까지 원래 방식으로 모두 실행한다. 별도 단계에서 동일한 배포 번들 preview로 원래 독립 기능 버튼5사례를 다시 실행해 앞선 SearchAddon 실패 경계를 포함한다. 기대값·timeout·재시도·사례는 바꾸지 않으며, 어느 단계가 실패해도 패키징을 허용하지 않는다. 브라우저와 native는 별도 Windows 실행기를 유지한다.
+
+## reaper 설치 뒤 시작 실패의 완료 소유권 (사전 사례, 2026-11-05)
+
+아래 사례는 제품 수정 전에 정한 C07/O07/O10의 보강이다. 기존 Windows `session_launch_guard_tests.rs`와 실제 `Engine.launch`·PTY·Job·reader를 재사용한다. 로컬 Cargo가 확인되지 않아 실행 상태는 모두 NOT_RUN이며, CI의 고정 후보에서 실제 결과를 별도로 기록한다.
+
+| 사례 | 입력·전제·절차 | 기대 결과·판정 기준 | 실제 결과 |
+| --- | --- | --- | --- |
+| C10 reader 대기 중 activation sink 실패 | 자체 PowerShell child가 고정 marker를 출력한다. 실제 reader의 Output sink를 channel로 보류하고 activation Changed sink는 marker 진입 뒤 오류를 반환한다. reader를 해제하기 전 완료 이벤트·phase3·done을 관측한 뒤 해제한다. | reader 보류 중 완료 이벤트 없음·phase<3·done=false. 해제 후 launch는 원래 sink 오류, terminal error 1회, process slot 없음·원래 child handle 신호·Job active=0·done=true. 성공한 reaper spawn 뒤 Guard와 reaper가 각각 finish하는 구현을 거부한다. | NOT_RUN |
+| C11 resume 거부·metadata 저장 실패 | 기존 post-install probe에서 정확한 fixture child를 종료·wait하여 실제 pending.try_resume의 exited-before-resume 오류를 만든다. 별도 실행은 기존 pre-reader probe에서 자체 메모리 Store mutex만 poison하여 실제 activation save 경로를 실패시킨다. | 각각 원래 resume/store 오류 반환. metadata unlock→pending rollback 뒤 단일 reaper가 reader를 회수하고 phase3·done을 발표한다. 저장 실패는 terminal 이벤트 미전달을 성공 전달로 바꾸지 않으며 최종 메모리 상태 error·active=false, child 신호·slot 없음. | NOT_RUN |
+| C12 실패와 사용자 stop·공유 결과 불명 | C10을 사용자 stop 요청, shared cleanup 불명 flag와 stop-attempted flag를 가진 자체 fixture로 각각 실행한다. 실제 공유 RPC는 호출하지 않는다. | 정상 stop은 stopped 1회, 공유 중단 불명은 unknown 1회. launch 오류는 원래 sink 오류이며 unknown을 stopped로 덮지 않는다. 추가 shared stop 전송 없음은 기존 at-most-once 시험과 결합해 검증한다. | NOT_RUN |
+| C13 activation 전달 중 빠른 정상 종료 | 자체 child는 exit0. activation sink를 channel로 보류한 상태에서 원래 child handle의 신호를 확인한다. 그동안 완료 이벤트·phase3·done을 검사하고 sink를 성공으로 해제한다. | activation 성패 확정 전 완료 없음. 해제 후 exited 1회·active=false·slot 없음·done=true. reaper가 activation보다 먼저 완료하는 구현을 거부한다. | NOT_RUN |
+
+각 channel 대기는 정해진 조건과 deadline을 사용하며 성공할 때까지 재시도하거나 고정 sleep으로 순서를 만들지 않는다. 실패 assertion 전에도 reader/activation channel을 해제하여 자체 fixture를 회수한다. Guard의 unbounded join은 기존 reader join과 같은 종료 전제(정확한 자식 종료·ConPTY close로 reader 해제)를 유지하며 시험 외부의 15초 watchdog으로 정체를 구별한다. channel 수신자가 사라지면 send는 오류로 즉시 반환하며 재전송하지 않는다.
+
+회귀 탐지 계획: 격리 사본의 고정 `cef65c52c37e5a5536e0de378622250fdee581ea` 제품 코드와 같은 새 시험 bytes로 C10/C13 RED, 수정 후보 GREEN을 실행한다. 제품 변경 때문에 필요한 시험 전용 필드 초기화는 컴파일 호환 패치로만 양쪽에 같게 적용한다. RED의 assertion witness와 실제 실패 경계를 확인하며 컴파일 오류를 RED로 세지 않는다. 기존 post-install 실패·output/reaper worker 설치 실패·startup DSR·stop 경합 시험도 유지한다.
+
+CS 조건은 `CONC-CANCEL-004`의 완료 전 reader 회수와 error/stopped/unknown 전이, `CONC-LOCK-003`의 metadata·termination·process·adapter 락 밖 channel/join 대기로 제한한다. 새 completion 원자 플래그로 phase3만 막는 방식은 reader join 완료를 증명하지 못하므로 허용하지 않는다. native OS ResumeThread 자체 오류 주입은 이 범위에서 하지 않으며 C11은 실제 ResumeToken의 종료 전 검사 거부 경계임을 구별한다.
