@@ -376,6 +376,8 @@ pub struct Engine { inner: Arc<EngineInner> }
 
 #[path = "session_exit.rs"]
 mod exit;
+#[path = "session_saved_cron.rs"]
+mod saved_cron;
 
 impl Engine {
     pub fn new(database: &Path, sink: EventSink) -> Result<Self, String> {
@@ -1140,12 +1142,18 @@ impl Engine {
     }
 
     pub fn cron_request(&self,id: &str,generation: u64,request: codex::CronRequest) -> Result<serde_json::Value,String> {
+        self.cron_request_for_thread(id, generation, request, None)
+    }
+
+    fn cron_request_for_thread(&self,id: &str,generation: u64,request: codex::CronRequest,expected_thread: Option<&str>) -> Result<serde_json::Value,String> {
         request.validate()?;
+        let reading = matches!(request, codex::CronRequest::List {});
         if self.inner.exiting.load(Ordering::Acquire) {return Err("앱이 종료 중이어서 예약 요청을 시작하지 않았습니다.".into());}
         let session=self.lookup(id,generation)?;
         if session.phase.load(Ordering::Acquire)!=1 || session.stop_requested.load(Ordering::Acquire) {return Err("실행 중인 세션에서만 예약 요청을 사용할 수 있습니다.".into());}
         let info=session.info.lock().map_err(|_| "예약 대상 세션 상태 오류")?.clone();
         let thread_id=info.thread_id.ok_or("예약 대상 대화 식별자가 아직 확인되지 않았습니다.")?;
+        if expected_thread.is_some_and(|expected| expected != thread_id) { return Err("저장 예약의 원래 대화와 실행 대상이 다릅니다.".into()); }
         let process=session.process.lock().map_err(|_| "예약 대상 프로세스 상태 오류")?.clone().ok_or("예약 대상 프로세스를 확인할 수 없습니다.")?;
         let adapter=process.adapter.lock().map_err(|_| "예약 제어 연결 상태 오류")?;
         adapter.as_ref().ok_or("예약 대상 CLI를 확인할 수 없습니다.")?.cron_target_ready(&thread_id)?;
@@ -1156,9 +1164,14 @@ impl Engine {
         if let Some(connection)=connection {
             drop(adapter);
             drop(process);
-            return connection.request(&thread_id,request);
+            let reply = connection.request(&thread_id,request)?;
+            if reading { self.reconcile_saved_crons(id, generation, &thread_id, &reply)?; }
+            return Ok(reply);
         }
-        adapter.as_ref().ok_or("예약 대상 CLI를 확인할 수 없습니다.")?.cron_request(&thread_id,request)
+        let reply = adapter.as_ref().ok_or("예약 대상 CLI를 확인할 수 없습니다.")?.cron_request(&thread_id,request)?;
+        drop(adapter);
+        if reading { self.reconcile_saved_crons(id, generation, &thread_id, &reply)?; }
+        Ok(reply)
     }
 
     pub fn conversation_attachments(&self) -> crate::conversation_attachments::ConversationAttachments { self.inner.attachments.clone() }

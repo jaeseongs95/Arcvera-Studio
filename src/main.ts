@@ -542,7 +542,7 @@ function mountConversation(session: Session) {
   toggle.hidden = true;
   const subagentsButton = card.querySelector<HTMLButtonElement>('.subagents-open')!;
   const cronButton = card.querySelector<HTMLButtonElement>('.cron-open')!;
-  subagentsButton.hidden = true; cronButton.hidden = true;
+  subagentsButton.hidden = true; cronButton.hidden = false;
   toggle.setAttribute('aria-pressed', 'false');
   function getConversation() {
     if (!conversation) {
@@ -576,7 +576,7 @@ function mountConversation(session: Session) {
   contextControls.get(session.id)?.dispose();
   contextControls.set(session.id, createContextControls({
     host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, call, notify,
-    capabilitiesChanged(supported) { toggle.hidden = !supported.passiveSubscription; subagentsButton.hidden = !supported.subagents; cronButton.hidden = !supported.cron; },
+    capabilitiesChanged(supported) { toggle.hidden = !supported.passiveSubscription; subagentsButton.hidden = !supported.subagents; },
     async prepare() {
       if (toggle.disabled) throw new Error('대화 화면 전환 중');
       toggle.disabled = true;
@@ -672,7 +672,7 @@ function createTerminal(session: Session) {
   subagentsButton.onclick = () => { const current = sessions.get(session.id); if (!subagentsButton.hidden && current?.active && current.threadId && !exitInProgress) void subagentManager.open(current); };
   const cronButton = card.querySelector<HTMLButtonElement>('.cron-open')!;
   bindAttribute(cronButton, 'aria-label', '예약 작업', 'Scheduled jobs'); bindAttribute(cronButton, 'title', '예약 작업', 'Scheduled jobs');
-  cronButton.onclick = () => { const current = sessions.get(session.id); if (!cronButton.hidden && current?.active && !exitInProgress) void cronManager.open(current); };
+  cronButton.onclick = () => { const current = sessions.get(session.id); if (!cronButton.hidden && current && !exitInProgress) void cronManager.open(current); };
   const projectMove = document.createElement('button'); projectMove.className = 'project-move icon-button'; projectMove.textContent = '▱'; bindAttribute(projectMove, 'aria-label', '프로젝트로 이동', 'Move to project'); bindAttribute(projectMove, 'title', '프로젝트로 이동', 'Move to project'); projectMove.onclick = () => projectManager.move(sessions.get(session.id)!); card.querySelector('.card-actions')!.prepend(projectMove);
   card.querySelector('.move-left')!.addEventListener('click', () => move(session.id, -1));
   card.querySelector('.move-right')!.addEventListener('click', () => move(session.id, 1));
@@ -884,7 +884,7 @@ function renderAll() {
     card.querySelector<HTMLButtonElement>('.session-id-copy')!.disabled = demo || !session.threadId;
     card.querySelector<HTMLButtonElement>('.session-restart')!.disabled = !native || !workspaceReady || restoringWorkspace || exitInProgress || restartingSessions.has(id) || !session.threadId || ['starting', 'stopping'].includes(session.state);
     card.querySelector<HTMLButtonElement>('.stop')!.disabled = restartingSessions.has(id) || exitInProgress;
-    card.querySelector<HTMLButtonElement>('.cron-open')!.disabled = !session.active || exitInProgress;
+    card.querySelector<HTMLButtonElement>('.cron-open')!.disabled = !native || exitInProgress;
     card.querySelector<HTMLButtonElement>('.subagents-open')!.disabled = !native || !session.active || !session.threadId || exitInProgress;
     card.querySelector('.terminal-title')!.textContent = session.title;
     card.querySelector('.terminal-path')!.textContent = `▱  ${session.cwd}`;

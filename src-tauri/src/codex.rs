@@ -82,7 +82,7 @@ pub use conversation::{ConversationConnection, ConversationRequest, SubagentRequ
 
 #[path = "codex_cron.rs"]
 mod cron;
-pub use cron::CronRequest;
+pub use cron::{CronRequest, CronSchedule};
 
 #[cfg(windows)]
 #[path = "codex_cron_wire.rs"]
