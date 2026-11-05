@@ -531,6 +531,9 @@ fn observe<S: Read + Write>(rpc: &mut Rpc<S>, mut selected: Option<String>, cwd:
                 }
                 next_poll = Instant::now() + Duration::from_secs(1);
             }
+            if let (Some(id),Some(conversation))=(selected.as_deref(),conversation) {
+                conversation.observer_compact(rpc,id);
+            }
             let incoming = rpc.read();
             if stopped.load(Ordering::Acquire) { break; }
             match incoming {

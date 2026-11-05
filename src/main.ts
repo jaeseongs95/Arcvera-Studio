@@ -577,29 +577,13 @@ function mountConversation(session: Session) {
   contextControls.set(session.id, createContextControls({
     host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, call, notify,
     capabilitiesChanged(supported) { toggle.hidden = !supported.passiveSubscription; subagentsButton.hidden = !supported.subagents; },
-    async prepare() {
-      if (toggle.disabled) throw new Error('대화 화면 전환 중');
-      toggle.disabled = true;
-      try {
-        const controller = getConversation();
-        await controller.setVisible(true);
-        await controller.setForeground(!card.hidden && !document.hidden && nativeWindowVisible);
-        card.querySelector<HTMLElement>('.terminal-host')!.hidden = true;
-        toggle.setAttribute('aria-pressed', 'true');
-      } catch (error) {
-        const showingConversation = !conversationHost.hidden;
-        card.querySelector<HTMLElement>('.terminal-host')!.hidden = showingConversation;
-        toggle.setAttribute('aria-pressed', String(showingConversation));
-        throw error;
-      } finally { toggle.disabled = false; }
-    },
-    compact: () => getConversation().compact(),
+    compact: () => conversation && !conversationHost.hidden ? conversation.compact() : call('conversation_request', { id: session.id, generation: session.generation, request: { type: 'compact' } }),
   }));
 }
 
 function createTerminal(session: Session) {
   const card = document.createElement('article'); card.className = 'terminal-card'; card.dataset.id = session.id;
-  card.innerHTML = `<header class="terminal-header"><span class="drag-handle" draggable="true" title="드래그로 순서 변경" aria-hidden="true">⠿</span><span class="terminal-title"></span><span class="session-compaction" role="status" hidden></span><span class="session-state"></span><div class="card-actions"><button class="session-id-copy icon-button" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span class="context-controls"></span><button class="subagents-open icon-button" type="button" aria-haspopup="dialog" aria-controls="subagents-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M5 16v-4h14v4"/></svg></button><button class="cron-open icon-button" type="button" aria-haspopup="dialog" aria-controls="cron-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></button><button class="move-left icon-button" aria-label="앞으로 이동" title="앞으로 이동">‹</button><button class="move-right icon-button" aria-label="뒤로 이동" title="뒤로 이동">›</button><button class="conversation-toggle icon-button" type="button" aria-label="대화 보기" title="대화 / 터미널">☷</button><button class="maximize icon-button" aria-label="세션 최대화" title="세션 최대화">⛶</button><button class="session-restart icon-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button><button class="stop icon-button" aria-label="이 세션 종료" title="이 세션 종료">×</button></div></header><div class="terminal-path"></div><div class="terminal-host"></div><div class="terminal-footer"><span class="terminal-identity"></span><span class="terminal-hint">Shift+드래그 선택 · Ctrl+C 복사 · Ctrl+V 붙여넣기</span></div>`;
+  card.innerHTML = `<header class="terminal-header"><span class="drag-handle" draggable="true" title="드래그로 순서 변경" aria-hidden="true">⠿</span><span class="terminal-title"></span><span class="session-compaction" role="status" hidden></span><span class="session-state"></span><div class="card-actions"><button class="session-id-copy icon-button" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span class="context-controls"></span><button class="subagents-open icon-button" type="button" aria-haspopup="dialog" aria-controls="subagents-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M5 16v-4h14v4"/></svg></button><button class="cron-open icon-button" type="button" aria-haspopup="dialog" aria-controls="cron-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></button><button class="conversation-toggle icon-button" type="button" aria-label="대화 보기" title="대화 / 터미널">☷</button><button class="maximize icon-button" aria-label="세션 최대화" title="세션 최대화">⛶</button><button class="session-restart icon-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button><button class="stop icon-button" aria-label="이 세션 종료" title="이 세션 종료">×</button></div></header><div class="terminal-path"></div><div class="terminal-host"></div><div class="terminal-footer"><span class="terminal-identity"></span><span class="terminal-hint">Shift+드래그 선택 · Ctrl+C 복사 · Ctrl+V 붙여넣기</span></div>`;
   localizeMarkup(card);
   const terminal = new Terminal({ fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', fontSize: 12, lineHeight: 1.45, cursorBlink: true, scrollback: 10000, disableStdin: !native, allowProposedApi: false, theme: { background: '#141820', foreground: '#ced5e3', cursor: '#a5b4fc', selectionBackground: '#3b4567', black: '#212735', red: '#f78b99', green: '#91d6ad', yellow: '#eac184', blue: '#8eaafb', magenta: '#c4a4f3', cyan: '#87cfd9', white: '#e3e8f0' } });
   const fit = new FitAddon(); const search = new SearchAddon(); terminal.loadAddon(fit); terminal.loadAddon(search);
@@ -674,8 +658,6 @@ function createTerminal(session: Session) {
   bindAttribute(cronButton, 'aria-label', '예약 작업', 'Scheduled jobs'); bindAttribute(cronButton, 'title', '예약 작업', 'Scheduled jobs');
   cronButton.onclick = () => { const current = sessions.get(session.id); if (!cronButton.hidden && current && !exitInProgress) void cronManager.open(current); };
   const projectMove = document.createElement('button'); projectMove.className = 'project-move icon-button'; projectMove.textContent = '▱'; bindAttribute(projectMove, 'aria-label', '프로젝트로 이동', 'Move to project'); bindAttribute(projectMove, 'title', '프로젝트로 이동', 'Move to project'); projectMove.onclick = () => projectManager.move(sessions.get(session.id)!); card.querySelector('.card-actions')!.prepend(projectMove);
-  card.querySelector('.move-left')!.addEventListener('click', () => move(session.id, -1));
-  card.querySelector('.move-right')!.addEventListener('click', () => move(session.id, 1));
   card.querySelector('.drag-handle')!.addEventListener('dragstart', event => { dragging = session.id; (event as DragEvent).dataTransfer!.effectAllowed = 'move'; (event as DragEvent).dataTransfer!.setData('text/plain', session.id); card.classList.add('dragging'); });
   card.addEventListener('dragend', () => { dragging = ''; card.classList.remove('dragging'); });
   card.addEventListener('dragover', event => { if (dragging && dragging !== session.id) event.preventDefault(); });
@@ -683,7 +665,6 @@ function createTerminal(session: Session) {
   return terminal;
 }
 
-function move(id: string, offset: number) { const visible = visibleOrder(); const index = visible.indexOf(id); const next = index + offset; if (index < 0 || next < 0 || next >= visible.length) return; const from = order.indexOf(id); const to = order.indexOf(visible[next]); [order[from], order[to]] = [order[to], order[from]]; renderGrid(); renderSide(); scheduleSave(); }
 function recordExplicitStop(session: SessionInfo) {
   exitResumeIntents.delete(session.id); explicitlyStoppedSessions.add(session.id);
   if (!session.threadId) return;
