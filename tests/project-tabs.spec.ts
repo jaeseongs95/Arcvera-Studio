@@ -170,7 +170,8 @@ test('session shortcuts, maximize and reorder stay within the selected project',
   await expect(card(page, 'a1')).toHaveClass(/focused/);
   await page.keyboard.press('Control+Shift+Tab');
   await expect(card(page, 'a2')).toHaveClass(/focused/);
-  await card(page, 'a1').getByLabel('뒤로 이동').click();
+  await expect(page.locator('.move-left, .move-right')).toHaveCount(0);
+  await card(page, 'a1').locator('.drag-handle').dragTo(card(page, 'a2').locator('.terminal-header'));
   await expect.poll(() => visibleIds(page)).toEqual(['a2', 'a1']);
   await page.locator('#project-tabs [role=tab]').first().click();
   await expect.poll(() => visibleIds(page)).toEqual(['a2', 'b1', 'a1', 'parent', 'child', 'sibling']);

@@ -253,6 +253,7 @@ original requested value, further size changes remain blocked for that session.
 Do not assume this override persists through restart or resume without runtime
 confirmation.
 
+The compaction button only requests compaction; it preserves the current terminal/conversation view and input ownership.
 Manual compaction requires an idle, connected original thread with no pending approvals
 or unknown request result. The app must use an atomic idle-only runtime operation; it
 never falls back to the legacy compaction operation that can replace an active task.

@@ -22,7 +22,6 @@ interface Options {
   sessionId: string;
   generation: number;
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
-  prepare(): Promise<void>;
   compact(): Promise<{ status?: string }>;
   notify(ko: string, error: boolean, en: string): void;
   capabilitiesChanged?(supported: { passiveSubscription: boolean; subagents: boolean; cron: boolean }): void;
@@ -59,7 +58,7 @@ export function createContextControls(options: Options) {
   const abort = new AbortController();
   const read = () => options.call<ContextStatus>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'contextStatus' } });
   const alive = (version: number) => !disposed && visible && epoch === version;
-  const canAttempt = () => snapshot?.compactSupported === true && (snapshot.canCompact === true || (snapshot.reason === 'guiDisconnected' && snapshot.connected === true && snapshot.active === false && !snapshot.compacting));
+  const canAttempt = () => snapshot?.compactSupported === true && snapshot.canCompact === true;
   function publishCapabilities() {
     options.capabilitiesChanged?.({ passiveSubscription: snapshot?.passiveSubscriptionSupported === true, subagents: snapshot?.subagentsSupported === true, cron: snapshot?.cronSupported === true });
   }
@@ -86,7 +85,6 @@ export function createContextControls(options: Options) {
       case 'unknownResult': return t('이전 요청 결과를 확인할 때까지 압축하지 않습니다.', 'Compaction is blocked until the previous request is confirmed.');
       case 'deleted': return t('삭제된 대화는 압축할 수 없습니다.', 'A deleted conversation cannot be compacted.');
       case 'closing': return t('연결을 전환하거나 종료하는 중입니다.', 'The connection is switching or closing.');
-      case 'guiDisconnected': return t('컨텍스트 압축 · 같은 세션의 대화 화면을 연결합니다.', 'Compact context · connects the conversation view of this session.');
       default: return snapshot?.canCompact ? t('컨텍스트 압축', 'Compact context') : t('연결과 작업 상태를 확인한 후 압축할 수 있습니다.', 'Compaction is available after connection and activity are confirmed.');
     }
   }
@@ -133,13 +131,11 @@ export function createContextControls(options: Options) {
     if (disposed || !visible || busy || !canAttempt()) return;
     busy = true; const version = epoch; render();
     try {
-      await options.prepare();
-      if (!alive(version)) return;
       const supportVersion = supportEpoch;
       const current = await read();
       if (!alive(version) || supportVersion !== supportEpoch) return;
       accept(current);
-      if (snapshot?.compactSupported !== true || snapshot.canCompact !== true || snapshot.guiConnected !== true) {
+      if (snapshot?.compactSupported !== true || snapshot.canCompact !== true) {
         options.notify('현재 연결·작업 상태에서는 압축할 수 없습니다. 상태를 확인한 뒤 다시 시도하세요.', false, 'Compaction is unavailable in the current connection or activity state. Check the status before trying again.'); return;
       }
       const result = await options.compact();
