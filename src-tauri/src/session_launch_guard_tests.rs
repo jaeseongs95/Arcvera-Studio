@@ -256,6 +256,10 @@ fn activation_sink_failure_case(expected: &'static str) {
     let observed = Arc::new(Mutex::new(None::<std::sync::Weak<Session>>));
     let completions = Arc::new(Mutex::new(Vec::<LaunchCompletionObservation>::new()));
     let original = Arc::new(Mutex::new(None::<WorkerFailureIdentity>));
+    let backend = Arc::new(Mutex::new(None::<std::sync::Weak<EngineInner>>));
+    let dsr_replies = Arc::new(Mutex::new(Vec::new()));
+    let (sink_backend, sink_dsr_replies) = (backend.clone(), dsr_replies.clone());
+    let query_tail = Mutex::new(String::new());
     let (entered, entry) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     let (failed, failure) = std::sync::mpsc::channel();
@@ -270,6 +274,7 @@ fn activation_sink_failure_case(expected: &'static str) {
             BackendEvent::Output(chunk) => {
                 let session = session.ok_or("fixture session missing at reader output")?;
                 session.flow.acknowledge(chunk.seq)?;
+                reply_launch_fixture_dsr(&sink_backend, &query_tail, &sink_dsr_replies, &chunk)?;
                 let marker = {
                     let mut tail = tail.lock().unwrap();
                     tail.push_str(&chunk.data);
@@ -302,6 +307,7 @@ fn activation_sink_failure_case(expected: &'static str) {
         }
         Ok(())
     })).unwrap();
+    *backend.lock().unwrap() = Some(Arc::downgrade(&engine.inner));
     let request = StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "activation 실패 reader 완료 순서".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 };
     let session = engine.allocate(&request).unwrap();
     *observed.lock().unwrap() = Some(Arc::downgrade(&session));
@@ -328,7 +334,8 @@ fn activation_sink_failure_case(expected: &'static str) {
     let _ = release.send(());
     let result = result.recv_timeout(Duration::from_secs(15)).expect("activation 실패 정리가 reader 해제 뒤 반환되지 않았습니다");
     worker.join().unwrap();
-    assert!(activation_failed.is_ok(), "실제 activation sink 실패에 도달하지 못했습니다");
+    assert!(activation_failed.is_ok(), "실제 activation sink 실패에 도달하지 못했습니다: dsrReplies={:?}, launchResult={result:?}", dsr_replies.lock().unwrap());
+    assert!(dsr_replies.lock().unwrap().iter().all(Result::is_ok), "fixture DSR 응답이 실패했습니다");
     assert_eq!(result.unwrap_err(), INJECTED);
     assert!(early_completion.is_err(), "reader 완료 전에 terminal 이벤트가 발표됐습니다");
     assert!(early_phase < 3, "reader 완료 전에 phase3이 발표됐습니다");
@@ -349,6 +356,26 @@ fn activation_sink_failure_case(expected: &'static str) {
 
 fn launch_shell() -> CommandBuilder {
     CommandBuilder::new(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+}
+
+fn reply_launch_fixture_dsr(backend: &Mutex<Option<std::sync::Weak<EngineInner>>>, tail: &Mutex<String>, replies: &Mutex<Vec<Result<(), String>>>, chunk: &TerminalOutput) -> Result<(), String> {
+    // ConPTY inherits the renderer cursor. As in startup_output_tests, this
+    // headless renderer must answer DSR before PowerShell can reach its script.
+    let queries = {
+        let mut tail = tail.lock().unwrap();
+        let previous_bytes = tail.len();
+        let scan = tail.clone() + &chunk.data;
+        *tail = scan.chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+        scan.match_indices("\x1b[6n").filter(|(offset, _)| *offset + 4 > previous_bytes).count()
+    };
+    for _ in 0..queries {
+        let inner = backend.lock().unwrap().as_ref().and_then(std::sync::Weak::upgrade).ok_or("fixture backend missing at DSR")?;
+        let result = (Engine { inner }).write(&chunk.id, chunk.generation, "\x1b[1;1R");
+        println!("launch fixture DSR: session={}, generation={}, reply={result:?}", chunk.id, chunk.generation);
+        replies.lock().unwrap().push(result.clone());
+        result?;
+    }
+    Ok(())
 }
 
 fn launch_identity(session: &Session, child: &dyn portable_pty::Child) -> Result<WorkerFailureIdentity, String> {
@@ -418,6 +445,10 @@ fn launch_resume_rejection_and_metadata_failure_complete_after_reaper_cleanup() 
 fn launch_fast_exit_waits_for_activation_delivery_before_completion() {
     let observed = Arc::new(Mutex::new(None::<std::sync::Weak<Session>>));
     let states = Arc::new(Mutex::new(Vec::new()));
+    let backend = Arc::new(Mutex::new(None::<std::sync::Weak<EngineInner>>));
+    let dsr_replies = Arc::new(Mutex::new(Vec::new()));
+    let (sink_backend, sink_dsr_replies) = (backend.clone(), dsr_replies.clone());
+    let query_tail = Mutex::new(String::new());
     let (activation, activated) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     let (completed, completion) = std::sync::mpsc::channel();
@@ -427,6 +458,7 @@ fn launch_fast_exit_waits_for_activation_delivery_before_completion() {
         match event {
             BackendEvent::Output(chunk) => {
                 if let Some(session) = sink_session.lock().unwrap().as_ref().and_then(std::sync::Weak::upgrade) { session.flow.acknowledge(chunk.seq)?; }
+                reply_launch_fixture_dsr(&sink_backend, &query_tail, &sink_dsr_replies, &chunk)?;
             }
             BackendEvent::Changed(info) if !info.active => {
                 sink_states.lock().unwrap().push(info.state);
@@ -440,6 +472,7 @@ fn launch_fast_exit_waits_for_activation_delivery_before_completion() {
         }
         Ok(())
     })).unwrap();
+    *backend.lock().unwrap() = Some(Arc::downgrade(&engine.inner));
     let session = engine.allocate(&StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "activation 전달 전 빠른 정상 종료".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 }).unwrap();
     *observed.lock().unwrap() = Some(Arc::downgrade(&session));
     let original = Arc::new(Mutex::new(None));
@@ -463,7 +496,8 @@ fn launch_fast_exit_waits_for_activation_delivery_before_completion() {
     worker.join().unwrap();
     let completion_observed = if early_completion.is_ok() { true } else { completion.recv_timeout(Duration::from_secs(8)).is_ok() };
     assert!(activation_entered.is_ok());
-    assert_eq!(signaled, Some(0), "activation 전달 중 실제 child가 종료해야 합니다");
+    assert_eq!(signaled, Some(0), "activation 전달 중 실제 child가 종료해야 합니다: dsrReplies={:?}", dsr_replies.lock().unwrap());
+    assert!(dsr_replies.lock().unwrap().iter().all(Result::is_ok), "fixture DSR 응답이 실패했습니다");
     assert!(result.is_ok(), "정상 exit0 launch가 실패했습니다: {result:?}");
     assert!(early_completion.is_err(), "activation 전달 확정 전에 완료를 발표했습니다");
     assert!(early_phase < 3);

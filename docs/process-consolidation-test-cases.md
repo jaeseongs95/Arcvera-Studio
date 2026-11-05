@@ -78,3 +78,9 @@ proof/result: 사전 계획 작성 시 제품 검증은 전부 NOT_RUN이며 red
 회귀 탐지 계획: 격리 사본의 고정 `cef65c52c37e5a5536e0de378622250fdee581ea` 제품 코드와 같은 새 시험 bytes로 C10/C13 RED, 수정 후보 GREEN을 실행한다. 제품 변경 때문에 필요한 시험 전용 필드 초기화는 컴파일 호환 패치로만 양쪽에 같게 적용한다. RED의 assertion witness와 실제 실패 경계를 확인하며 컴파일 오류를 RED로 세지 않는다. 기존 post-install 실패·output/reaper worker 설치 실패·startup DSR·stop 경합 시험도 유지한다.
 
 CS 조건은 `CONC-CANCEL-004`의 완료 전 reader 회수와 error/stopped/unknown 전이, `CONC-LOCK-003`의 metadata·termination·process·adapter 락 밖 channel/join 대기로 제한한다. 새 completion 원자 플래그로 phase3만 막는 방식은 reader join 완료를 증명하지 못하므로 허용하지 않는다. native OS ResumeThread 자체 오류 주입은 이 범위에서 하지 않으며 C11은 실제 ResumeToken의 종료 전 검사 거부 경계임을 구별한다.
+
+### C10/C13 headless renderer 전제 보정 (2026-11-05)
+
+`6f97f32` Windows CI native에서 C10은 marker/activation 실패 경계에 도달하지 못했고 C13은 원래 child handle wait가 258(TIMEOUT)이었다. 컴파일 성공과 다른 사례 통과를 이 두 사례의 GREEN으로 바꾸지 않는다. 원시 실패는 `verification/desktop-1.2.0-20261105/launch-completion-fix/fixture-dsr/ci-green-6f97-native-original.log`에 보존했다. 이 두 sink에는 ack만 있었고 기존 startup DSR/resize fixture와 달리 ConPTY cursor 질의 응답이 없었다. 같은 CI의 기존 resize fixture는 cursor 질의 1회·응답 성공·marker/exit 진입을 기록했다. 이는 DSR 전제 누락 가설의 근거이며 실패한 두 사례 자체의 질의 수는 미관측이었다.
+
+다음 판별에서는 C10/C13의 자체 headless sink가 기존 startup fixture처럼 chunk 경계를 넘는 `\x1b[6n`을 감지하고 실제 `Engine.write`로 `\x1b[1;1R`을 회신한다. 실제 reply 성공/오류를 기록하고, 원래 marker·child wait·activation/reader-before-done·단일 완료 oracle와 모든 deadline은 그대로 둔다. 이 변경은 시험 전제 보정이며 제품 코드 수정이 아니다. 다음 고정 후보의 실제 질의/회신·marker/child 종료와 RED assertion 결과를 확인하기 전까지 원인을 확정하거나 통과를 선언하지 않는다.
