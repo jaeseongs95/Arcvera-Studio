@@ -217,7 +217,9 @@ fn shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutd
                 };
                 ws.send(Message::Text(json!({"id":request["id"],"result":result}).to_string().into())).unwrap();
             }
-            if preparation { assert_eq!(methods, ["initialize", "initialized"], "사전 준비는 초기화만 하고 연결을 닫아야 한다"); }
+            // 준비는 initialize 응답 직후 proxy를 정리한다. 마지막 notification은
+            // background relay가 전달하기 전에 종료될 수 있지만 다른 RPC는 금지한다.
+            if preparation { assert!(methods == ["initialize"] || methods == ["initialize", "initialized"], "사전 준비는 initialize 1회와 선택적 initialized 1회만 순서대로 허용한다: {methods:?}"); }
             connections.push(methods);
             }
             connections
@@ -294,7 +296,9 @@ fn shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutd
         assert!(engine.shutdown().is_err());
         assert!(!engine.inner.exiting.load(Ordering::Acquire));
         stage("재시도 반환");
-        assert_eq!(server.join().unwrap(), [vec!["initialize", "initialized"], vec!["initialize", "initialized", "thread/start", "thread/read", "thread/subscribePassive", "thread/turns/list", "thread/items/list"]]);
+        let connections=server.join().unwrap();assert_eq!(connections.len(),2);
+        assert!(connections[0] == ["initialize"] || connections[0] == ["initialize", "initialized"], "준비 연결의 초기화 순서만 허용한다: {:?}",connections[0]);
+        assert_eq!(connections[1],vec!["initialize", "initialized", "thread/start", "thread/read", "thread/subscribePassive", "thread/turns/list", "thread/items/list"]);
         stage("server 회수");
         no_more_connections.set_nonblocking(true).unwrap();
         assert!(matches!(no_more_connections.accept(), Err(e) if e.kind()==std::io::ErrorKind::WouldBlock), "불명 요청을 다시 연결·전송하면 안 된다");
