@@ -192,10 +192,12 @@ export function createConversation(options: ConversationOptions) {
     updateSearch(); messages.scrollTop += row.getBoundingClientRect().top - messages.getBoundingClientRect().top;
   }
   function clearSearch() { search.value = ''; searchQuery = ''; selectedMatch = ''; searchComposing = false; updateSearch(); }
-  async function moveLatest() {
+  async function moveLatest(isCurrent = () => true) {
+    if (!visible || !foreground || !attached || disposed || !isCurrent()) return;
     const version = epoch; const content = contentVersion;
-    await loadPage();
-    if (alive(version) && foreground && content === contentVersion) messages.scrollTop = messages.scrollHeight;
+    const page = loadPage(); const query = historyQuery;
+    await page;
+    if (alive(version) && foreground && content === contentVersion && query === historyQuery && isCurrent()) messages.scrollTop = messages.scrollHeight;
   }
   function renderItems() {
     const nearEnd = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
@@ -643,6 +645,7 @@ export function createConversation(options: ConversationOptions) {
     handoffToTerminal,
     compact,
     setForeground,
+    revealLatest: moveLatest,
     refresh: () => visible && foreground && !loading ? loadPage() : Promise.resolve(),
     hasDraft: () => !!input.value || !!attachments.length,
     canRestart: () => !sending && !staging && !uncertain && !composing && !interrupting && !responding.size && !questionDrafts.size,

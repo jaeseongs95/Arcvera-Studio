@@ -234,9 +234,12 @@ async fn catalog_preview(engine: State<'_, Engine>, thread_id: String, cursor: O
     tauri::async_runtime::spawn_blocking(move || engine.catalog_preview(&thread_id, cursor)).await.map_err(|e| format!("Session preview worker: {e}"))?
 }
 #[tauri::command]
-async fn extensions_list(engine: State<'_, Engine>, cwd: Option<String>) -> Result<codex::ExtensionsSnapshot, String> {
+async fn extensions_list(engine: State<'_, Engine>, cwd: Option<String>, catalog_query: Option<String>) -> Result<codex::ExtensionsSnapshot, String> {
     let engine = engine.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || engine.extensions_list(cwd)).await.map_err(|e| format!("Extension list worker: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || match catalog_query {
+        Some(query) => engine.extensions_list_with_catalog_query(cwd, Some(query)),
+        None => engine.extensions_list(cwd),
+    }).await.map_err(|e| format!("Extension list worker: {e}"))?
 }
 #[tauri::command]
 async fn extensions_mutate(engine: State<'_, Engine>, cwd: Option<String>, request: codex::ExtensionMutation) -> Result<codex::ExtensionsSnapshot, String> {

@@ -5,6 +5,8 @@ use super::*;
 mod subagents;
 #[path = "codex_async_questions.rs"]
 mod async_questions;
+#[path = "codex_context.rs"]
+mod context;
 pub use subagents::SubagentRequest;
 use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf, sync::Weak};
 
@@ -36,6 +38,8 @@ pub enum ConversationRequest {
     HandoffToTerminal,
     Poll,
     ContextStatus,
+    ContextSettings,
+    SetContextWindow { #[serde(deserialize_with="context::nullable_window")] model_context_window: Option<i64>, #[serde(deserialize_with="context::nullable_window")] expected_model_context_window: Option<i64> },
     Compact,
     Page { cursor: Option<String> },
     Items { turn_id: String, cursor: Option<String> },
@@ -77,6 +81,7 @@ struct Control {
     deleted: AtomicBool,
     detail: Mutex<Option<DetailSnapshot>>,
     subagents: Mutex<subagents::State>,
+    context_settings: Mutex<context::State>,
 }
 struct DetailSnapshot { id: String, turn_id: String, item_id: String, text: Arc<str> }
 struct Worker {
@@ -222,7 +227,7 @@ impl ConversationConnection {
         }
     }
     pub(super) fn from_initialize(endpoint: Endpoint, stopped: Arc<AtomicBool>, initialized: &Value) -> Self {
-        Self(Arc::new(Control {endpoint,stopped,passive_supported:passive_capability(initialized),subagents_supported:initialized["supportsSubagentManagement"].as_bool()==Some(true),compact_supported:compact_capability(initialized),input:Mutex::new(false),owned:AtomicBool::new(false),worker:Mutex::new(None),events:Mutex::new(Events::default()),sent:Mutex::new(HashSet::new()),unknown:AtomicBool::new(false),deleted:AtomicBool::new(false),detail:Mutex::new(None),subagents:Mutex::new(subagents::State::default())}))
+        Self(Arc::new(Control {endpoint,stopped,passive_supported:passive_capability(initialized),subagents_supported:initialized["supportsSubagentManagement"].as_bool()==Some(true),compact_supported:compact_capability(initialized),input:Mutex::new(false),owned:AtomicBool::new(false),worker:Mutex::new(None),events:Mutex::new(Events::default()),sent:Mutex::new(HashSet::new()),unknown:AtomicBool::new(false),deleted:AtomicBool::new(false),detail:Mutex::new(None),subagents:Mutex::new(subagents::State::default()),context_settings:Mutex::new(context::State::default())}))
     }
     #[cfg(test)]
     pub(super) fn new(endpoint: Endpoint, stopped: Arc<AtomicBool>) -> Self {
@@ -381,6 +386,9 @@ impl ConversationConnection {
     }
     fn request_context(&self, thread_id: &str, cwd: &Path, request: ConversationRequest, send_context: Option<SendContext>) -> Result<Value, String> {
         validate_request(&request)?;
+        if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::SetContextWindow {..}) {
+            return self.context_settings_request(thread_id, request);
+        }
         if matches!(request, ConversationRequest::ContextStatus) {
             return self.context_status(thread_id);
         }
@@ -722,6 +730,7 @@ fn cursor(value: &Option<String>) -> Result<(), String> {
 }
 fn validate_request(request: &ConversationRequest) -> Result<(), String> {
     match request {
+        ConversationRequest::SetContextWindow {model_context_window,expected_model_context_window} => {context::validate_window(*model_context_window)?;context::validate_window(*expected_model_context_window)},
         ConversationRequest::Page {cursor: value} | ConversationRequest::Models {cursor: value} => cursor(value),
         ConversationRequest::Items {turn_id,cursor: value} => {valid_id(turn_id)?;cursor(value)},
         ConversationRequest::Detail {turn_id,item_id,snapshot_id,..} => {valid_id(turn_id)?;valid_id(item_id)?;if let Some(id)=snapshot_id {valid_id(id)?;}Ok(())},
