@@ -12,6 +12,7 @@
 | CTX05 | 세션 닫기·재시작·다른 카드/프로젝트 전환 중 지연 응답 | 다른 세션이나 세대로 적용되지 않고 오래된 응답을 버림 |
 | CTX06 | busy/대기 질문/연결 끊김·적용 결과 불명 | 확인된 계약의 적용 시점을 지키고 실패를 성공으로 표시하지 않음. 자동 재전송 없음 |
 | CTX07 | 공식 CLI와 지원 확장 CLI의 실제 자체 fixture | 지원 계약에 맞는 실제 read/write/read-back 또는 미지원 보존을 검증. 사용자 전역 설정·운영 서비스 불변 |
+| CTX-INIT-01 | 새 context 연결의 `initialize.params.capabilities.experimentalApi`가 boolean `true`가 아니면 settings 조회를 R37과 같은 `-32600`으로 거부하는 native WebSocket fixture. 기존 exchange에 `ContextSettings` 입력 | initialize → initialized → 해당 thread의 크기 필드 생략 조회를 관측한다. 명시 ACK의 요청값 null·실효값 258400과 supported/canChange=true를 반환하고 추가 요청은 없어야 통과. 같은 신규 시험을 수정 전 제품에 적용하면 capability 오류로 실패해야 한다. 실제 RED/GREEN은 로컬 Cargo 부재로 NOT_RUN이며 root CI 실행이 필요하다. |
 
 이 문서는 후속 실행의 사전 기준이며 구현 API의 존재를 주장하지 않는다. 서버 적용·클라이언트 표시·다음 turn 반영·복원 시 유지 여부는 실제 계약과 관측을 구분한다.
 

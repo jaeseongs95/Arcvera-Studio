@@ -24,6 +24,30 @@ fn run(control: &ConversationConnection,state: &mut State,rpc: &mut Rpc<TcpStrea
 }
 
 #[test]
+fn fresh_context_connection_negotiates_experimental_api_before_settings_query() {
+    let (control,mut rpc,listener)=fixture();
+    let server=thread::spawn(move || {
+        let (stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+        let init=request(&mut socket);assert_eq!(init["method"],"initialize");
+        let experimental=init["params"]["capabilities"]["experimentalApi"].as_bool()==Some(true);
+        reply(&mut socket,&init,json!({}));assert_eq!(request(&mut socket)["method"],"initialized");
+        let read=request(&mut socket);assert_eq!(read["method"],SETTINGS);assert_eq!(read["params"],json!({"threadId":"original"}));
+        // R37 rejects this experimental method before dispatch unless this
+        // connection opted in; a permissive fixture hid the missing handshake.
+        if experimental {reply(&mut socket,&read,ack(None,Some(258400)));} else {
+            socket.send(Message::Text(json!({"id":read["id"],"error":{"code":-32600,"message":"thread/settings/update requires experimentalApi capability"}}).to_string().into())).unwrap();
+        }
+        assert!(socket.read().is_err(),"context query must not write or retry");
+    });
+    let mut state=State::default();let result=run(&control,&mut state,&mut rpc,ConversationRequest::ContextSettings);
+    drop(rpc);server.join().unwrap();
+    let value=result.unwrap();assert_eq!(value["supported"],true);assert_eq!(value["canChange"],true);
+    assert_eq!(value["modelContextWindow"],Value::Null);assert_eq!(value["effectiveContextWindow"],258400);assert!(state.pending.is_none());
+    assert!(!*control.0.input.lock().unwrap());assert!(!control.0.owned.load(Ordering::Acquire));assert!(control.0.worker.lock().unwrap().is_none());
+}
+
+#[test]
 fn official_empty_and_unconfirmed_or_incomplete_responses_never_enable_writes() {
     for response in [json!({}),json!({"settingsApplied":true}),json!({"settingsApplied":false,"threadSettings":{"modelContextWindow":null,"effectiveContextWindow":1000}}),
         json!({"settingsApplied":"true","threadSettings":{"modelContextWindow":null,"effectiveContextWindow":1000}}),

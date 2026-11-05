@@ -55,7 +55,8 @@ impl ConversationConnection {
 }
 fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,thread_id: &str,request: ConversationRequest,cancelled: &Arc<AtomicBool>,deadline: Instant) -> Result<Value,String> {
     rpc.cancelled=Some(cancelled.clone());rpc.deadline=Some(deadline);live(control,cancelled)?;
-    rpc.call("initialize",initialize())?;rpc.send(json!({"method":"initialized","params":{}}))?;
+    let mut init=initialize();init["capabilities"]=json!({"experimentalApi":true});
+    rpc.call("initialize",init)?;rpc.send(json!({"method":"initialized","params":{}}))?;
     // Omission is the actual R36 read contract. Official CLI returns {}, which
     // is deliberately insufficient proof that modelContextWindow is supported.
     let value=rpc.call(SETTINGS,json!({"threadId":thread_id}))?;
