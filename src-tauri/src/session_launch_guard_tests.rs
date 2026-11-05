@@ -244,3 +244,239 @@ fn failed_launch_guard_case(resume_before_stop: bool) {
     assert!(engine.stop(&info.id, info.generation).unwrap_err().contains("재전송하지 않았습니다"));
     println!("시작 실패 guard: resumeBeforeStop={resume_before_stop}, ownedPid={owned_pid}, state=unknown, active=false, done=true, stoppedNotPublished=true");
 }
+
+#[test]
+fn launch_activation_sink_failure_waits_for_reader_and_publishes_once() {
+    for expected in ["error", "stopped", "unknown"] { activation_sink_failure_case(expected); }
+}
+
+fn activation_sink_failure_case(expected: &'static str) {
+    const INJECTED: &str = "fixture activation sink failure";
+    const MARKER: &str = "LAUNCH_READER_GATE";
+    let observed = Arc::new(Mutex::new(None::<std::sync::Weak<Session>>));
+    let completions = Arc::new(Mutex::new(Vec::<LaunchCompletionObservation>::new()));
+    let original = Arc::new(Mutex::new(None::<WorkerFailureIdentity>));
+    let (entered, entry) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (failed, failure) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let (entry, released) = (Mutex::new(entry), Mutex::new(released));
+    let (activation_seen, reader_seen) = (AtomicBool::new(false), AtomicBool::new(false));
+    let tail = Mutex::new(String::new());
+    let (sink_session, sink_completions, sink_original) = (observed.clone(), completions.clone(), original.clone());
+    let engine = Engine::new(Path::new(":memory:"), Arc::new(move |event| {
+        let session = sink_session.lock().unwrap().as_ref().and_then(std::sync::Weak::upgrade);
+        match event {
+            BackendEvent::Output(chunk) => {
+                let session = session.ok_or("fixture session missing at reader output")?;
+                session.flow.acknowledge(chunk.seq)?;
+                let marker = {
+                    let mut tail = tail.lock().unwrap();
+                    tail.push_str(&chunk.data);
+                    let found = tail.contains(MARKER);
+                    *tail = tail.chars().rev().take(MARKER.len()).collect::<Vec<_>>().into_iter().rev().collect();
+                    found
+                };
+                if marker && !reader_seen.swap(true, Ordering::AcqRel) {
+                    let _ = entered.send(());
+                    released.lock().unwrap().recv_timeout(Duration::from_secs(10)).map_err(|_| "fixture reader release deadline")?;
+                }
+            }
+            BackendEvent::Changed(info) if !info.active => {
+                let session = session.ok_or("fixture session missing at completion")?;
+                let identity = sink_original.lock().unwrap();
+                let original_child_signaled = identity.as_ref().is_some_and(|identity| unsafe { WaitForSingleObject(identity.child.as_raw_handle(), 0) } == 0);
+                sink_completions.lock().unwrap().push(LaunchCompletionObservation {
+                    state: info.state, active: info.active,
+                    process_slot_empty: session.process.lock().unwrap().is_none(), original_child_signaled,
+                });
+                let _ = completed.send(());
+            }
+            BackendEvent::Changed(info) if info.state == "unknown" && !activation_seen.swap(true, Ordering::AcqRel) => {
+                entry.lock().unwrap().recv_timeout(Duration::from_secs(8)).map_err(|_| "fixture reader did not enter actual output sink")?;
+                if expected != "error" { session.ok_or("fixture session missing at stop")?.request_stop()?; }
+                let _ = failed.send(());
+                return Err(INJECTED.into());
+            }
+            _ => {},
+        }
+        Ok(())
+    })).unwrap();
+    let request = StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "activation 실패 reader 완료 순서".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 };
+    let session = engine.allocate(&request).unwrap();
+    *observed.lock().unwrap() = Some(Arc::downgrade(&session));
+    let probe_original = original.clone();
+    *engine.inner.post_install_launch_probe.lock().unwrap() = Some(Arc::new(move |session, child| {
+        *probe_original.lock().unwrap() = Some(launch_identity(session, child)?);
+        if expected == "unknown" {
+            let process = session.process.lock().unwrap().clone().unwrap();
+            process.shared_cleanup_failed.store(true, Ordering::Release);
+            process.shared_stop_attempted.store(true, Ordering::Release);
+        }
+        Ok(())
+    }));
+    let mut command = launch_shell();
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('LAUNCH_READER_GATE'); Start-Sleep -Seconds 30"]);
+    let launching_session = session.clone();
+    let (returned, result) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || { let _ = returned.send(engine.launch(launching_session, command, None, 80, 24)); });
+    let activation_failed = failure.recv_timeout(Duration::from_secs(10));
+    let early_completion = completion.recv_timeout(Duration::from_millis(500));
+    let early_phase = session.phase.load(Ordering::Acquire);
+    let early_done = *session.done.0.lock().unwrap();
+    // Always release the real reader before asserting, including on RED.
+    let _ = release.send(());
+    let result = result.recv_timeout(Duration::from_secs(15)).expect("activation 실패 정리가 reader 해제 뒤 반환되지 않았습니다");
+    worker.join().unwrap();
+    assert!(activation_failed.is_ok(), "실제 activation sink 실패에 도달하지 못했습니다");
+    assert_eq!(result.unwrap_err(), INJECTED);
+    assert!(early_completion.is_err(), "reader 완료 전에 terminal 이벤트가 발표됐습니다");
+    assert!(early_phase < 3, "reader 완료 전에 phase3이 발표됐습니다");
+    assert!(!early_done, "reader 완료 전에 done이 발표됐습니다");
+    let completions = completions.lock().unwrap();
+    assert_eq!(completions.len(), 1, "activation 실패 완료 중복: {completions:?}");
+    assert_eq!(completions[0].state, expected);
+    assert!(!completions[0].active);
+    assert!(completions[0].process_slot_empty);
+    assert!(completions[0].original_child_signaled);
+    assert!(session.process.lock().unwrap().is_none());
+    assert!(*session.done.0.lock().unwrap());
+    assert_eq!(session.info().unwrap().state, expected);
+    let identity = original.lock().unwrap();
+    assert_eq!(worker_failure_job_active(&identity.as_ref().unwrap().job), Some(0));
+    println!("activation sink 실패: expected={expected}, completionCount=1, readerBeforeDone=true, childSignaled=true, jobActive=0");
+}
+
+fn launch_shell() -> CommandBuilder {
+    CommandBuilder::new(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+}
+
+fn launch_identity(session: &Session, child: &dyn portable_pty::Child) -> Result<WorkerFailureIdentity, String> {
+    let pid = child.process_id().ok_or("fixture child has no PID")?;
+    let raw = unsafe { OpenProcess(0x00100000, 0, pid) };
+    if raw.is_null() { return Err(format!("open launch fixture child: {}", std::io::Error::last_os_error())); }
+    let child = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let process = session.process.lock().map_err(|_| "fixture process lock poisoned")?.clone().ok_or("fixture process missing")?;
+    let job = process.job.lock().map_err(|_| "fixture Job lock poisoned")?;
+    let mut copied = std::ptr::null_mut();
+    if unsafe { DuplicateHandle(GetCurrentProcess(), job.as_ref().ok_or("fixture Job missing")?.as_handle().as_raw_handle(), GetCurrentProcess(), &mut copied, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
+        return Err(format!("duplicate launch fixture Job: {}", std::io::Error::last_os_error()));
+    }
+    Ok(WorkerFailureIdentity { pid, child, job: unsafe { OwnedHandle::from_raw_handle(copied) } })
+}
+
+#[test]
+fn launch_resume_rejection_and_metadata_failure_complete_after_reaper_cleanup() {
+    for fail_save in [false, true] {
+        let engine = Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap();
+        let request = StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "reaper 설치 뒤 실제 시작 오류".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 };
+        let session = engine.allocate(&request).unwrap();
+        let original = Arc::new(Mutex::new(None));
+        let probe_original = original.clone();
+        *engine.inner.post_install_launch_probe.lock().unwrap() = Some(Arc::new(move |session, child| {
+            let identity = launch_identity(session, child)?;
+            if !fail_save {
+                let process = session.process.lock().unwrap().clone().unwrap();
+                process.terminate()?;
+                if unsafe { WaitForSingleObject(identity.child.as_raw_handle(), 5000) } != 0 { return Err("fixture child did not exit before actual resume rejection".into()); }
+            }
+            *probe_original.lock().unwrap() = Some(identity);
+            Ok(())
+        }));
+        if fail_save {
+            *engine.inner.pre_reader_output_probe.lock().unwrap() = Some(Arc::new(|session| {
+                // Poison only this fixture's Store mutex. The error must arise
+                // in the real save path after both workers are installed.
+                let store = session.store.clone();
+                assert!(thread::spawn(move || { let _store = store.lock().unwrap(); panic!("fixture metadata store poison"); }).join().is_err());
+                Ok(())
+            }));
+        }
+        let mut command = launch_shell();
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
+        let launching_session = session.clone();
+        let (returned, result) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || { let _ = returned.send(engine.launch(launching_session, command, None, 80, 24)); });
+        let error = result.recv_timeout(Duration::from_secs(15)).expect("reaper 설치 뒤 실패 정리가 반환되지 않았습니다").unwrap_err();
+        worker.join().unwrap();
+        assert!(error.contains(if fail_save { "metadata store lock poisoned" } else { "resume owned PTY process:" }), "원래 시작 오류가 변경됐습니다: {error}");
+        assert!(session.process.lock().unwrap().is_none());
+        assert!(*session.done.0.lock().unwrap());
+        assert_eq!(session.phase.load(Ordering::Acquire), 3);
+        let info = session.info().unwrap();
+        assert_eq!(info.state, "error");
+        assert!(!info.active);
+        let identity = original.lock().unwrap();
+        let identity = identity.as_ref().unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(identity.child.as_raw_handle(), 0) }, 0);
+        assert_eq!(worker_failure_job_active(&identity.job), Some(0));
+        println!("reaper 설치 뒤 실제 시작 오류: failSave={fail_save}, ownedPid={}, state=error, done=true, childSignaled=true, jobActive=0", identity.pid);
+    }
+}
+
+#[test]
+fn launch_fast_exit_waits_for_activation_delivery_before_completion() {
+    let observed = Arc::new(Mutex::new(None::<std::sync::Weak<Session>>));
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let (activation, activated) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    let (sink_session, sink_states) = (observed.clone(), states.clone());
+    let engine = Engine::new(Path::new(":memory:"), Arc::new(move |event| {
+        match event {
+            BackendEvent::Output(chunk) => {
+                if let Some(session) = sink_session.lock().unwrap().as_ref().and_then(std::sync::Weak::upgrade) { session.flow.acknowledge(chunk.seq)?; }
+            }
+            BackendEvent::Changed(info) if !info.active => {
+                sink_states.lock().unwrap().push(info.state);
+                let _ = completed.send(());
+            }
+            BackendEvent::Changed(info) if info.state == "unknown" => {
+                let _ = activation.send(());
+                released.lock().unwrap().recv_timeout(Duration::from_secs(10)).map_err(|_| "fixture activation release deadline")?;
+            }
+            _ => {},
+        }
+        Ok(())
+    })).unwrap();
+    let session = engine.allocate(&StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "activation 전달 전 빠른 정상 종료".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 }).unwrap();
+    *observed.lock().unwrap() = Some(Arc::downgrade(&session));
+    let original = Arc::new(Mutex::new(None));
+    let probe_original = original.clone();
+    *engine.inner.post_install_launch_probe.lock().unwrap() = Some(Arc::new(move |session, child| {
+        *probe_original.lock().unwrap() = Some(launch_identity(session, child)?);
+        Ok(())
+    }));
+    let mut command = launch_shell();
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
+    let launching_session = session.clone();
+    let (returned, result) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || { let _ = returned.send(engine.launch(launching_session, command, None, 80, 24)); });
+    let activation_entered = activated.recv_timeout(Duration::from_secs(8));
+    let signaled = original.lock().unwrap().as_ref().map(|identity| unsafe { WaitForSingleObject(identity.child.as_raw_handle(), 5000) });
+    let early_completion = completion.recv_timeout(Duration::from_millis(500));
+    let early_phase = session.phase.load(Ordering::Acquire);
+    let early_done = *session.done.0.lock().unwrap();
+    let _ = release.send(());
+    let result = result.recv_timeout(Duration::from_secs(15)).expect("activation 해제 뒤 launch가 반환되지 않았습니다");
+    worker.join().unwrap();
+    let completion_observed = if early_completion.is_ok() { true } else { completion.recv_timeout(Duration::from_secs(8)).is_ok() };
+    assert!(activation_entered.is_ok());
+    assert_eq!(signaled, Some(0), "activation 전달 중 실제 child가 종료해야 합니다");
+    assert!(result.is_ok(), "정상 exit0 launch가 실패했습니다: {result:?}");
+    assert!(early_completion.is_err(), "activation 전달 확정 전에 완료를 발표했습니다");
+    assert!(early_phase < 3);
+    assert!(!early_done);
+    assert!(completion_observed);
+    // finish sends Changed before notifying done; sink delivery alone is not
+    // proof that completion waiters have been notified.
+    let done = session.done.0.lock().unwrap();
+    let (done, _) = session.done.1.wait_timeout_while(done, Duration::from_secs(5), |done| !*done).unwrap();
+    assert!(*done);
+    drop(done);
+    assert_eq!(*states.lock().unwrap(), ["exited"]);
+    assert!(session.process.lock().unwrap().is_none());
+    assert!(*session.done.0.lock().unwrap());
+    println!("빠른 정상 종료: activationBeforeCompletion=true, completionCount=1, state=exited, done=true");
+}
