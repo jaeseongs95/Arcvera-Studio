@@ -16,7 +16,8 @@ async function setup(page: Page) {
         if (command === 'list_sessions') return Array.from({ length: 4 }, (_, index) => ({ id: `tools-${index}`, generation: 1, title: `세션 ${index} 긴 제목`, cwd: 'D:\\Work', threadId: `thread-${index}`, state: 'idle', active: true }));
         if (command === 'cron_request') return { supported: true, connected: true, scope: 'cliLifetime', jobs: [], hasMore: false };
         if (command === 'conversation_request') {
-          if (args.request.type === 'contextStatus') return { connected: true, tokenUsageFresh: true, tokenUsage: { last: { totalTokens: 500 }, modelContextWindow: 1000 }, canCompact: true, passiveSubscriptionSupported: true, subagentsSupported: true, cronSupported: true, compactSupported: true };
+          if (args.request.type === 'contextStatus') return { threadId: `thread-${args.id.slice(-1)}`, connected: true, tokenUsageFresh: true, tokenUsage: { last: { totalTokens: 500 }, modelContextWindow: 1000 }, canCompact: true, passiveSubscriptionSupported: true, subagentsSupported: true, cronSupported: true, compactSupported: true };
+          if (args.request.type === 'permissionStatus') return { supported: true, status: 'known', permissions: { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false }, activePermissionProfile: null }, pendingApprovals: { status: 'known', requests: [] } };
           if (args.request.type === 'attach') return { threadId: `thread-${args.id.slice(-1)}`, model: 'fixture-model' };
           if (args.request.type === 'poll') return { events: [], pendingRequests: [], connected: true, gap: false };
           return { data: [], nextCursor: null };
@@ -106,12 +107,13 @@ test('ST04 actual handle reorders cards and footer clicks do not drag', async ({
 
 test('ST05 permission button queries only the selected session generation', async ({ page }) => {
   await setup(page);
+  await expect.poll(() => page.evaluate(() => (window as any).toolCalls.filter((item: any) => item.command === 'conversation_request' && item.args.request.type === 'permissionStatus').length)).toBe(4);
   const permission = page.locator('.terminal-card').nth(2).locator('.terminal-footer .permission-status-open');
   const glyph = await permission.locator('svg').evaluate(element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return { width: rect.width, height: rect.height, fill: style.fill, stroke: style.stroke }; });
   expect(glyph.width).toBe(13); expect(glyph.height).toBe(13); expect(glyph.fill).toBe('none'); expect(glyph.stroke).not.toBe('none');
   await permission.click();
   await expect(page.getByRole('dialog', { name: '세션 권한 확인' })).toBeVisible();
-  expect(await page.evaluate(() => (window as any).toolCalls.filter((item: any) => item.command === 'conversation_request' && item.args.request.type === 'permissionStatus').map((item: any) => item.args))).toEqual([{ id: 'tools-2', generation: 1, request: { type: 'permissionStatus' } }]);
+  expect(await page.evaluate(() => (window as any).toolCalls.filter((item: any) => item.command === 'conversation_request' && item.args.request.type === 'permissionStatus').map((item: any) => item.args))).toEqual([0, 1, 2, 3, 2].map(index => ({ id: `tools-${index}`, generation: 1, request: { type: 'permissionStatus' } })));
 });
 
 test('ST06 GitHub shortcut uses settings and the fixed native browser opener', async ({ page }) => {

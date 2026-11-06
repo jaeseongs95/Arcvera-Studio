@@ -1,8 +1,16 @@
 import { onLanguageChange, t } from './i18n';
 import './permission-status.css';
 
-interface Options { call<T>(command: string, args: Record<string, unknown>): Promise<T> }
+interface Options {
+  call<T>(command: string, args: Record<string, unknown>): Promise<T>;
+  availabilityChanged?(id: string, generation: number): void;
+}
 export interface PermissionSession { id: string; generation: number; title: string }
+interface Availability {
+  id: string; generation: number; threadId: string; eligible: boolean;
+  state: 'waiting' | 'pending' | 'supported' | 'unsupported' | 'unknown' | 'error';
+  reason?: string;
+}
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : undefined;
 const text = (value: unknown) => typeof value === 'string' ? value : '';
@@ -12,6 +20,47 @@ export function createPermissionStatus(options: Options) {
   let disposed = false; let epoch = 0; let loading = false;
   let session: PermissionSession | undefined; let dialog: HTMLDialogElement | undefined;
   let snapshot: unknown; let failed = false;
+  const availability = new Map<string, Availability>();
+  let discovering = false;
+  let connection: Promise<void> = Promise.resolve();
+
+  // Discovery and explicit popup reads share one transport slot. Obsolete queued
+  // requests are dropped before sending; an already sent read keeps its deadline.
+  async function query(selected: Pick<PermissionSession, 'id' | 'generation'>, current: () => boolean) {
+    const previous = connection; let release!: () => void;
+    connection = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      if (!current()) return { sent: false };
+      const value = await options.call<unknown>('conversation_request', { id: selected.id, generation: selected.generation, request: { type: 'permissionStatus' } });
+      return { sent: true, value };
+    } finally { release(); }
+  }
+  function acceptAvailability(entry: Availability, value: unknown) {
+    const response = object(value);
+    entry.state = response?.supported === false ? 'unsupported' : response?.supported === true && response.status === 'known' && object(response.permissions) ? 'supported' : 'unknown';
+    entry.reason = text(response?.reason) || undefined;
+  }
+  function discover() {
+    if (disposed || discovering) return;
+    const entry = [...availability.values()].find(value => value.eligible && value.state === 'waiting');
+    if (!entry) return;
+    discovering = true; entry.state = 'pending';
+    const current = () => !disposed && availability.get(entry.id) === entry;
+    void query(entry, () => current() && entry.eligible).then(result => {
+      if (!current()) return;
+      if (!result.sent) { entry.state = 'waiting'; return; }
+      // Hiding a card does not discard a valid same-generation reply. The host
+      // keeps it hidden and can reuse this result when the card becomes visible.
+      acceptAvailability(entry, result.value);
+    }).catch(() => {
+      if (current()) { entry.state = 'error'; entry.reason = 'transport'; }
+    }).finally(() => {
+      discovering = false;
+      if (current()) options.availabilityChanged?.(entry.id, entry.generation);
+      discover();
+    });
+  }
 
   function close() { epoch++; dialog?.close(); dialog?.remove(); dialog = undefined; session = undefined; snapshot = undefined; loading = false; }
   function paragraph(parent: HTMLElement, value: string, className?: string) {
@@ -93,18 +142,33 @@ export function createPermissionStatus(options: Options) {
     if (disposed || !session || loading) return;
     const version = ++epoch; const selected = session; loading = true; failed = false; snapshot = undefined; render();
     try {
-      const value = await options.call<unknown>('conversation_request', { id: selected.id, generation: selected.generation, request: { type: 'permissionStatus' } });
+      const result = await query(selected, () => !disposed && version === epoch && !!dialog);
       if (disposed || version !== epoch || !dialog) return;
-      snapshot = value;
+      if (!result.sent) return;
+      snapshot = result.value;
+      const entry = availability.get(selected.id);
+      if (entry?.generation === selected.generation) { acceptAvailability(entry, result.value); options.availabilityChanged?.(entry.id, entry.generation); }
     } catch {
       if (disposed || version !== epoch || !dialog) return;
       failed = true;
+      const entry = availability.get(selected.id);
+      if (entry?.generation === selected.generation) { entry.state = 'error'; entry.reason = 'transport'; options.availabilityChanged?.(entry.id, entry.generation); }
     } finally {
       if (!disposed && version === epoch && dialog) { loading = false; render(); }
     }
   }
   const language = onLanguageChange(render);
   return {
+    updateAvailability(selected: Pick<PermissionSession, 'id' | 'generation'> & { threadId?: string }, eligible: boolean) {
+      if (disposed) return false;
+      let entry = availability.get(selected.id);
+      if (entry && (entry.generation !== selected.generation || entry.threadId !== selected.threadId)) { availability.delete(selected.id); entry = undefined; }
+      if (!entry && eligible && selected.threadId) { entry = { id: selected.id, generation: selected.generation, threadId: selected.threadId, eligible, state: 'waiting' }; availability.set(selected.id, entry); }
+      if (entry) entry.eligible = eligible;
+      discover();
+      return eligible && entry?.state === 'supported';
+    },
+    forget(id: string) { availability.delete(id); if (session?.id === id) close(); },
     async open(selected: PermissionSession) {
       if (disposed) return;
       if (dialog && session?.id === selected.id && session.generation === selected.generation && loading) { dialog.querySelector<HTMLButtonElement>('.permission-status-close')?.focus(); return; }
@@ -115,6 +179,6 @@ export function createPermissionStatus(options: Options) {
       const request = read(); dialog.querySelector<HTMLButtonElement>('.permission-status-close')?.focus();
       await request;
     },
-    dispose() { if (disposed) return; disposed = true; close(); language(); },
+    dispose() { if (disposed) return; disposed = true; close(); availability.clear(); language(); },
   };
 }
