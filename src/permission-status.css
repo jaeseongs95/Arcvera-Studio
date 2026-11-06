@@ -1,0 +1,21 @@
+.permission-status-dialog {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  color: var(--text, #e7eaf1);
+  background: var(--panel, #1b2230);
+  border: 1px solid var(--border, #465165);
+  border-radius: 14px;
+  padding: 24px;
+}
+.permission-status-dialog::backdrop { background: #0009; }
+.permission-status-dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
+.permission-status-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.permission-session-title { font-weight: 600; }
+.permission-fields { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: 12px 16px; }
+.permission-fields dt { color: var(--muted, #aab4c5); }
+.permission-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.permission-pending-status { margin-top: 24px; font-weight: 600; }
+.permission-pending-request { font-size: .85rem; }
+.permission-status-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.permission-status-actions button { padding: 8px 14px; border-radius: 8px; cursor: pointer; }
