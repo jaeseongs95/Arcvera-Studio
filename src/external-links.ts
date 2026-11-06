@@ -41,9 +41,22 @@ export function appendLinkifiedText(parent: HTMLElement, text: string, onError: 
     anchor.textContent = link.text; anchor.href = validateExternalUrl(link.text); anchor.title = anchor.href; anchor.rel = 'noopener noreferrer';
     anchor.draggable = false;
     anchor.addEventListener('dragstart', event => { event.preventDefault(); event.stopPropagation(); });
+    // Chromium still emits click after dragging a non-draggable anchor.
+    // Keep small click wobble, but remember a drag even if it returns to start.
+    let pointerDown: { x: number; y: number; dragged: boolean } | undefined;
+    anchor.addEventListener('pointerdown', event => { pointerDown = event.button === 0 ? { x: event.clientX, y: event.clientY, dragged: false } : undefined; });
+    const trackPointer = (event: PointerEvent | MouseEvent) => {
+      if (pointerDown && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) pointerDown.dragged = true;
+    };
+    anchor.addEventListener('pointermove', trackPointer);
+    anchor.addEventListener('pointercancel', () => { pointerDown = undefined; });
     anchor.addEventListener('click', event => {
       // A link inside a question's radio label must not select or submit it.
       event.preventDefault(); event.stopPropagation();
+      trackPointer(event);
+      const dragged = event.detail > 0 && pointerDown?.dragged;
+      pointerDown = undefined;
+      if (dragged) return;
       void openExternalUrl(link.text).catch(onError);
     });
     parent.append(anchor); offset = link.index + link.text.length;

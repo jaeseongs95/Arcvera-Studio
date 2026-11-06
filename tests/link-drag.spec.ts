@@ -4,7 +4,8 @@ import { transformWithEsbuild } from 'vite';
 
 async function setup(page: Page) {
   if (process.env.LINK_DRAG_BASELINE === '1') {
-    const baseline = execFileSync('git', ['show', '6e453bf:src/external-links.ts'], { encoding: 'utf8' });
+    const revision = process.env.LINK_DRAG_BASELINE_REVISION ?? '6e453bf';
+    const baseline = execFileSync('git', ['show', `${revision}:src/external-links.ts`], { encoding: 'utf8' });
     await page.route('**/src/external-links.ts', async route => {
       const response = await route.fetch();
       const current = await response.text();
@@ -51,17 +52,29 @@ async function terminalPoint(page: Page, column: number, row: number) {
   return { x: rect.x + rect.width / 80 * (column - 0.5), y: rect.y + rect.height / 6 * (row - 0.5) };
 }
 
-test('LD-01 body/radio links prevent native drag while normal click and Enter open once', async ({ page }) => {
+test('LD-01 body/radio link drag never opens; a new click and Enter each open once', async ({ page }) => {
   await setup(page);
   for (const selector of ['#drag-body a', '#drag-label a']) {
+    await page.evaluate(() => { window.getSelection()?.removeAllRanges(); (window as any).linkDrag.calls = []; });
     const link = page.locator(selector); const rect = (await link.boundingBox())!;
     await page.mouse.move(rect.x + 8, rect.y + rect.height / 2);
     await page.mouse.down(); await page.mouse.move(rect.x + 43, rect.y + rect.height / 2, { steps: 8 }); await page.mouse.up();
+    console.log('LD-01 gesture', JSON.stringify(await page.evaluate(selector => ({ selector, selection: window.getSelection()?.toString(), calls: (window as any).linkDrag.calls, drags: (window as any).linkDrag.drags }), selector)));
     expect(await page.evaluate(() => (window as any).linkDrag.drags.filter((event: any) => !event.prevented)), 'native anchor drag must not begin').toEqual([]);
     await expect(page.locator('.terminal-card.dragging')).toHaveCount(0);
-    await page.evaluate(() => { window.getSelection()?.removeAllRanges(); (window as any).linkDrag.calls = []; });
+    expect(await page.evaluate(() => (window as any).linkDrag.calls), 'a link drag gesture must not invoke the opener').toEqual([]);
+    await expect(page.locator('#drag-radio')).not.toBeChecked();
+    // Returning to the starting point is still a drag, not a fresh click.
+    await page.mouse.move(rect.x + 8, rect.y + rect.height / 2); await page.mouse.down();
+    await page.mouse.move(rect.x + 43, rect.y + rect.height / 2, { steps: 8 });
+    await page.mouse.move(rect.x + 8, rect.y + rect.height / 2, { steps: 8 }); await page.mouse.up();
+    expect(await page.evaluate(() => (window as any).linkDrag.calls), 'a returning drag must not invoke the opener').toEqual([]);
+    // A previous drag must not suppress a new activation.
     await link.click(); expect(await page.evaluate(() => (window as any).linkDrag.calls)).toHaveLength(1);
     await link.focus(); await page.keyboard.press('Enter'); expect(await page.evaluate(() => (window as any).linkDrag.calls)).toHaveLength(2);
+    await page.mouse.move(rect.x + 8, rect.y + rect.height / 2); await page.mouse.down();
+    await page.mouse.move(rect.x + 10, rect.y + rect.height / 2); await page.mouse.up();
+    expect(await page.evaluate(() => (window as any).linkDrag.calls), 'a 2px click wobble remains an activation').toHaveLength(3);
     await expect(page.locator('#drag-radio')).not.toBeChecked();
   }
   expect(await page.evaluate(() => (window as any).linkDrag.errors)).toEqual([]);
