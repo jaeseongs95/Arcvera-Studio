@@ -1,5 +1,14 @@
 # Desktop 네이티브 업데이트 사례
 
+## NU25: 설치 미구성 상태의 실제 앱 시작
+
+- 요구: 신뢰 키와 업데이트 주소가 없는 기본 배포본도 정상 GUI를 시작하며, 다운로드·설치는 미구성 상태를 유지한다.
+- 입력·전제: 실제 `tauri.conf.json`과 고정 `tauri-plugin-updater` 2.14.1; 별도 신규 TEST HOME·작업 공간, 기존 운영 앱·daemon 보존.
+- 절차: 기존 Rust runner에서 포함된 제품 설정의 `plugins.updater`를 upstream `Config`로 역직렬화한다. 이어 고정 배포 exe로 기존 GUI 새 세션 사례를 실행한다.
+- 기대·판정: 실제 Config 초기화 성공, 기본 키·endpoint 비어 있음, TLS 검증 우회 없음. GUI에서는 실제 창/CDP/새 세션 입력까지 확인해야 통과이며 `--codex-smoke`만으로 대체하지 않는다.
+- 원 관측: `69b1139`, `C:/od16r38q01/evidence/native.stderr.txt`, 2026-11-06T10:06Z 실제 앱 exit1, `invalid type: null, expected struct Config`; 원 보고서와 실패를 보존한다.
+- 실제 후속 결과: Rust 회귀·수정 배포본 GUI 재시험은 NOT_RUN. `pubkey`는 upstream 필수 문자열이므로 빈 객체만 추가하는 수정도 불충분하다. 빈 기본 키는 신뢰 키가 아니며 설치는 기존 빌드 시점 키 검사에서 계속 거부한다.
+
 대상: `desktop_updates.rs`, `session_exit.rs`, 앱 설정 저장. 운영 앱·공유 daemon·실제 인증/설정·다른 세션 로그는 시험 대상에서 제외한다. 구현 전 사례를 고정하며 실제 실행 결과는 별도로 갱신한다.
 
 ## 불변조건과 설계 경계

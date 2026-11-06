@@ -327,6 +327,19 @@ pub async fn install_codex_update(confirmed: bool, version: String) -> Result<()
 mod tests {
     use super::*;
     #[test]
+    fn desktop_updates_packaged_config_initializes_without_install_credentials() {
+        let app_config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let config: tauri_plugin_updater::Config =
+            serde_json::from_value(app_config["plugins"]["updater"].clone())
+                .expect("the shipped app must initialize its registered updater plugin");
+        assert!(config.pubkey.is_empty(), "trust is supplied only by the build-time key");
+        assert!(config.endpoints.is_empty(), "checks use the existing fixed repository path");
+        assert!(!config.dangerous_insecure_transport_protocol);
+        assert!(!config.dangerous_accept_invalid_certs);
+        assert!(!config.dangerous_accept_invalid_hostnames);
+    }
+
+    #[test]
     fn desktop_updates_codex_version_parser_preserves_contract_identity() {
         for (version, tag, revision) in [
             ("codex-cli 0.166.0+native-r38.20261106", "v0.166.0-r38.20261106", 38),
