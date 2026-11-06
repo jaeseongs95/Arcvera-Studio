@@ -106,7 +106,10 @@ test('ST04 actual handle reorders cards and footer clicks do not drag', async ({
 
 test('ST05 permission button queries only the selected session generation', async ({ page }) => {
   await setup(page);
-  await page.locator('.terminal-card').nth(2).locator('.terminal-footer .permission-status-open').click();
+  const permission = page.locator('.terminal-card').nth(2).locator('.terminal-footer .permission-status-open');
+  const glyph = await permission.locator('svg').evaluate(element => { const rect = element.getBoundingClientRect(); const style = getComputedStyle(element); return { width: rect.width, height: rect.height, fill: style.fill, stroke: style.stroke }; });
+  expect(glyph.width).toBe(13); expect(glyph.height).toBe(13); expect(glyph.fill).toBe('none'); expect(glyph.stroke).not.toBe('none');
+  await permission.click();
   await expect(page.getByRole('dialog', { name: '세션 권한 확인' })).toBeVisible();
   expect(await page.evaluate(() => (window as any).toolCalls.filter((item: any) => item.command === 'conversation_request' && item.args.request.type === 'permissionStatus').map((item: any) => item.args))).toEqual([{ id: 'tools-2', generation: 1, request: { type: 'permissionStatus' } }]);
 });
