@@ -8,6 +8,17 @@ pub(crate) const MAX_ACTIVE_SESSIONS: usize = 32;
 const MAX_METADATA_SESSIONS: usize = 512;
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 
+// xterm onBinary carries one byte per character, not UTF-8 text.
+fn binary_input_bytes(data: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(data.len().min(MAX_WRITE_BYTES));
+    for character in data.chars() {
+        let byte = u8::try_from(u32::from(character)).map_err(|_| "terminal binary input contains a non-byte character")?;
+        if bytes.len() == MAX_WRITE_BYTES { return Err("terminal write exceeds 64 KiB limit".into()); }
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
@@ -635,6 +646,14 @@ impl Engine {
     }
 
     pub fn write(&self, id: &str, generation: u64, data: &str) -> Result<(), String> {
+        self.write_bytes(id, generation, data.as_bytes())
+    }
+
+    pub fn write_binary(&self, id: &str, generation: u64, data: &str) -> Result<(), String> {
+        self.write_bytes(id, generation, &binary_input_bytes(data)?)
+    }
+
+    fn write_bytes(&self, id: &str, generation: u64, data: &[u8]) -> Result<(), String> {
         if data.len() > MAX_WRITE_BYTES { return Err("terminal write exceeds 64 KiB limit".into()); }
         let session = self.lookup(id, generation)?;
         if session.phase.load(Ordering::Acquire) != 1 { return Err("session is not live".into()); }
@@ -643,7 +662,7 @@ impl Engine {
         let write = || {
             let mut writer = process.writer.lock().map_err(|_| "PTY writer lock poisoned")?;
             if session.phase.load(Ordering::Acquire) != 1 { return Err("session is stopping".into()); }
-            writer.as_mut().ok_or("session PTY has exited")?.write_all(data.as_bytes()).map_err(|e| format!("write owned PTY: {e}"))
+            writer.as_mut().ok_or("session PTY has exited")?.write_all(data).map_err(|e| format!("write owned PTY: {e}"))
         };
         if let Some(conversation) = conversation { conversation.terminal_write(write) } else { write() }
     }
@@ -838,15 +857,25 @@ impl Engine {
     }
 
     fn runtime_pair_snapshot_with(&self, resolve: impl FnOnce() -> Result<(std::ffi::OsString, std::ffi::OsString, String, Option<String>), String>) -> Result<RuntimeSnapshot, String> {
-        let generation = {
+        let (generation, unresolved) = {
             let runtime = self.inner.runtime.lock().map_err(|_| "실행파일 선택 잠금이 손상되었습니다.")?;
             if runtime.changing { return Err("실행파일 설정을 저장 중입니다. 잠시 후 다시 시도하세요.".into()); }
-            runtime.generation
+            let unresolved = runtime.executable.is_none() && runtime.server_executable.is_none()
+                && runtime.server_kind.is_none() && runtime.source_manifest_sha256.is_none()
+                && !runtime.ready && !runtime.preparing;
+            (runtime.generation, unresolved)
         };
         let (executable, server_executable, server_kind, source_manifest_sha256) = resolve()?;
         let mut runtime = self.inner.runtime.lock().map_err(|_| "실행파일 선택 잠금이 손상되었습니다.")?;
-        if runtime.changing || runtime.generation != generation { return Err("실행파일 선택이 바뀌었습니다. 다시 시도하세요.".into()); }
-        if runtime.executable.as_ref() != Some(&executable) || runtime.server_executable.as_ref() != Some(&server_executable) || runtime.server_kind.as_ref() != Some(&server_kind) || runtime.source_manifest_sha256 != source_manifest_sha256 {
+        let same_pair = runtime.executable.as_ref() == Some(&executable)
+            && runtime.server_executable.as_ref() == Some(&server_executable)
+            && runtime.server_kind.as_ref() == Some(&server_kind)
+            && runtime.source_manifest_sha256 == source_manifest_sha256;
+        // A single concurrent first memoization may be joined. A user selection
+        // change clears the memo; repopulating it would advance generation again.
+        let joined_first_resolution = unresolved && generation.checked_add(1) == Some(runtime.generation) && same_pair;
+        if runtime.changing || (runtime.generation != generation && !joined_first_resolution) { return Err("실행파일 선택이 바뀌었습니다. 다시 시도하세요.".into()); }
+        if !same_pair {
             runtime.generation = runtime.generation.checked_add(1).ok_or("실행파일 선택 세대 한도에 도달했습니다.")?;
             runtime.executable = Some(executable.clone());
             runtime.server_executable = Some(server_executable.clone());
@@ -2361,6 +2390,10 @@ mod lifecycle_tests {
 #[cfg(all(test, windows))]
 #[path = "session_startup_output_tests.rs"]
 mod startup_output_tests;
+
+#[cfg(all(test, windows))]
+#[path = "session_input_tests.rs"]
+mod input_tests;
 
 #[cfg(all(test, windows))]
 mod settings_tests {

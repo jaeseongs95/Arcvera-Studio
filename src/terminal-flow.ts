@@ -27,12 +27,18 @@ export class TerminalOutputAcknowledgements {
 }
 
 export class InputQueueError extends Error {
-  constructor(readonly reason: 'message' | 'full' | 'cancelled') { super(`Terminal input ${reason}`); }
+  constructor(readonly reason: 'message' | 'full' | 'cancelled' | 'encoding') { super(`Terminal input ${reason}`); }
 }
 
 // Stop counting at the native per-message ceiling without allocating another
 // UTF-8 copy of an arbitrarily large clipboard string. Lone surrogates use U+FFFD.
-function inputBytes(text: string) {
+function inputBytes(text: string, binary = false) {
+  // xterm onBinary is a byte-string, not UTF-8 text. Keep each code unit intact.
+  if (binary) {
+    if (text.length > MAX_INPUT_MESSAGE_BYTES) return MAX_INPUT_MESSAGE_BYTES + 1;
+    for (let index = 0; index < text.length; index++) if (text.charCodeAt(index) > 255) return -1;
+    return text.length;
+  }
   let bytes = 0;
   for (let index = 0; index < text.length; index++) {
     const point = text.codePointAt(index)!;
@@ -43,7 +49,7 @@ function inputBytes(text: string) {
   return bytes;
 }
 
-export class TerminalInputQueue<T extends { data: string }> {
+export class TerminalInputQueue<T extends { data: string; binary?: true }> {
   private pending: { value: T; bytes: number; resolve: () => void; reject: (error: unknown) => void }[] = [];
   private active = false;
   private count = 0;
@@ -58,7 +64,8 @@ export class TerminalInputQueue<T extends { data: string }> {
 
   enqueue(value: T): Promise<void> {
     if (this.closed) return Promise.reject(new InputQueueError('cancelled'));
-    const bytes = inputBytes(value.data);
+    const bytes = inputBytes(value.data, value.binary);
+    if (bytes < 0) return Promise.reject(new InputQueueError('encoding'));
     if (bytes > MAX_INPUT_MESSAGE_BYTES) return Promise.reject(new InputQueueError('message'));
     if (this.count >= MAX_INPUT_OPERATIONS || this.bytes + bytes > MAX_INPUT_BYTES) {
       this.pressure = this.count > 0; this.changed();

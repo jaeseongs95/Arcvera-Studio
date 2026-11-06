@@ -33,7 +33,7 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.qu
 const states: Record<string, [string, string]> = { restored: ['저장됨 · 미실행', 'Saved · not started'], notLoaded: ['상태 미확인', 'Unknown state'], starting: ['시작 중', 'Starting'], running: ['실행 중', 'Running'], idle: ['입력 가능', 'Ready'], waiting: ['응답 대기', 'Waiting for response'], stopping: ['종료 중', 'Stopping'], stopped: ['종료됨', 'Stopped'], exited: ['종료됨', 'Exited'], error: ['오류', 'Error'], unknown: ['상태 미확인', 'Unknown state'] };
 function stateLabels(state: string): [string, string] { return states[state] ?? states.unknown; }
 const sessions = new Map<string, Session>();
-interface QueuedInput { data: string; generation: number; selectionVersion: number }
+interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
 const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
@@ -513,12 +513,13 @@ function refreshInputState(id: string) {
   if (!view.input.size) view.inputWarning = false;
 }
 function inputError(error: unknown) {
+  if (error instanceof InputQueueError && error.reason === 'encoding') return new UiError('바이너리 입력은 0x00–0xFF 바이트만 보낼 수 있습니다. 이 입력은 전송하지 않았습니다.', 'Binary input must contain only 0x00–0xFF bytes. This input was not sent.');
   return error instanceof InputQueueError ? new UiError(error.reason === 'message' ? '한 번에 64KiB 이하로 입력하세요. 이 입력은 전송하지 않았습니다.' : error.reason === 'full' ? '입력 전송 대기열이 가득 찼습니다. 이 입력은 전송하지 않았습니다. 완료 후 다시 시도하세요.' : '대기 중 프로젝트 또는 세션 상태가 변경되어 전송하지 않았습니다.', error.reason === 'message' ? 'Input must be at most 64KiB per operation. This input was not sent.' : error.reason === 'full' ? 'The input queue is full. This input was not sent. Retry after pending writes finish.' : 'Not sent because the project or session state changed while queued.') : error;
 }
-function sendInput(id: string, data: string) {
+function sendInput(id: string, data: string, binary?: true) {
   const session = sessions.get(id); const view = terminals.get(id);
   if (!session || !view || !canType(id) || conversationOwners.has(id)) return;
-  void view.input.enqueue({ data, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
+  void view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
     if (error instanceof InputQueueError && error.reason === 'cancelled') return;
     if (error instanceof InputQueueError && view.inputWarning) return;
     if (error instanceof InputQueueError) view.inputWarning = true;
@@ -604,7 +605,7 @@ function createTerminal(session: Session) {
   const input = new TerminalInputQueue<QueuedInput>(async value => {
     const current = sessions.get(session.id);
     if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || (!canType(session.id) || conversationOwners.has(session.id))) throw new InputQueueError('cancelled');
-    await call<void>('session_write', { id: session.id, generation: value.generation, data: value.data });
+    await call<void>('session_write', { id: session.id, generation: value.generation, data: value.data, ...(value.binary ? { binary: true } : {}) });
   }, () => refreshInputState(session.id));
   const resize = new TerminalResizeQueue<QueuedResize>(async value => {
     const current = sessions.get(session.id);
@@ -615,6 +616,7 @@ function createTerminal(session: Session) {
   refreshInputState(session.id);
   mountConversation(session);
   terminal.onData(data => sendInput(session.id, data));
+  terminal.onBinary(data => sendInput(session.id, data, true));
   terminal.onResize(() => queueResize(session.id));
   terminal.attachCustomKeyEventHandler(event => {
     // Let the browser dispatch xterm's native copy/paste events, rather than

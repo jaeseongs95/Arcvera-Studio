@@ -44,7 +44,8 @@ async function workspace(page: Page, fixtureSessions = sessions) {
         if (command === 'list_sessions') { if (flow.holdMetadata) await new Promise<void>(resolve => metadata.push(resolve)); return sessions; }
         if (command === 'list_projects') return sessions.map(item => ({ id: item.id, name: item.title, cwd: item.cwd, createdAt: 1 }));
         if (command === 'session_write') {
-          if (new TextEncoder().encode(args.data).byteLength > 64 * 1024) throw Error('Native input limit');
+          if (args.binary === true && [...args.data].some(unit => unit.charCodeAt(0) > 255)) throw Error('Native binary encoding');
+          if ((args.binary === true ? args.data.length : new TextEncoder().encode(args.data).byteLength) > 64 * 1024) throw Error('Native input limit');
           flow.activeWrites++; flow.maxWrites = Math.max(flow.maxWrites, flow.activeWrites);
           try { if (flow.holdWrites && args.id === 'flow-a') await new Promise<void>(resolve => writes.push(resolve)); flow.sent.push(args); }
           finally { flow.activeWrites--; }
@@ -491,7 +492,7 @@ test('terminal replay comparison', async ({ browser }, testInfo) => {
 });
 
 // Real xterm selection/keyboard/clipboard; only the native IPC transport is synthetic.
-async function questionTerminal(page: Page, mouseMode: boolean) {
+async function questionTerminal(page: Page, mouseMode: boolean | 'default') {
   await page.route('**/src/main.ts*', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: (await response.text()) + '\nwindow.__flowTerminals = terminals;\n' });
@@ -500,7 +501,7 @@ async function questionTerminal(page: Page, mouseMode: boolean) {
   return page.evaluate(async mouseMode => {
     const state = window as any;
     const terminal = state.__flowTerminals.get('flow-a').terminal;
-    await new Promise<void>(resolve => terminal.write('\x1b[?1049h\x1b[?2004h' + (mouseMode ? '\x1b[?1000h\x1b[?1006h' : '') + '\x1b[HQueued follow-up inputs\r\nQuestion fixture: first line\r\nQuestion fixture: second line', resolve));
+    await new Promise<void>(resolve => terminal.write('\x1b[?1049h\x1b[?2004h' + (mouseMode ? '\x1b[?1000h' + (mouseMode === true ? '\x1b[?1006h' : '') : '') + '\x1b[HQueued follow-up inputs\r\nQuestion fixture: first line\r\nQuestion fixture: second line', resolve));
     state.flow.sent = [];
     const box = terminal.element.querySelector('.xterm-screen').getBoundingClientRect();
     return { x: box.x, y: box.y, width: box.width / terminal.cols, height: box.height / terminal.rows };
@@ -548,3 +549,88 @@ test('question terminal keeps CLI mouse clicks and wheel reports outside Shift s
   await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data).slice(0, 3))).toEqual(['\x1b[<0;6;1M', '\x1b[<0;6;1m', '\x1b[<65;6;1M']);
   expect(await page.evaluate(() => (window as any).__flowTerminals.get('flow-a').terminal.getSelection())).toBe('');
 });
+
+// Native IPC is synthetic; xterm parsing, public channel events and mouse input are real.
+async function observeMouseChannels(page: Page) {
+  await page.evaluate(() => {
+    const state = window as any; const terminal = state.__flowTerminals.get('flow-a').terminal;
+    state.mouseChannels = { binary: [], text: [] };
+    terminal.onBinary((data: string) => state.mouseChannels.binary.push(data));
+    terminal.onData((data: string) => state.mouseChannels.text.push(data));
+  });
+}
+
+for (const mode of ['DEFAULT', 'SGR'] as const) {
+  test(`B01 ${mode} actual xterm mouse channel reaches the existing IPC queue`, async ({ page }) => {
+    const cell = await questionTerminal(page, mode === 'SGR' ? true : 'default');
+    await observeMouseChannels(page);
+    await page.mouse.click(cell.x + cell.width * 5.5, cell.y + cell.height * .5);
+    const payloads = mode === 'DEFAULT' ? ['\x1b[M &!', '\x1b[M#&!'] : ['\x1b[<0;6;1M', '\x1b[<0;6;1m'];
+    expect(await page.evaluate(() => (window as any).mouseChannels)).toEqual(mode === 'DEFAULT' ? { binary: payloads, text: [] } : { binary: [], text: payloads });
+    await expect.poll(() => page.evaluate(() => (window as any).flow.sent)).toEqual(payloads.map(data => ({ id: 'flow-a', generation: 7, data, ...(mode === 'DEFAULT' ? { binary: true } : {}) })));
+  });
+}
+
+test('B02 DEFAULT coordinates preserve actual 0x80 and0xff bytes at IPC', async ({ page }) => {
+  await page.setViewportSize({ width: 2300, height: 1000 });
+  await questionTerminal(page, 'default');
+  await card(page).locator('.maximize').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__flowTerminals.get('flow-a').terminal.cols)).toBeGreaterThan(223);
+  const cell = await page.evaluate(() => { const terminal = (window as any).__flowTerminals.get('flow-a').terminal; const box = terminal.element.querySelector('.xterm-screen').getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width / terminal.cols, height: box.height / terminal.rows }; });
+  await observeMouseChannels(page);
+  for (const column of [96, 223]) await page.mouse.click(cell.x + cell.width * (column - .5), cell.y + cell.height * .5);
+  const bytes = [[27, 91, 77, 32, 128, 33], [27, 91, 77, 35, 128, 33], [27, 91, 77, 32, 255, 33], [27, 91, 77, 35, 255, 33]];
+  expect(await page.evaluate(() => (window as any).mouseChannels.binary.map((data: string) => [...data].map(unit => unit.charCodeAt(0))))).toEqual(bytes);
+  await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => ({ binary: item.binary, bytes: [...item.data].map((unit: string) => unit.charCodeAt(0)) })))).toEqual(bytes.map(value => ({ binary: true, bytes: value })));
+});
+
+test('B03 held text and actual binary mouse reports use one FIFO without duplicate input', async ({ page }) => {
+  const cell = await questionTerminal(page, 'default');
+  await page.evaluate(() => { (window as any).flow.holdWrites = true; });
+  await input(page).press('x');
+  await page.mouse.click(cell.x + cell.width * 5.5, cell.y + cell.height * .5);
+  await input(page).press('z');
+  await expect(card(page)).toHaveAttribute('data-input-pending', '4');
+  expect(await page.evaluate(() => (window as any).flow.activeWrites)).toBe(1);
+  await page.evaluate(() => (window as any).flow.releaseWrites());
+  await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => ({ data: item.data, binary: item.binary ?? false })))).toEqual([{ data: 'x', binary: false }, { data: '\x1b[M &!', binary: true }, { data: '\x1b[M#&!', binary: true }, { data: 'z', binary: false }]);
+  expect(await page.evaluate(() => (window as any).flow.maxWrites)).toBe(1);
+});
+
+test('B04 binary queue counts raw bytes, rejects invalid or excess whole payloads and drains unchanged', async ({ page }) => {
+  await workspace(page);
+  const result = await page.evaluate(async () => {
+    const { TerminalInputQueue } = await import('/src/terminal-flow.ts' as string);
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); const sent: any[] = [];
+    const queue = new TerminalInputQueue(async (value: any) => { sent.push(value); await gate; }, () => {});
+    const payload = String.fromCharCode(...Array.from({ length: 256 }, (_, index) => index)).repeat(256);
+    const admit = (data: string) => queue.enqueue({ data, binary: true }).then(() => 'ok', (error: any) => error.reason);
+    const accepted = Array.from({ length: 4 }, () => admit(payload));
+    const atCapacity = { operations: queue.size, bytes: queue.byteLength, paused: queue.paused };
+    const refused = [admit('\xff'), admit('\u0100'), admit('\xff'.repeat(65537))];
+    release(); const outcomes = await Promise.all([...accepted, ...refused]);
+    return { atCapacity, outcomes, remaining: queue.size, bytes: queue.byteLength, paused: queue.paused, sent: sent.length, unchanged: sent.every(value => value.binary === true && value.data === payload), first256: [...(sent[0]?.data ?? '').slice(0, 256)].map(unit => unit.charCodeAt(0)) };
+  });
+  expect(result.atCapacity).toEqual({ operations: 4, bytes: 262144, paused: true });
+  expect(result.outcomes).toEqual(['ok', 'ok', 'ok', 'ok', 'full', 'encoding', 'message']);
+  expect({ remaining: result.remaining, bytes: result.bytes, paused: result.paused, sent: result.sent, unchanged: result.unchanged }).toEqual({ remaining: 0, bytes: 0, paused: false, sent: 4, unchanged: true });
+  expect(result.first256).toEqual(Array.from({ length: 256 }, (_, index) => index));
+});
+
+for (const boundary of ['generation', 'project', 'dispose'] as const) {
+  test(`B05 pending actual binary mouse input is discarded on ${boundary}`, async ({ page }) => {
+    const cell = await questionTerminal(page, 'default');
+    await page.evaluate(() => { (window as any).flow.holdWrites = true; });
+    await input(page).press('x');
+    await page.mouse.click(cell.x + cell.width * 5.5, cell.y + cell.height * .5);
+    await expect(card(page)).toHaveAttribute('data-input-pending', '3');
+    if (boundary === 'generation') {
+      await page.evaluate(async () => { const state = window as any; state.flow.emit({ id: 'flow-a', generation: 8 }); await new Promise<void>(resolve => state.__flowTerminals.get('flow-a').terminal.write('', resolve)); });
+      await input(page).press('n');
+    } else if (boundary === 'project') await page.locator('#project-tabs [role=tab]').filter({ hasText: 'Flow Beta' }).click();
+    else { await page.evaluate(() => (window as any).flow.emit({ id: 'flow-a', state: 'stopped', active: false })); await card(page).getByLabel('이 세션 종료').click(); }
+    await page.evaluate(() => (window as any).flow.releaseWrites());
+    await expect.poll(() => page.evaluate(() => (window as any).flow.activeWrites)).toBe(0);
+    expect(await page.evaluate(() => (window as any).flow.sent.map((item: any) => [item.generation, item.data]))).toEqual(boundary === 'generation' ? [[7, 'x'], [8, 'n']] : [[7, 'x']]);
+  });
+}

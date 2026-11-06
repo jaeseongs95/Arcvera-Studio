@@ -83,9 +83,9 @@ async fn start_session(engine: State<'_, Engine>, request: StartRequest) -> Resu
 #[tauri::command]
 fn list_sessions(engine: State<'_, Engine>) -> Result<Vec<SessionInfo>, String> { desktop_updates::with_native_operation(|| engine.list()) }
 #[tauri::command]
-async fn session_write(engine: State<'_, Engine>, id: String, generation: u64, data: String) -> Result<(), String> {
+async fn session_write(engine: State<'_, Engine>, id: String, generation: u64, data: String, binary: Option<bool>) -> Result<(), String> {
     let engine = engine.inner().clone();
-    native_worker(move || engine.write(&id, generation, &data)).await.map_err(|e| format!("terminal write worker: {e}"))?
+    native_worker(move || if binary.unwrap_or(false) { engine.write_binary(&id, generation, &data) } else { engine.write(&id, generation, &data) }).await.map_err(|e| format!("terminal write worker: {e}"))?
 }
 #[tauri::command]
 async fn session_resize(engine: State<'_, Engine>, id: String, generation: u64, cols: u16, rows: u16) -> Result<(), String> {
