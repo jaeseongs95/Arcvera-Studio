@@ -145,8 +145,10 @@ If live events arrive during a history query, a stale response is discarded with
 Unavailable history is never treated as an empty or idle conversation.
 
 The upper-right **Question inbox** shows the count of confirmed unanswered questions and approvals.
-Opening the inbox does not reset the count; server-confirmed resolution removes an entry. Questions
-collected from terminal sessions are answered in the original session. Terminal
+Opening the inbox does not reset the count; server-confirmed resolution removes an entry. Asynchronous questions
+collected from terminal sessions can be answered in the inbox without switching the terminal view.
+Check the original session when the current question or connection cannot be verified, or when a
+regular approval request belongs to another connection. Terminal
 waiting states whose request details are unavailable are listed separately with a link to the original
 session and are not counted as confirmed questions.
 

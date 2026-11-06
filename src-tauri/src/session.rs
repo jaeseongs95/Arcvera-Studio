@@ -1211,7 +1211,7 @@ impl Engine {
                 if kind=="question" {item["questions"]=request["params"]["questions"].clone();}
                 if request["source"]=="async" {
                     item["source"]=serde_json::json!("async");item["turnId"]=request["turnId"].clone();item["questionItemId"]=request["questionItemId"].clone();
-                    item["canRespond"]=serde_json::json!(owned&&connected&&metadata_complete&&request["inputAvailable"]==true&&request["metadataAvailable"]==true&&request["responded"]!=true);
+                    item["canRespond"]=serde_json::json!(info.active&&metadata_complete&&request["inputAvailable"]==true&&request["metadataAvailable"]==true&&request["responded"]!=true);
                 }
                 item["metadataAvailable"]=request["metadataAvailable"].clone();
                 if kind=="approval" {
@@ -1833,6 +1833,18 @@ mod lifecycle_tests {
         assert!(!session.info().unwrap().active);
     }
 
+    #[test]
+    fn async_question_admission_rejects_stale_generation_and_stopping_before_transport() {
+        let engine=Engine::new(Path::new(":memory:"),Arc::new(|_|Ok(()))).unwrap();
+        let session=engine.allocate(&request()).unwrap();let info=session.info().unwrap();
+        let id=r#"["request_user_input_async","fixture-call",0]"#;
+        let respond=||codex::ConversationRequest::Respond{request_id:id.into(),result:serde_json::json!({"answers":{id:{"answers":["진행"]}}})};
+        assert!(engine.conversation_request(&info.id,info.generation+1,respond()).unwrap_err().contains("stale"));
+        assert!(engine.conversation_request(&info.id,info.generation,respond()).unwrap_err().contains("실행 중"));
+        session.phase.store(1,Ordering::Release);session.stop_requested.store(true,Ordering::Release);
+        assert!(engine.conversation_request(&info.id,info.generation,respond()).unwrap_err().contains("실행 중"));
+        assert!(session.process.lock().unwrap().is_none());session.finish("stopped").unwrap();
+    }
     #[test]
     fn conversation_and_attachment_admission_reject_stale_generations_without_a_transport() {
         let engine = Engine::new(Path::new(":memory:"),Arc::new(|_|Ok(()))).unwrap();

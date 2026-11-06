@@ -86,9 +86,13 @@ struct Control {
 }
 #[derive(Default)]
 struct ObserverCompaction { busy: bool, pending: Option<PendingCompact> }
+// One bounded observer mutation slot is shared by compaction and async answers.
+// Server-request replies retain their original GUI connection ownership.
+enum ObserverAction { Compact, AsyncReply { request_id: String, result: Value } }
 struct PendingCompact {
     id: Uuid, thread_id: String, deadline: Instant, cancelled: Arc<AtomicBool>,
     reply: mpsc::SyncSender<Result<Value,String>>,
+    action: ObserverAction,
 }
 struct DetailSnapshot { id: String, turn_id: String, item_id: String, text: Arc<str> }
 struct Worker {
@@ -254,7 +258,7 @@ impl ConversationConnection {
         for (id,request) in &mut requests {request["metadataAvailable"]=json!(!events.requests_unavailable&&((events.connected&&events.pending.contains_key(id))||(events.observer_connected&&events.observed_pending.contains_key(id))));}
         let mut requests = requests.into_values().collect::<Vec<_>>();
         requests.extend(events.async_questions.snapshot(events.observer_connected).into_iter().map(|mut request| {
-            request["inputAvailable"]=json!(!self.0.unknown.load(Ordering::Acquire));request
+            request["inputAvailable"]=json!(async_reply_available(&self.0,&events,!owned).is_ok());request
         }));
         let complete=self.0.passive_supported && events.observer_connected && !events.requests_unavailable && events.async_questions.complete();
         Ok((owned,events.connected,requests,complete))
@@ -284,22 +288,32 @@ impl ConversationConnection {
     pub(crate) fn is_deleted(&self) -> bool { self.0.deleted.load(Ordering::Acquire) }
     pub(super) fn observer_message(&self,thread_id: &str,message: Value) -> Result<(),String> {record_message(&self.0,thread_id,message,true)}
     pub(super) fn observer_call<S: Read+Write>(&self,rpc: &mut Rpc<S>,thread_id: &str,method: &str,params: Value) -> Result<Value,String> {
-        call_observed(&self.0,rpc,thread_id,method,params,self.0.stopped.as_ref(),true,None,None,None)
+        call_observed(&self.0,rpc,thread_id,method,params,self.0.stopped.as_ref(),true,None,None,None,None)
     }
     fn request_observer_compact(&self,thread_id: &str) -> Result<Value,String> {
+        self.request_observer_action(thread_id,ObserverAction::Compact)
+    }
+    fn request_observer_action(&self,thread_id: &str,action: ObserverAction) -> Result<Value,String> {
         valid_id(thread_id)?;live(&self.0,&AtomicBool::new(false))?;
+        let compact=matches!(&action,ObserverAction::Compact);
         let id=Uuid::new_v4();let cancelled=Arc::new(AtomicBool::new(false));
         let (reply,response)=mpsc::sync_channel(1);
         {
             // Match Attach's worker -> slot lock order; no mutex crosses network I/O.
             let worker=self.0.worker.lock().map_err(|_|"대화 연결 상태 오류")?;
-            if worker.is_some() || self.0.owned.load(Ordering::Acquire) {return Ok(json!({"status":"notStarted","reason":"inputOwnerChanged"}));}
+            if worker.is_some() || self.0.owned.load(Ordering::Acquire) {return if compact {Ok(json!({"status":"notStarted","reason":"inputOwnerChanged"}))}else{Err("입력 소유권이 바뀌어 질문 답변을 보내지 않았습니다.".into())};}
             let mut slot=self.0.observer_compaction.lock().map_err(|_|"압축 요청 상태 오류")?;
-            if slot.busy {return Ok(json!({"status":"notStarted","reason":"compacting"}));}
+            if slot.busy {return if compact {Ok(json!({"status":"notStarted","reason":"compacting"}))}else{Err("다른 관찰자 요청을 확인 중이라 질문 답변을 보내지 않았습니다.".into())};}
             let events=self.0.events.lock().map_err(|_|"대화 문맥 상태 오류")?;
-            if let Some(reason)=context_block_reason(&self.0,&events,false) {return Ok(json!({"status":if reason=="unsupported"{"unsupported"}else{"notStarted"},"reason":reason}));}
+            match &action {
+                ObserverAction::Compact=>if let Some(reason)=context_block_reason(&self.0,&events,false) {return Ok(json!({"status":if reason=="unsupported"{"unsupported"}else{"notStarted"},"reason":reason}));},
+                ObserverAction::AsyncReply{request_id,result}=>{
+                    async_reply_available(&self.0,&events,true)?;
+                    events.async_questions.reply_payload(request_id,result)?;
+                },
+            }
             slot.busy=true;
-            slot.pending=Some(PendingCompact{id,thread_id:thread_id.to_owned(),deadline:Instant::now()+RPC_TIMEOUT,cancelled:cancelled.clone(),reply});
+            slot.pending=Some(PendingCompact{id,thread_id:thread_id.to_owned(),deadline:Instant::now()+RPC_TIMEOUT,cancelled:cancelled.clone(),reply,action});
         }
         match response.recv_timeout(RPC_TIMEOUT+Duration::from_secs(2)) {
             Ok(result)=>result,
@@ -308,7 +322,7 @@ impl ConversationConnection {
                 let mut slot=self.0.observer_compaction.lock().map_err(|_|"압축 요청 상태 오류")?;
                 if slot.pending.as_ref().is_some_and(|pending|pending.id==id) {slot.pending=None;slot.busy=false;}
                 else {self.0.unknown.store(true,Ordering::Release);}
-                Err("압축 요청 응답을 확인하지 못했습니다. 자동으로 다시 요청하지 않았습니다.".into())
+                Err("관찰자 요청 응답을 확인하지 못했습니다. 자동으로 다시 요청하지 않았습니다.".into())
             },
         }
     }
@@ -319,7 +333,10 @@ impl ConversationConnection {
         rpc.deadline=Some(previous_deadline.map_or(pending.deadline,|deadline|deadline.min(pending.deadline)));
         let result=if pending.thread_id!=thread_id || Instant::now()>=pending.deadline {
             Err("원래 대화 또는 압축 요청 기한을 확인하지 못해 전송하지 않았습니다.".into())
-        } else {execute_compact(&self.0,rpc,thread_id,&pending.cancelled,true)};
+        } else {match pending.action {
+            ObserverAction::Compact=>execute_compact(&self.0,rpc,thread_id,&pending.cancelled,true),
+            ObserverAction::AsyncReply{request_id,result}=>execute_async_reply(&self.0,rpc,thread_id,&request_id,&result,&pending.cancelled,true),
+        }};
         rpc.deadline=previous_deadline;
         self.0.observer_compaction.lock().unwrap_or_else(|e|e.into_inner()).busy=false;
         let _=pending.reply.send(result);
@@ -331,7 +348,7 @@ impl ConversationConnection {
         let question_revision=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?.async_questions.revision;
         {let mut events=self.0.events.lock().map_err(|_| "질문 관측 상태 오류")?;events.observer_compact_supported=false;events.context_revision+=1;}
         let mut preparing=false;
-        let result=match call_observed(&self.0,rpc,thread_id,PASSIVE_SUBSCRIBE,json!({"threadId":thread_id}),self.0.stopped.as_ref(),true,None,Some(&mut preparing),None) {
+        let result=match call_observed(&self.0,rpc,thread_id,PASSIVE_SUBSCRIBE,json!({"threadId":thread_id}),self.0.stopped.as_ref(),true,None,Some(&mut preparing),None,None) {
             Ok(value)=>value,Err(_) if preparing=>return Ok(false),Err(error)=>return Err(error),
         };
         verify_passive(&result,thread_id,cwd)?;
@@ -442,6 +459,11 @@ impl ConversationConnection {
         }
         if matches!(request,ConversationRequest::Compact) && !self.0.owned.load(Ordering::Acquire) {
             return self.request_observer_compact(thread_id);
+        }
+        if let ConversationRequest::Respond{request_id,result}=&request {
+            if async_questions::is_question_id(request_id) && !self.0.owned.load(Ordering::Acquire) {
+                return self.request_observer_action(thread_id,ObserverAction::AsyncReply{request_id:request_id.clone(),result:result.clone()});
+            }
         }
         if matches!(request, ConversationRequest::Poll) {
             let mut poll = self.0.events.lock().map_err(|_| "대화 이벤트 상태를 확인할 수 없습니다.")?.poll();
@@ -591,12 +613,19 @@ fn interrupt_capability(result: &Value) -> Result<bool,String> {
     }
 }
 fn call<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_id: &str, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value, String> {
-    call_observed(control,rpc,thread_id,method,params,cancelled,false,None,None,None)
+    call_observed(control,rpc,thread_id,method,params,cancelled,false,None,None,None,None)
 }
-fn call_observed<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,method: &str,params: Value,cancelled: &AtomicBool,metadata_only: bool,send_context: Option<(&SendContext,&[Attachment])>,preparing: Option<&mut bool>,mut compact_progress: Option<&mut CompactProgress>) -> Result<Value,String> {
+fn call_observed<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,method: &str,params: Value,cancelled: &AtomicBool,metadata_only: bool,send_context: Option<(&SendContext,&[Attachment])>,preparing: Option<&mut bool>,mut compact_progress: Option<&mut CompactProgress>,async_reply: Option<(&str,&str)>) -> Result<Value,String> {
     live(control, cancelled)?;
     check_cancelled(rpc.cancelled.as_ref())?;
     if rpc.deadline.is_some_and(|deadline|Instant::now()>=deadline) {return Err("대화 요청 기한이 지나 전송하지 않았습니다.".into());}
+    // Last check after draining the writer's notifications and before marking
+    // the wire attempt unknown. Never send an answer for an obsolete question.
+    if let Some((id,turn))=async_reply {
+        let events=control.events.lock().map_err(|_|"질문 관측 상태 오류")?;
+        async_reply_available(control,&events,metadata_only)?;
+        if !events.async_questions.reply_attempt_current(id,turn) {return Err("질문 또는 작업 상태가 바뀌어 답변을 보내지 않았습니다.".into());}
+    }
     let mutation = matches!(method,START_USER_IF_IDLE | COMPACT_IF_IDLE | "turn/interrupt" | "turn/steer");
     let previous_unknown = if mutation {control.unknown.swap(true,Ordering::AcqRel)} else {false};
     // 입력·작업 상태·큐·취소·기한 검사가 끝난 실제 송신 시도 경계에서만 보존한다.
@@ -670,7 +699,7 @@ fn restore_async_questions<S: Read+Write>(control: &Control, rpc: &mut Rpc<S>, t
     let previous_deadline=rpc.deadline;
     rpc.deadline=Some(previous_deadline.unwrap_or_else(||Instant::now()+RPC_TIMEOUT).min(Instant::now()+RPC_TIMEOUT));
     let result=(|| {
-        let turns=call_observed(control,rpc,thread_id,"thread/turns/list",json!({"threadId":thread_id,"limit":1,"sortDirection":"desc","itemsView":"summary"}),control.stopped.as_ref(),true,None,None,None)?;
+        let turns=call_observed(control,rpc,thread_id,"thread/turns/list",json!({"threadId":thread_id,"limit":1,"sortDirection":"desc","itemsView":"summary"}),control.stopped.as_ref(),true,None,None,None,None)?;
         if turns["historyUnavailable"]==true {return Err(HISTORY_UNAVAILABLE.into());}
         let turns=turns["data"].as_array().filter(|turns|turns.len()<=1).ok_or("현재 질문 작업 목록의 형식 또는 크기가 올바르지 않습니다.")?;
         let current=turns.first().filter(|turn|turn["status"]=="inProgress");
@@ -680,7 +709,7 @@ fn restore_async_questions<S: Read+Write>(control: &Control, rpc: &mut Rpc<S>, t
         let mut items=Vec::new();let mut bytes=0;let mut inspected=0;let mut pages=0;let mut cursors=HashSet::new();let mut cursor: Option<String>=None;
         if let Some(turn)=turn {
             loop {
-                let page=call_observed(control,rpc,thread_id,"thread/items/list",json!({"threadId":thread_id,"turnId":turn,"cursor":cursor,"limit":32,"sortDirection":"desc"}),control.stopped.as_ref(),true,None,None,None)?;
+                let page=call_observed(control,rpc,thread_id,"thread/items/list",json!({"threadId":thread_id,"turnId":turn,"cursor":cursor,"limit":32,"sortDirection":"desc"}),control.stopped.as_ref(),true,None,None,None,None)?;
                 pages+=1;
                 if page["historyUnavailable"]==true {return Err(HISTORY_UNAVAILABLE.into());}
                 bytes+=page.to_string().len();
@@ -822,13 +851,59 @@ fn summarize(value: &mut Value) {
 fn execute<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_id: &str, request: ConversationRequest, cancelled: &AtomicBool) -> Result<Value, String> {
     execute_context(control,rpc,thread_id,request,cancelled,None)
 }
+fn async_reply_available(control: &Control,events: &Events,observer: bool) -> Result<(),String> {
+    if !control.passive_supported || control.stopped.load(Ordering::Acquire) || control.deleted.load(Ordering::Acquire)
+        || !events.observer_connected || events.requests_unavailable || !events.async_questions.complete()
+        || control.unknown.load(Ordering::Acquire) || events.context_compaction.is_some()
+        || control.owned.load(Ordering::Acquire)==observer || (!observer && !events.connected) {
+        return Err("현재 입력 소유권과 질문 관측 연결을 확인하지 못해 답변을 보내지 않았습니다.".into());
+    }
+    Ok(())
+}
+fn execute_async_reply<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,id: &str,result: &Value,cancelled: &AtomicBool,observer: bool) -> Result<Value,String> {
+    live(control,cancelled)?;
+    {
+        let events=control.events.lock().map_err(|_|"질문 관측 상태 오류")?;
+        async_reply_available(control,&events,observer)?;
+        events.async_questions.reply_payload(id,result)?;
+    }
+    // The writer consumes already queued notifications before committing an
+    // answer. Continuous traffic has an explicit bound; it cannot starve the
+    // terminal or turn an incomplete drain into permission to send.
+    let mut drained=false;
+    for _ in 0..EVENT_COUNT {
+        live(control,cancelled)?;
+        check_cancelled(rpc.cancelled.as_ref())?;
+        if rpc.deadline.is_some_and(|deadline|Instant::now()>=deadline) {return Err("질문 답변 기한이 지나 전송하지 않았습니다.".into());}
+        match rpc.ws.read() {
+            Ok(Message::Text(text))=>{
+                if text.len()>MAX_FRAME {return Err("Codex protocol frame exceeded limit".into());}
+                let message=serde_json::from_str(&text).map_err(|error|format!("Invalid Codex JSON: {error}"))?;
+                record_message(control,thread_id,message,observer)?;
+            },
+            Ok(Message::Close(_))=>return Err("Codex app-server disconnected".into()),
+            Ok(_)=>{},
+            Err(error) if timed_out(&error)=>{drained=true;break;},
+            Err(error)=>return Err(format!("Codex transport read failed: {error}")),
+        }
+    }
+    if !drained {return Err("질문 알림 처리 상한에 도달해 현재 상태를 확인한 뒤 다시 답변하세요. 전송하지 않았습니다.".into());}
+    let (turn,text)={
+        let mut events=control.events.lock().map_err(|_|"질문 관측 상태 오류")?;
+        async_reply_available(control,&events,observer)?;
+        events.async_questions.prepare_reply(id,result)?
+    };
+    let response=call_observed(control,rpc,thread_id,"turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn,"clientUserMessageId":Uuid::new_v4().to_string(),"input":[{"type":"text","text":text,"text_elements":[]}]}),cancelled,observer,None,None,None,Some((id,&turn)))?;
+    if response["turnId"].as_str()!=Some(turn.as_str()) {return Err("비동기 질문 답변의 접수 결과를 확인할 수 없습니다. 다시 보내지 않았습니다.".into());}
+    Ok(json!({"status":"accepted","resolved":false,"turnId":turn}))
+}
 fn execute_compact<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,cancelled: &AtomicBool,metadata_only: bool) -> Result<Value,String> {
     live(control,cancelled)?;
     let events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
     if let Some(reason)=context_block_reason(control,&events,false) {return Ok(json!({"status":if reason=="unsupported" {"unsupported"}else{"notStarted"},"reason":reason}));}
     let activity=events.context_activity_revision;drop(events);
     let mut progress=CompactProgress::default();
-    let result=call_observed(control,rpc,thread_id,COMPACT_IF_IDLE,json!({"threadId":thread_id}),cancelled,metadata_only,None,None,Some(&mut progress));
+    let result=call_observed(control,rpc,thread_id,COMPACT_IF_IDLE,json!({"threadId":thread_id}),cancelled,metadata_only,None,None,Some(&mut progress),None);
     let mut events=control.events.lock().map_err(|_| "대화 문맥 상태 오류")?;
     let value=match result {Ok(value)=>value,Err(error)=>{events.token_usage_fresh=false;events.context_revision+=1;return Err(error);}};
     match value["status"].as_str() {
@@ -893,7 +968,7 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
             let mut params = json!({"threadId":thread_id,"input":input,"clientUserMessageId":request_id});
             if let Some(model) = model { params["model"] = json!(model); }
             if let Some(effort) = effort { params["effort"] = json!(effort); }
-            let result=call_observed(control,rpc,thread_id,START_USER_IF_IDLE,params,cancelled,false,send_context.map(|context|(context,attachments.as_slice())),None,None)?;
+            let result=call_observed(control,rpc,thread_id,START_USER_IF_IDLE,params,cancelled,false,send_context.map(|context|(context,attachments.as_slice())),None,None,None)?;
             match result["status"].as_str() {
                 Some("started") if result["turn"]["id"].as_str().is_some_and(|id| !id.is_empty()) => Ok(result),
                 Some("skippedBusy") => Err("다른 입력이 먼저 시작되어 새 메시지를 보내지 않았습니다. 초안을 보존했습니다.".into()),
@@ -909,17 +984,10 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
             call(control,rpc,thread_id,"turn/interrupt",json!({"threadId":thread_id,"turnId":turn_id}),cancelled)
         },
         ConversationRequest::Respond {request_id,result} => {
-            let mut events = control.events.lock().map_err(|_| "대화 승인 상태 오류")?;
             if async_questions::is_question_id(&request_id) {
-                if !control.owned.load(Ordering::Acquire) || !events.connected || !events.observer_connected || control.unknown.load(Ordering::Acquire) {
-                    return Err("현재 GUI 입력 소유권과 질문 관측 연결을 확인하지 못해 답변을 보내지 않았습니다.".into());
-                }
-                let (turn,text)=events.async_questions.prepare_reply(&request_id,&result)?;
-                drop(events);
-                let response=call(control,rpc,thread_id,"turn/steer",json!({"threadId":thread_id,"expectedTurnId":turn,"clientUserMessageId":Uuid::new_v4().to_string(),"input":[{"type":"text","text":text,"text_elements":[]}]}),cancelled)?;
-                if response["turnId"].as_str()!=Some(turn.as_str()) {return Err("비동기 질문 답변의 접수 결과를 확인할 수 없습니다. 다시 보내지 않았습니다.".into());}
-                return Ok(json!({"status":"accepted","resolved":false,"turnId":turn}));
+                return execute_async_reply(control,rpc,thread_id,&request_id,&result,cancelled,false);
             }
+            let mut events = control.events.lock().map_err(|_| "대화 승인 상태 오류")?;
             let request = events.pending.get(&request_id).ok_or("이미 해결되었거나 이 연결이 소유하지 않은 요청입니다.")?;
             if request["responded"] == true { return Err("이미 응답을 보낸 요청입니다. 같은 응답을 다시 보내지 않았습니다.".into()); }
             validate_response(request, &result)?;
@@ -1229,6 +1297,141 @@ mod tests {
         });
         assert!(control.observer_subscribe(&mut rpc,"original",&cwd).unwrap());assert!(control.question_metadata_complete().unwrap());
         assert_eq!(control.pending_snapshot().unwrap().2.len(),2);assert_eq!(rpc.next_id,5);drop(rpc);server.join().unwrap();
+    }
+    #[test]
+    fn terminal_async_question_never_replies_to_an_observed_server_request() {
+        // QI-05: the new observer writer is only for turn/steer envelopes.
+        let(control,mut rpc,listener)=fixture();control.0.events.lock().unwrap().observer_connected=true;
+        control.observer_message("original",json!({"id":44,"method":"item/tool/requestUserInput","params":{"threadId":"original","questions":[{"id":"q","question":"원래 터미널 질문"}]}})).unwrap();
+        assert!(control.request("original",Path::new("."),ConversationRequest::Respond{request_id:"44".into(),result:json!({"answers":{"q":{"answers":["진행"]}}})}).is_err());
+        control.observer_compact(&mut rpc,"original");assert_eq!(rpc.next_id,0);
+        let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_ne!(pending[0]["responded"],true);
+        assert!(control.0.worker.lock().unwrap().is_none());assert!(!control.0.observer_compaction.lock().unwrap().busy);
+        let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);drop(rpc);assert_closed_without_input(&mut socket);
+    }
+    #[test]
+    fn terminal_async_question_revalidates_queued_state_without_writing() {
+        // QI-03/04: invalidate a queued answer before the observer consumes it.
+        // All paths must leave the wire empty and release the bounded slot.
+        for reason in ["expired","wrongThread","disconnect","newTurn","resolved","stopped","ownerChanged","unknown","incomplete","compacting"] {
+            let(control,mut rpc,listener)=fixture();control.0.events.lock().unwrap().observer_connected=true;
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+            control.observer_message("original",async_notification(async_item("pending"))).unwrap();
+            let id=r#"["request_user_input_async","pending",0]"#;
+            let requested=control.clone();let caller=thread::spawn(move||requested.request("original",Path::new("."),ConversationRequest::Respond{request_id:id.into(),result:json!({"answers":{id:{"answers":["진행"]}}})}));
+            let deadline=Instant::now()+Duration::from_secs(3);
+            while control.0.observer_compaction.lock().unwrap().pending.is_none() {
+                assert!(!caller.is_finished(),"queued answer rejected: {reason}");assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(1));
+            }
+            match reason {
+                "expired"=>control.0.observer_compaction.lock().unwrap().pending.as_mut().unwrap().deadline=Instant::now()-Duration::from_secs(1),
+                "disconnect"=>control.observer_disconnected(),
+                "newTurn"=>control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"next-turn"}}})).unwrap(),
+                "resolved"=>control.observer_message("original",async_notification(async_reply_item(id))).unwrap(),
+                "stopped"=>control.0.stopped.store(true,Ordering::Release),
+                "ownerChanged"=>control.0.owned.store(true,Ordering::Release),
+                "unknown"=>control.0.unknown.store(true,Ordering::Release),
+                "incomplete"=>control.0.events.lock().unwrap().async_questions.unavailable("fixture history failed"),
+                "compacting"=>control.0.events.lock().unwrap().context_compaction=Some(("turn-async".into(),"compact-item".into())),
+                _=>{},
+            }
+            control.observer_compact(&mut rpc,if reason=="wrongThread"{"different"}else{"original"});
+            assert!(caller.join().unwrap().is_err(),"{reason}");assert!(!control.0.observer_compaction.lock().unwrap().busy);
+            assert_eq!(rpc.next_id,0,"{reason}");
+            if !matches!(reason,"newTurn"|"resolved") {assert_eq!(control.pending_snapshot().unwrap().2[0]["params"]["questions"][0]["question"],"계속할까요?");}
+            let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);drop(rpc);assert_closed_without_input(&mut socket);
+        }
+    }
+    #[test]
+    fn terminal_async_question_drains_resolution_and_bounds_incoming_traffic() {
+        // QI-03: the resolution is on the real wire before the mutation. A ping
+        // before it cannot be mistaken for an empty notification queue.
+        for outcome in ["resolved","newTurn","saturated"] {
+            let(control,mut rpc,listener)=fixture();control.0.events.lock().unwrap().observer_connected=true;
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+            control.observer_message("original",async_notification(async_item("pending"))).unwrap();
+            let id=r#"["request_user_input_async","pending",0]"#;
+            let requested=control.clone();let caller=thread::spawn(move||requested.request("original",Path::new("."),ConversationRequest::Respond{request_id:id.into(),result:json!({"answers":{id:{"answers":["진행"]}}})}));
+            let deadline=Instant::now()+Duration::from_secs(3);
+            while control.0.observer_compaction.lock().unwrap().pending.is_none() {assert!(!caller.is_finished());assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(1));}
+            let(stream,_)=listener.accept().unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            if outcome=="saturated" {
+                for _ in 0..EVENT_COUNT {socket.send(Message::Text(json!({"method":"fixture/notification","params":{"threadId":"original"}}).to_string().into())).unwrap();}
+            } else {
+                socket.send(Message::Ping(Vec::new().into())).unwrap();
+                let notification=if outcome=="resolved" {async_notification(async_reply_item(id))}else{json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"next-turn"}}})};
+                socket.send(Message::Text(notification.to_string().into())).unwrap();
+            }
+            control.observer_compact(&mut rpc,"original");assert!(caller.join().unwrap().is_err(),"{outcome}");assert_eq!(rpc.next_id,0);
+            assert!(!control.0.unknown.load(Ordering::Acquire));assert!(!control.0.observer_compaction.lock().unwrap().busy);
+            // Reading a ping can emit a protocol pong, but never an app RPC.
+            socket.get_mut().set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            loop {match socket.read() {Ok(Message::Pong(_))=>{},Err(error) if timed_out(&error)=>break,other=>panic!("unexpected application write: {other:?}")}}
+            drop(rpc);
+        }
+    }
+    #[test]
+    fn terminal_async_question_unknown_reply_is_not_resolved_or_retried() {
+        for outcome in ["lost","wrongTurn","unsupported"] {
+            let(control,mut rpc,listener)=fixture();control.0.events.lock().unwrap().observer_connected=true;
+            control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+            control.observer_message("original",async_notification(async_item("pending"))).unwrap();
+            let id=r#"["request_user_input_async","pending",0]"#;
+            let respond=move||ConversationRequest::Respond{request_id:id.into(),result:json!({"answers":{id:{"answers":["진행"]}}})};
+            let requested=control.clone();let caller=thread::spawn(move||requested.request("original",Path::new("."),respond()));
+            let deadline=Instant::now()+Duration::from_secs(3);
+            while control.0.observer_compaction.lock().unwrap().pending.is_none() {assert!(!caller.is_finished());assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(1));}
+            let server=thread::spawn(move|| {
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                let request=read_request(&mut socket);assert_eq!(request["method"],"turn/steer");
+                if outcome=="lost" {return;}
+                if outcome=="unsupported" {socket.send(Message::Text(json!({"id":request["id"],"error":{"code":-32601,"message":"fixture unsupported"}}).to_string().into())).unwrap();}
+                else {reply(&mut socket,&request,json!({"turnId":"different-turn"}));}
+                assert_closed_without_input(&mut socket);
+            });
+            control.observer_compact(&mut rpc,"original");assert!(caller.join().unwrap().is_err());
+            assert_eq!(control.0.unknown.load(Ordering::Acquire),outcome!="unsupported");
+            assert_eq!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+            assert!(control.request("original",Path::new("."),respond()).is_err());assert_eq!(rpc.next_id,1);
+            assert!(!control.0.owned.load(Ordering::Acquire));assert_eq!(control.terminal_write(||Ok(9)).unwrap(),9);
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn terminal_async_question_uses_observer_and_preserves_terminal_owner() {
+        // QI-01/02/04: public request -> existing bounded observer slot -> real
+        // loopback RPC. The fixture replaces the server, not the client writer.
+        let(control,mut rpc,listener)=fixture();
+        control.0.events.lock().unwrap().observer_connected=true;
+        control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+        control.observer_message("original",async_notification(async_item("pending"))).unwrap();
+        let id=r#"["request_user_input_async","pending",0]"#;
+        let respond=move||ConversationRequest::Respond{request_id:id.into(),result:json!({"answers":{id:{"answers":["진행"]}}})};
+        let requested=control.clone();let caller=thread::spawn(move||requested.request("original",Path::new("."),respond()));
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while control.0.observer_compaction.lock().unwrap().pending.is_none() {
+            assert!(!caller.is_finished(),"터미널 질문 응답이 기존 관찰자 슬롯에 도달하기 전에 거절되었다");
+            assert!(Instant::now()<deadline,"관찰자 슬롯 대기 기한 초과");thread::sleep(Duration::from_millis(1));
+        }
+        assert!(control.request("original",Path::new("."),respond()).is_err());
+        assert!(control.request("original",Path::new("."),ConversationRequest::Attach).is_err());
+        assert_eq!(control.terminal_write(||Ok(7)).unwrap(),7);
+        let server=thread::spawn(move|| {
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            let request=read_request(&mut socket);assert_eq!(request["method"],"turn/steer");
+            assert_eq!(request["params"]["threadId"],"original");assert_eq!(request["params"]["expectedTurnId"],"turn-async");
+            assert_eq!(request["params"]["input"][0]["text"],format!("<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",json!([{"answer":"진행","question":"계속할까요?","questionItemId":id}])));
+            reply(&mut socket,&request,json!({"turnId":"turn-async"}));assert_closed_without_input(&mut socket);
+        });
+        control.observer_compact(&mut rpc,"original");
+        let response=caller.join().unwrap().unwrap();assert_eq!(response["status"],"accepted");assert_eq!(response["resolved"],false);
+        assert!(control.request("original",Path::new("."),respond()).is_err());
+        assert_eq!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+        assert!(!control.0.owned.load(Ordering::Acquire));assert!(!*control.0.input.lock().unwrap());assert!(control.0.worker.lock().unwrap().is_none());
+        assert_eq!(control.terminal_write(||Ok(8)).unwrap(),8);assert_eq!(rpc.next_id,1);
+        control.observer_message("original",async_notification(async_reply_item(id))).unwrap();assert!(control.pending_snapshot().unwrap().2.is_empty());
+        drop(rpc);server.join().unwrap();
     }
     #[test]
     fn async_public_respond_steers_exact_turn_as_user_input_and_waits_for_observed_resolution() {

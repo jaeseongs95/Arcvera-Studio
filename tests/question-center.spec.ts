@@ -93,6 +93,31 @@ test('비동기 질문 초안과 안정 질문 ID를 보존하고 응답 수락�
   await expect(page.locator('.question-response-status')).toContainText('서버의 해결 확인');
 });
 
+test('터미널 비동기 질문은 원래 세션을 열지 않고 한글로 답변하며 전송 중 재제출하지 않는다', async ({ page }) => {
+  const id = '["request_user_input_async","terminal-question",0]';
+  await fixture(page, [{ ...question, source: 'async', id, requestId: id, metadataAvailable: true,
+    sessionTitle: '터미널 세션', questions: [{ id, question: '진행 방법을 알려 주세요.' }] }], { holdResponse: true });
+  await open(page);
+  const answer = page.getByRole('textbox', { name: '진행 방법을 알려 주세요.' });
+  await expect(answer).toBeEnabled();
+  await answer.focus(); await page.keyboard.insertText('지정한 시험 환경에서 계속 진행해 주세요.');
+  await page.clock.runFor(3_000);
+  await expect(answer).toBeFocused(); await expect(answer).toHaveValue('지정한 시험 환경에서 계속 진행해 주세요.');
+  await page.getByRole('button', { name: '응답 보내기' }).click();
+  await page.locator('form').dispatchEvent('submit');
+  await page.clock.runFor(6_000);
+  expect(await responses(page)).toEqual([expect.objectContaining({ args: {
+    sessionId: 'session-one', generation: 4, requestId: id,
+    answers: { [id]: { answers: ['지정한 시험 환경에서 계속 진행해 주세요.'] } },
+  } })]);
+  expect(await page.evaluate(() => (window as any).questionFixture.opens)).toEqual([]);
+  expect(await page.evaluate(() => (window as any).questionFixture.calls.filter((call: any) => call.command === 'conversation_request'))).toEqual([]);
+  await expect(page.locator('#question-center')).toBeVisible();
+  await page.evaluate(() => (window as any).questionFixture.releaseResponse());
+  await expect(page.locator('.question-response-status')).toContainText('서버의 해결 확인');
+  await expect(page.locator('#question-count')).toHaveText('1');
+});
+
 test('질문 제목·본문·선택지·설명 URL 클릭은 선택이나 응답 없이 외부 브라우저 명령으로 전달한다', async ({ page }) => {
   const urls = ['https://example.test/title', 'https://example.test/body?q=한글', 'http://localhost:4567/option', 'https://example.test/description'];
   await fixture(page, [{ ...question, title: urls[0], message: urls[1], questions: [{ id: 'q', question: '선택하세요', options: [{ label: urls[2], description: urls[3] }] }] }]);

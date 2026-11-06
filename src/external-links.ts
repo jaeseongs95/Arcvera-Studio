@@ -39,6 +39,8 @@ export function appendLinkifiedText(parent: HTMLElement, text: string, onError: 
     parent.append(document.createTextNode(text.slice(offset, link.index)));
     const anchor = document.createElement('a');
     anchor.textContent = link.text; anchor.href = validateExternalUrl(link.text); anchor.title = anchor.href; anchor.rel = 'noopener noreferrer';
+    anchor.draggable = false;
+    anchor.addEventListener('dragstart', event => { event.preventDefault(); event.stopPropagation(); });
     anchor.addEventListener('click', event => {
       // A link inside a question's radio label must not select or submit it.
       event.preventDefault(); event.stopPropagation();
@@ -54,7 +56,15 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
   let disposed = false;
   const previous = terminal.options.linkHandler;
   const previousTitle = terminal.element?.getAttribute('title');
+  const element = terminal.element;
+  let mouseDown: { x: number; y: number } | undefined;
+  const rememberMouseDown = (event: MouseEvent) => { mouseDown = { x: event.clientX, y: event.clientY }; };
+  element?.addEventListener('mousedown', rememberMouseDown, true);
   const activate = (event: MouseEvent, url: string) => {
+    // xterm activates on mouseup even after dragging within the same link.
+    // A selection left over from a previous gesture must not block a new click.
+    const selecting = terminal.hasSelection() && mouseDown && (event.clientX !== mouseDown.x || event.clientY !== mouseDown.y);
+    if (event.button !== 0 || event.shiftKey || selecting) return;
     event.preventDefault(); event.stopPropagation();
     if (!disposed) void openExternalUrl(url).catch(onError);
   };
@@ -129,5 +139,5 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
       callback(links);
     },
   });
-  return { dispose() { if (disposed) return; disposed = true; provider.dispose(); leave(); if (terminal.options.linkHandler === handler) terminal.options.linkHandler = previous; } };
+  return { dispose() { if (disposed) return; disposed = true; element?.removeEventListener('mousedown', rememberMouseDown, true); provider.dispose(); leave(); if (terminal.options.linkHandler === handler) terminal.options.linkHandler = previous; } };
 }

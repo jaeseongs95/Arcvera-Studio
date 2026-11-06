@@ -158,9 +158,10 @@ impl State {
         *self = restored;
         Ok(true)
     }
-    pub(super) fn prepare_reply(&mut self, id: &str, result: &Value) -> Result<(String, String), String> {
+    pub(super) fn reply_payload(&self, id: &str, result: &Value) -> Result<(String, String), String> {
         if !self.complete { return Err("비동기 질문의 현재 상태를 확인하지 못해 답변을 보내지 않았습니다.".into()); }
-        let request = self.pending.get_mut(id).ok_or("이미 해결되었거나 현재 작업에 속하지 않은 질문입니다.")?;
+        let request = self.pending.get(id).ok_or("이미 해결되었거나 현재 작업에 속하지 않은 질문입니다.")?;
+        if request["turnId"].as_str()!=self.active_turn_id() {return Err("현재 작업에 속하지 않은 질문입니다.".into());}
         if request["responded"] == true { return Err("이미 전송을 시도한 답변입니다. 다시 보내지 않았습니다.".into()); }
         if !result.as_object().is_some_and(|object|object.len()==1) {return Err("비동기 질문 답변 필드만 지정하세요.".into());}
         let answers = result["answers"].as_object().filter(|answers| answers.len() == 1).ok_or("비동기 질문 한 개의 답변만 지정하세요.")?;
@@ -171,8 +172,16 @@ impl State {
         let question = question[..end].replace(['\r','\n'], " ");
         let text = format!("{OPEN}\n{}\n{CLOSE}", json!([{"answer":answer,"question":question,"questionItemId":id}]));
         let turn = request["turnId"].as_str().unwrap().to_owned();
-        request["responded"] = json!(true);
         Ok((turn,text))
+    }
+    pub(super) fn prepare_reply(&mut self, id: &str, result: &Value) -> Result<(String, String), String> {
+        let payload=self.reply_payload(id,result)?;
+        self.pending.get_mut(id).unwrap()["responded"]=json!(true);
+        Ok(payload)
+    }
+    pub(super) fn reply_attempt_current(&self,id: &str,turn: &str) -> bool {
+        self.complete && self.active_turn_id()==Some(turn)
+            && self.pending.get(id).is_some_and(|request|request["turnId"]==turn && request["responded"]==true)
     }
 }
 
