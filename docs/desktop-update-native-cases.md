@@ -32,6 +32,13 @@
 | NU13 | U4/U5 | 공통 native operation read permit 보유 | update exclusive permit 획득 시도 | 설치 gate 진입 전 실패, 기존 조회·설정·선택창 작업 중단 0 | NOT_RUN |
 | NU14 | U4/U5 | update exclusive permit 보유 | 다른 thread의 native operation 시작 시도 | callback 실행 0, 명확 busy; exclusive drop 후 정상 진입 | NOT_RUN |
 | NU15 | U4/U5 | runtime.preparing 또는 runtime.changing | Engine update gate 호출 | 설치 callback 실행 0, 기존 runtime 상태 보존, exiting false 복원 | NOT_RUN |
+| NU16 | U6 | `codex-cli 0.166.0+native-r38.20261106` 및 stable/alpha Cargo base 허용형 | 순수 CLI 버전 parser 호출 | 양수 int32 R·8자리 숫자 날짜·전체 tag 보존; 날짜/alpha 순서 추정 없음 | NOT_RUN |
+| NU17 | U6 | plain 공식 CLI·다른 custom suffix·R0·int32 초과·잘못된 base/date | parser 및 metadata-only 상태 함수 호출 | unknown/unsupported_runtime, 설치 미지원; 다른 CLI를 OpenDIY로 오인하지 않음 | NOT_RUN |
+| NU18 | U6 | 로컬 R38/tag와 동일 feed R38/tag | 순수 comparator 및 상태 DTO 호출 | current, installSupported=false, 전체 tag 정확 일치 필요 | NOT_RUN |
+| NU19 | U6 | 로컬 R38 대비 feed R39; base/date가 더 낮아 보이는 R39 포함 | comparator 및 상태 DTO 호출 | available candidate, installSupported=false; R 숫자 상승만 판정 | NOT_RUN |
+| NU20 | U6 | 같은 R38이나 feed base·날짜·alpha가 다른 경우 | comparator 및 상태 DTO 호출 | unknown/release_identity_mismatch, 설치 미지원 | NOT_RUN |
+| NU21 | U6 | 로컬 R38 대비 feed R37; base/date가 더 높아 보이는 R37 포함 | comparator 및 상태 DTO 호출 | unknown/downgrade_refused, 설치 미지원 | NOT_RUN |
+| NU22 | U6 | 잘못된 feed tag·prefix 부재·다른 custom·정수 경계 | feed parser와 comparator 호출 | unknown/invalid_release_identity, 잘못된 identity를 current/available로 오인하지 않음 | NOT_RUN |
 
 기본 runner: `cargo test --manifest-path src-tauri/Cargo.toml desktop_updates -- --test-threads=1` 및 `cargo test --manifest-path src-tauri/Cargo.toml update_gate -- --test-threads=1`. 로컬 Cargo/GUI는 root가 직렬 실행한다. 테스트 코드 작성과 실호스트 서명 installer 검증을 구분한다. 원본 없는 신규 기능이므로 무의미한 red/green은 만들지 않으며 회귀 민감도는 반례 fixture와 경쟁 사례로 확인한다.
 
@@ -43,4 +50,6 @@
 - `updater 2.14.1`의 Windows `install()`은 `on_before_exit` 후 `ShellExecuteW`가 성공하면 직접 `std::process::exit(0)`한다. 정상 IPC 반환을 설치 완료 증거로 사용하지 않는다.
 - session gate는 PTY 생성과 extension/weekly 작업의 admission을 막는다. lib.rs의 공통 native worker는 read permit, installer는 exclusive permit을 작업 전체에 보유해 catalog/external/runtime 진단·준비·설정·선택창의 늦은 진입을 막는다. Engine은 runtime.preparing/changing도 확인한다. 단일 프로세스 개수 snapshot으로 경쟁을 해결했다고 주장하지 않는다.
 - CLI 담당이 확인하고 root가 대조한 계약에 따르면 `codex update --check`는 ZIP 다운로드·추출을 하며, `update`는 feed를 다시 조회하고 expectedTag/archiveSHA pin API가 없다. native는 이 두 명령을 호출하지 않는다. 계약 공백이 해소되기 전 Codex 앱 내 설치는 미구성이다.
+- metadata-only 비교 근거: 공개 커밋 [`4a64004a26b393af5c0764bf97bdd2c309da7de0`의 `tools/windows-cli/update.ps1`](https://github.com/jaeseongs95/opendiy-codex/blob/4a64004a26b393af5c0764bf97bdd2c309da7de0/tools/windows-cli/update.ps1). CLI prefix `codex-cli ` 제거 후 native 버전의 tag는 `v` + version의 `+native-r`를 `-r`로 바꾼 전체 문자열이다. R 숫자만 순서에 사용하고 같은 R은 정확한 tag 일치가 필요하다. 날짜는 8자리 숫자 형식만 검사하며 실제 달력·최신성을 추정하지 않는다. alpha의 의미와 base 버전 순서도 추가하지 않는다. 기존 일반 SemVer 비교를 Codex 판정에 사용하지 않는다.
 - `git diff --check`는 종료 0이다. Cargo/서명 installer/GUI 실행은 root 직렬 실행 전까지 NOT_RUN이다.
+- 후속 metadata-only 변경은 `06f2af78e980ae13e1f72978fe4cab864a88ccb0`에서 두 파일만 수정했다. NU16~22용 Rust 순수 parser/comparator/상태 DTO 테스트 5개를 추가했다. Codex metadata intake는 일반 SemVer parser를 거치지 않으므로 `00000000` 같은 8자리 숫자 형식에 임의의 달력·SemVer 선행 0 제약을 추가하지 않는다. Cargo·GUI·CLI·다운로드/설치 실행은 이 후속 작업에서 NOT_RUN이며 컴파일·실행 성공을 주장하지 않는다.

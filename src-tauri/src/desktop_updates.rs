@@ -63,7 +63,7 @@ pub struct UpdateStatus {
 #[derive(Deserialize)]
 struct Release { tag_name: String, draft: bool, prerelease: bool }
 
-fn parse_release(bytes: &[u8], allow_runtime_patch: bool) -> Result<(String, Version), String> {
+fn parse_release_tag(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() > METADATA_LIMIT { return Err("업데이트 정보가 크기 상한을 초과했습니다.".into()); }
     let release: Release = serde_json::from_slice(bytes).map_err(|_| "업데이트 정보 형식을 확인할 수 없습니다.")?;
     if release.draft || release.prerelease { return Err("정식 릴리스가 아닌 업데이트 정보는 사용하지 않습니다.".into()); }
@@ -71,9 +71,89 @@ fn parse_release(bytes: &[u8], allow_runtime_patch: bool) -> Result<(String, Ver
     if tag.len() > 128 || !tag.bytes().all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b)) {
         return Err("업데이트 버전 식별자가 올바르지 않습니다.".into());
     }
+    Ok(tag)
+}
+
+fn parse_release(bytes: &[u8], allow_runtime_patch: bool) -> Result<(String, Version), String> {
+    let tag = parse_release_tag(bytes)?;
     let version = Version::parse(tag.strip_prefix('v').unwrap_or(&tag)).map_err(|_| "업데이트 버전을 확인할 수 없습니다.")?;
     if !allow_runtime_patch && !version.pre.is_empty() { return Err("시험 버전은 정식 업데이트로 제공하지 않습니다.".into()); }
     Ok((tag, version))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CodexReleaseIdentity { revision: i32, tag: String }
+
+fn canonical_decimal(text: &str) -> bool {
+    !text.is_empty() && (text.len() == 1 || !text.starts_with('0')) && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn codex_cargo_base(base: &str) -> bool {
+    let (core, alpha) = match base.split_once("-alpha") {
+        Some((core, alpha)) => (core, Some(alpha)),
+        None => (base, None),
+    };
+    let core: Vec<_> = core.split('.').collect();
+    if core.len() != 3 || !core.iter().all(|part| canonical_decimal(part)) { return false; }
+    match alpha {
+        None | Some("") => true,
+        Some(suffix) => suffix.strip_prefix('.').is_some_and(|numbers| {
+            let parts: Vec<_> = numbers.split('.').collect();
+            (1..=2).contains(&parts.len()) && parts.iter().all(|part| canonical_decimal(part))
+        }),
+    }
+}
+
+// Match the pinned Windows updater's stable/alpha + native-r grammar. Do not
+// infer chronology from Cargo base, alpha components or the eight date digits.
+fn parse_codex_version(text: &str) -> Option<CodexReleaseIdentity> {
+    if text.len() > 256 { return None; }
+    let version = text.strip_prefix("codex-cli ").unwrap_or(text);
+    let (base, patch) = version.split_once("+native-r")?;
+    if !codex_cargo_base(base) { return None; }
+    let (revision, date) = patch.split_once('.')?;
+    if !canonical_decimal(revision) || date.len() != 8 || !date.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+    let revision: i32 = revision.parse().ok()?;
+    if revision <= 0 { return None; }
+    Some(CodexReleaseIdentity { revision, tag: format!("v{base}-r{patch}") })
+}
+
+fn parse_codex_release_tag(tag: &str) -> Option<CodexReleaseIdentity> {
+    if tag.len() > 128 { return None; }
+    let (base, patch) = tag.strip_prefix('v')?.rsplit_once("-r")?;
+    let identity = parse_codex_version(&format!("{base}+native-r{patch}"))?;
+    (identity.tag == tag).then_some(identity)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CodexComparison { Current, Available, UnsupportedRuntime, InvalidReleaseIdentity, ReleaseIdentityMismatch, DowngradeRefused }
+
+fn compare_codex_versions(current: &str, tag: &str) -> CodexComparison {
+    let Some(current) = parse_codex_version(current) else { return CodexComparison::UnsupportedRuntime; };
+    let Some(latest) = parse_codex_release_tag(tag) else { return CodexComparison::InvalidReleaseIdentity; };
+    match latest.revision.cmp(&current.revision) {
+        std::cmp::Ordering::Greater => CodexComparison::Available,
+        std::cmp::Ordering::Less => CodexComparison::DowngradeRefused,
+        std::cmp::Ordering::Equal if latest.tag == current.tag => CodexComparison::Current,
+        std::cmp::Ordering::Equal => CodexComparison::ReleaseIdentityMismatch,
+    }
+}
+
+fn codex_status(current: String, tag: String) -> UpdateStatus {
+    let comparison = compare_codex_versions(&current, &tag);
+    let (status, reason) = match comparison {
+        CodexComparison::Current => ("current", "현재 OpenDIY 릴리스와 일치합니다. 앱 내 설치는 대상 고정 계약이 없어 미구성입니다."),
+        CodexComparison::Available => ("available", "더 높은 R의 OpenDIY 업데이트 후보가 있습니다. 앱 내 설치는 대상 고정 계약이 없어 미구성입니다."),
+        CodexComparison::UnsupportedRuntime => ("unknown", "unsupported_runtime: 선택한 CLI가 확인된 OpenDIY native 버전 형식과 일치하지 않아 비교하지 않았습니다."),
+        CodexComparison::InvalidReleaseIdentity => ("unknown", "invalid_release_identity: 공개 릴리스 태그가 확인된 OpenDIY 버전 형식과 일치하지 않습니다."),
+        CodexComparison::ReleaseIdentityMismatch => ("unknown", "release_identity_mismatch: 같은 R이지만 전체 릴리스 식별자가 달라 최신 여부를 확정하지 않았습니다."),
+        CodexComparison::DowngradeRefused => ("unknown", "downgrade_refused: 공개 릴리스의 R이 현재 CLI보다 낮아 업데이트 대상으로 제공하지 않습니다."),
+    };
+    let valid_tag = parse_codex_release_tag(&tag).is_some();
+    UpdateStatus { status, current_version: current,
+        latest_version: valid_tag.then(|| tag.strip_prefix('v').unwrap_or(&tag).to_owned()),
+        release_url: valid_tag.then(|| format!("https://github.com/{CODEX_REPO}/releases/tag/{tag}")),
+        install_supported: false, reason: Some(reason.into()) }
 }
 
 fn request_client() -> Result<Client, String> {
@@ -231,11 +311,10 @@ pub async fn check_codex_update(engine: State<'_, Engine>) -> Result<UpdateStatu
         let deadline = Instant::now() + REQUEST_LIMIT;
         let current = engine.codex_update_version(deadline)?;
         let client = request_client()?;
-        let (tag, latest) = release(&client, CODEX_REPO, deadline)?;
-        // A plain SemVer does not prove OpenDIY runtime identity or revision order.
-        Ok(UpdateStatus { status: "unknown", current_version: current, latest_version: Some(latest.to_string()),
-            release_url: Some(format!("https://github.com/{CODEX_REPO}/releases/tag/{tag}")), install_supported: false,
-            reason: Some("선택한 CLI 버전은 조회했습니다. OpenDIY 릴리스 식별·설치 계약이 확인되지 않아 업데이트 필요 여부와 앱 내 설치는 미구성입니다.".into()) })
+        // The Codex updater's date grammar allows any eight digits. A SemVer
+        // prerelease parser would add an unsupported leading-zero restriction.
+        let tag = parse_release_tag(&get_bytes(&client, &format!("https://api.github.com/repos/{CODEX_REPO}/releases/latest"), METADATA_LIMIT, deadline)?)?;
+        Ok(codex_status(current, tag))
     }).await.map_err(|_| "Codex 업데이트 확인 작업자가 종료되었습니다.")?
 }
 
@@ -249,6 +328,92 @@ pub async fn install_codex_update(confirmed: bool, version: String) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_updates_codex_version_parser_preserves_contract_identity() {
+        for (version, tag, revision) in [
+            ("codex-cli 0.166.0+native-r38.20261106", "v0.166.0-r38.20261106", 38),
+            ("0.166.0-alpha+native-r38.20261106", "v0.166.0-alpha-r38.20261106", 38),
+            ("0.166.0-alpha.1+native-r38.20261106", "v0.166.0-alpha.1-r38.20261106", 38),
+            ("0.166.0-alpha.1.2+native-r38.20261106", "v0.166.0-alpha.1.2-r38.20261106", 38),
+            ("0.0.0-alpha.0.0+native-r2147483647.00000000", "v0.0.0-alpha.0.0-r2147483647.00000000", i32::MAX),
+        ] {
+            assert_eq!(parse_codex_version(version), Some(CodexReleaseIdentity { revision, tag: tag.into() }), "{version}");
+        }
+    }
+
+    #[test]
+    fn desktop_updates_codex_version_parser_rejects_other_runtimes_and_malformed_versions() {
+        for version in [
+            "codex-cli 0.166.0", "0.166.0+other-r38.20261106", "0.166.0-r38.20261106", "Codex-cli 0.166.0+native-r38.20261106",
+            "0.166+native-r38.20261106", "01.166.0+native-r38.20261106", "0.166.00+native-r38.20261106",
+            "0.166.0-beta.1+native-r38.20261106", "0.166.0-alpha.01+native-r38.20261106", "0.166.0-alpha.1.2.3+native-r38.20261106",
+            "0.166.0-alpha.+native-r38.20261106", "0.166.0+native-r0.20261106", "0.166.0+native-r038.20261106",
+            "0.166.0+native-r2147483648.20261106", "0.166.0+native-r-38.20261106", "0.166.0+native-r38.2026116",
+            "0.166.0+native-r38.202611066", "0.166.0+native-r38.2026x106", "0.166.0+native-r38.20261106.extra",
+            "0.166.0+native-r38.20261106\n", " codex-cli 0.166.0+native-r38.20261106",
+        ] {
+            assert_eq!(parse_codex_version(version), None, "{version:?}");
+        }
+        assert!(parse_codex_version(&"1".repeat(257)).is_none());
+    }
+
+    #[test]
+    fn desktop_updates_codex_release_tag_requires_exact_canonical_form() {
+        assert_eq!(parse_codex_release_tag("v0.166.0-r38.20261106"), Some(CodexReleaseIdentity { revision: 38, tag: "v0.166.0-r38.20261106".into() }));
+        assert_eq!(parse_codex_release_tag("v0.166.0-alpha.1.2-r2147483647.00000000").unwrap().revision, i32::MAX);
+        for tag in ["0.166.0-r38.20261106", "V0.166.0-r38.20261106", "v0.166.0+native-r38.20261106", "v0.166.0-r038.20261106",
+            "v0.166.0-beta-r38.20261106", "v0.166.0-r0.20261106", "v0.166.0-r2147483648.20261106", "v0.166.0-r38.20261106.extra"] {
+            assert!(parse_codex_release_tag(tag).is_none(), "{tag}");
+        }
+        assert!(parse_codex_release_tag(&"v".repeat(129)).is_none());
+        let tag = parse_release_tag(br#"{"tag_name":"v0.1.0-alpha.0-r39.00000000","draft":false,"prerelease":false}"#).unwrap();
+        assert_eq!(compare_codex_versions("0.166.0+native-r38.20261106", &tag), CodexComparison::Available,
+            "metadata intake must preserve the updater's date grammar without SemVer ordering");
+    }
+
+    #[test]
+    fn desktop_updates_codex_comparison_uses_revision_and_exact_same_revision_identity() {
+        let current = "codex-cli 0.166.0+native-r38.20261106";
+        for (tag, expected) in [
+            ("v0.166.0-r38.20261106", CodexComparison::Current),
+            ("v0.166.0-r39.20261107", CodexComparison::Available),
+            ("v0.1.0-alpha.0-r39.00000000", CodexComparison::Available),
+            ("v0.166.0-r38.20261107", CodexComparison::ReleaseIdentityMismatch),
+            ("v0.167.0-r38.20261106", CodexComparison::ReleaseIdentityMismatch),
+            ("v0.166.0-alpha-r38.20261106", CodexComparison::ReleaseIdentityMismatch),
+            ("v0.166.0-r37.20261105", CodexComparison::DowngradeRefused),
+            ("v9.999.999-r37.99999999", CodexComparison::DowngradeRefused),
+            ("v0.166.0+native-r39.20261107", CodexComparison::InvalidReleaseIdentity),
+        ] {
+            assert_eq!(compare_codex_versions(current, tag), expected, "{tag}");
+        }
+        assert_eq!(compare_codex_versions("codex-cli 0.166.0", "v0.166.0-r39.20261107"), CodexComparison::UnsupportedRuntime);
+    }
+
+    #[test]
+    fn desktop_updates_codex_status_exposes_candidates_without_enabling_installation() {
+        let current = "codex-cli 0.166.0+native-r38.20261106";
+        for (version, tag, expected, reason_code) in [
+            (current, "v0.166.0-r38.20261106", "current", None),
+            (current, "v0.166.0-r39.20261107", "available", None),
+            (current, "v0.166.0-r38.20261107", "unknown", Some("release_identity_mismatch:")),
+            (current, "v0.166.0-r37.20261105", "unknown", Some("downgrade_refused:")),
+            (current, "v0.166.0+native-r39.20261107", "unknown", Some("invalid_release_identity:")),
+            ("codex-cli 0.166.0", "v0.166.0-r39.20261107", "unknown", Some("unsupported_runtime:")),
+        ] {
+            let result = codex_status(version.into(), tag.into());
+            assert_eq!(result.status, expected); assert_eq!(result.current_version, version);
+            assert!(!result.install_supported, "metadata comparison never authorizes installation");
+            if let Some(code) = reason_code { assert!(result.reason.as_deref().unwrap().starts_with(code)); }
+            if reason_code == Some("invalid_release_identity:") {
+                assert!(result.latest_version.is_none()); assert!(result.release_url.is_none());
+            } else {
+                assert_eq!(result.latest_version.as_deref(), tag.strip_prefix('v'));
+                assert_eq!(result.release_url, Some(format!("https://github.com/{CODEX_REPO}/releases/tag/{tag}")));
+            }
+        }
+    }
+
     #[test]
     fn desktop_updates_install_operation_excludes_inflight_and_late_native_workers() {
         let _serial = admission().unwrap();
