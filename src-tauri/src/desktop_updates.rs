@@ -157,6 +157,11 @@ fn codex_status(current: String, tag: String) -> UpdateStatus {
 }
 
 fn request_client() -> Result<Client, String> {
+    // The updater registers ring only in its own check path; our reads run first.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // Another caller may win registration. Keep that process-wide provider.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
     Client::builder().user_agent(concat!("OpenDIY-Desktop/", env!("CARGO_PKG_VERSION")))
         .timeout(REQUEST_LIMIT).connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -326,6 +331,60 @@ pub async fn install_codex_update(confirmed: bool, version: String) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn in_fresh_tls_process(test_name: &str, scenario: impl FnOnce()) {
+        const CHILD: &str = "OPENDIY_UPDATE_TLS_TEST_CHILD";
+        let witness = format!("fresh TLS case completed: {test_name}");
+        if std::env::var(CHILD).as_deref() == Ok(test_name) {
+            assert!(rustls::crypto::CryptoProvider::get_default().is_none(),
+                "fresh child must not inherit a provider installed by another test");
+            scenario();
+            println!("\n{witness}");
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD, test_name).output().expect("start isolated TLS test process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "isolated TLS case failed: {}\n{stdout}\n{stderr}", output.status);
+        assert!(stdout.lines().any(|line| line == witness), "isolated TLS case did not run\n{stdout}\n{stderr}");
+    }
+
+    #[test]
+    fn desktop_updates_tls_client_starts_without_preinstalled_provider() {
+        in_fresh_tls_process("desktop_updates::tests::desktop_updates_tls_client_starts_without_preinstalled_provider", || {
+            drop(request_client().expect("first actual Client must initialize its provider"));
+            let provider = rustls::crypto::CryptoProvider::get_default().unwrap().clone();
+            drop(request_client().expect("actual Client must reuse an installed provider"));
+            assert!(std::sync::Arc::ptr_eq(&provider, rustls::crypto::CryptoProvider::get_default().unwrap()));
+        });
+    }
+
+    #[test]
+    fn desktop_updates_tls_clients_initialize_concurrently() {
+        in_fresh_tls_process("desktop_updates::tests::desktop_updates_tls_clients_initialize_concurrently", || {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let workers: Vec<_> = (0..4).map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    drop(request_client().expect("concurrent actual Client must initialize"));
+                    let provider = rustls::crypto::CryptoProvider::get_default().unwrap().clone();
+                    for _ in 0..2 {
+                        drop(request_client().expect("repeated actual Client must initialize"));
+                        assert!(std::sync::Arc::ptr_eq(&provider, rustls::crypto::CryptoProvider::get_default().unwrap()));
+                    }
+                    provider
+                })
+            }).collect();
+            for worker in workers {
+                let provider = worker.join().expect("TLS initialization worker must not panic");
+                assert!(std::sync::Arc::ptr_eq(&provider, rustls::crypto::CryptoProvider::get_default().unwrap()));
+            }
+        });
+    }
+
     #[test]
     fn desktop_updates_packaged_config_initializes_without_install_credentials() {
         let app_config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();

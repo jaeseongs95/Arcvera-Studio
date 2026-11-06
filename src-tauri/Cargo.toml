@@ -31,6 +31,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "=2.14.1"
 # Reuse the updater's HTTP stack for capped native metadata/artifact reads.
 reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = "1"
 
 [target.'cfg(windows)'.dependencies]

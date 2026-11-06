@@ -30,3 +30,17 @@
 US09 오류 안내 보완(실행 전): native installer가 진행 중 세션 등의 고정된 설명 문자열을 반환하면 팝업에 그 이유를 함께 표시한다. 오류 객체/형식 미확인은 일반 실패 안내로 남긴다. 오류 안내는 textContent로만 표시하고 설치 실패 후 새 명시 조회가 없으면 재시도하지 않는다.
 
 US09 보완 실제 실행: `npx playwright test tests/update-settings.spec.ts -g US09 --reporter=line`, 종료 코드 0, 1 PASS. native의 보류 이유 문자열 표시·실패 후 예 비활성·재확인 전 중복 설치 없음·명시 재확인 후 재시도를 확인했다. `test-results/desktop160-install-failure-ui` 보존. 실제 installer 실행은 하지 않았다.
+
+TLS 회귀 사례(구현·실행 전 계획, 2026-11-06): 실제 TEST 앱 stderr에서 reqwest 0.13.5의 provider 미등록 panic과 blocking Client의 후속 panic을 확인했다. updater 2.14.1의 provider 등록은 플러그인 자체 조회 경로 안에 있으므로 앱의 별도 Client 생성에는 선행 등록을 보장하지 않는다. 아래 사례는 기존 Rust 시험 harness와 표준 라이브러리를 사용하며 네트워크 요청을 보내지 않는다.
+
+| ID | 전제·입력 | 절차 | 기대·통과 기준 | 실패 기준 | 실제 결과 |
+|---|---|---|---|---|---|
+| TLS01 | 기존 시험 실행 파일을 `--exact`로 실행하는 새 자식 프로세스, provider 선등록 없음 | provider가 `None`인지 먼저 assert하고 실제 `request_client()` 생성·drop, 두 번째 생성·drop 뒤 provider identity 비교 | 새 프로세스 완료 표식, 두 Client 정상 생성·해제, 기존 provider 보존 | 초기 provider 존재, panic, `Err`, 자식 비정상 종료, 완료 표식 누락 | NOT_RUN (root Windows CI 실행 예정) |
+| TLS02 | 별도의 새 자식 프로세스, provider 선등록 없음, 4개 스레드 | 초기 `None` assert 후 barrier로 동시 시작, 각 스레드가 실제 Client 생성·drop을 3회 반복, provider identity 비교 | 12회 모두 정상 생성·해제, 모든 스레드 join 및 자식 완료 표식 | 등록 경합 panic, 생성 실패, provider 변경, 자식 비정상 종료·완료 표식 누락 | NOT_RUN (root Windows CI 실행 예정) |
+| TLS03 | 수정 빌드의 격리 실제 GUI, 두 자체 TEST 세션, 백그라운드/수동 업데이트 조회 | 조회와 각 세션 입력을 병행하고 조회 결과·실제 turn 완료·정확 대상·초안 보존 및 stderr 대조 | 조회 정상 결과 또는 정상 오류, TLS panic 없음, 두 세션 입력 완료와 보존 근거 | TLS panic, 입력 미완료, 대상 혼선, 초안 훼손 | NOT_RUN (수정 빌드 이후 별도 실제 GUI 검증) |
+
+TLS01/02는 자식 내부의 provider 미등록 assertion과 완료 표식을 모두 요구한다. 다른 시험이 부모 프로세스의 provider를 미리 등록해도 새 자식의 상태에는 영향을 주지 않으며, 잘못된 `--exact`로 0개 시험이 실행되면 완료 표식이 없어 실패한다. Client 생성·drop만으로 공개 GitHub HTTPS 통신·인증서 검증·설치를 검증했다고 하지 않는다. TLS03 전에는 입력 정지와 TLS 결함의 인과나 해결을 선언하지 않는다.
+
+결함 탐지 검증 계획: 후보의 격리 사본에서 provider 등록 블록만 제거하고 동일한 TLS01/02 명령을 실행한다. 직접 rustls 의존성과 시험 코드는 그대로 보존하여 컴파일 오류를 RED로 세지 않는다. RED는 새 자식의 초기 provider assertion을 통과한 뒤 reqwest provider 미등록 panic으로 실패해야 한다. GREEN은 동일 시험 코드로 후보를 실행한다. 시험이 제품과 같은 파일에 있으므로 전체 파일 digest 대신 동일 `#[cfg(test)]` 모듈의 byte digest도 대조한다. 두 실행 모두 아직 NOT_RUN이다. 명령·등록 블록·범위는 `artifacts/r38-update-tls-fix/`에 보존한다.
+
+고정 버전 공식 근거: [updater 2.14.1 Cargo 기능](https://docs.rs/crate/tauri-plugin-updater/2.14.1/source/Cargo.toml), [updater의 provider 등록](https://docs.rs/tauri-plugin-updater/2.14.1/src/tauri_plugin_updater/updater.rs.html#578-582), [reqwest 0.13.5 provider 선택](https://docs.rs/reqwest/0.13.5/src/reqwest/async_impl/client.rs.html#720-724), [reqwest provider 미등록 panic](https://docs.rs/reqwest/0.13.5/src/reqwest/async_impl/client.rs.html#2498-2510), [blocking Client의 후속 panic](https://docs.rs/reqwest/0.13.5/src/reqwest/blocking/client.rs.html#1475-1480), [rustls 0.23.46 프로세스 provider 계약](https://docs.rs/rustls/0.23.46/rustls/crypto/struct.CryptoProvider.html#method.install_default). 버전 없는 `latest` 링크는 이 결함의 고정 근거로 사용하지 않는다.
