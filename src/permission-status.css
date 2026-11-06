@@ -19,3 +19,5 @@
 .permission-pending-request { font-size: .85rem; }
 .permission-status-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .permission-status-actions button { padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+
+.permission-status-open svg{width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
