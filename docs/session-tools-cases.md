@@ -31,3 +31,7 @@
 | ST06 | native fixture 설정 | GitHub 바로가기 클릭 | 고정 https://github.com/jaeseongs95 를 native opener에 1회 전달 | 별도 메뉴·임의 주소·쉘 실행 | PASS (fixture) |
 
 부모 통합 재검사: `npx playwright test tests/session-tools-layout.spec.ts tests/update-settings.spec.ts --reporter=line`, 2026-11-06, 종료 코드 0, 14 PASS 중 이 파일 7개 PASS. `test-results/followup-additional` 보존. 이 결과는 1.4 분리 전 통합 작업트리의 브라우저 IPC fixture 결과이며 native/실제 설치 검증을 대신하지 않는다.
+
+ST05 보완 사례(실행 전): 권한 방패 SVG가 13×13px이며 fill:none/stroke:currentColor로 표시되어 카드 영역에 기본 300×150px 그림을 남기지 않아야 한다. 고정 e49e4af 소스 리뷰에서 전용 SVG 규칙 누락을 확인했으며, CSS 수정 전 실패와 수정 후 성공을 기존 ST05 실제 main fixture로 검사한다.
+
+권한 아이콘 보완의 최초 실행은 13px 기대에 실제 10px(기본 button padding으로 flex shrink)로 실패했고 `test-results/desktop140-glyph-green`에 남겼다. `flex:none`까지 보완 후 `npx playwright test tests/session-tools-layout.spec.ts tests/permission-status.spec.ts --reporter=line` 종료 코드 0, 13 PASS(세션 도구 7·권한 UI 6). 최종 자료 `test-results/desktop140-glyph-final`. 원 e49e4af의 누락 CSS 자체를 제거한 red 실행은 하지 않았으므로 해당 원 후보 red/green을 주장하지 않는다.

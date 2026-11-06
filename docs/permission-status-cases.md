@@ -24,3 +24,5 @@
 초기 작성 후 담당이 실행한 정적 검사: `npx tsc --noEmit` 종료 코드 0. Rust 3개 변경 파일의 `git diff --check` 종료 코드 0. 동작 사례 실행은 부모가 담당한다.
 
 부모가 전달한 첫 UI 통합 결과는 권한 fixture 6개 중 5 PASS, 1 FAIL이다. PERM09의 페이지 전체 새로고침 locator가 주간 사용량과 권한 팝업의 버튼을 함께 찾아 strict mode에서 실패했으며, 이번에 권한 dialog 범위로 수정했다. 원 실패 자료 `test-results/followup-first/permission-status-PERM09-동일한-진행-중-조회는-합치고-명시-새로고침만-다시-조회한다/error-context.md`와 `trace.zip`의 존재를 직접 확인했고 변경하지 않았다. 이 보완 후 e2e·Cargo는 부모의 직렬 실행을 기다리며 재실행하지 않았다.
+
+부모 최종 브라우저 실행: `npx playwright test tests/session-tools-layout.spec.ts tests/permission-status.spec.ts --reporter=line`, 종료 코드 0, 13 PASS 중 권한 팝업 6개 PASS. `test-results/desktop140-glyph-final` 보존. 원 e49e4af CI42179391322의 native job은 success로 직접 조회했으며 실제 공식/OpenDIY 세션 응답이나 설치 후 검증으로 확대하지 않는다. 위 표의 사전 미실행 및 최초 실패 기록은 이 실행 이력과 구분한다.
