@@ -1231,6 +1231,42 @@ mod tests {
         assert_eq!(control.pending_snapshot().unwrap().2.len(),2);assert_eq!(rpc.next_id,5);drop(rpc);server.join().unwrap();
     }
     #[test]
+    fn terminal_async_question_uses_observer_and_preserves_terminal_owner() {
+        // QI-01/02/04: public request -> existing bounded observer slot -> real
+        // loopback RPC. The fixture replaces the server, not the client writer.
+        let(control,mut rpc,listener)=fixture();
+        control.0.events.lock().unwrap().observer_connected=true;
+        control.observer_message("original",json!({"method":"turn/started","params":{"threadId":"original","turn":{"id":"turn-async"}}})).unwrap();
+        control.observer_message("original",async_notification(async_item("pending"))).unwrap();
+        let id=r#"["request_user_input_async","pending",0]"#;
+        let respond=move||ConversationRequest::Respond{request_id:id.into(),result:json!({"answers":{id:{"answers":["진행"]}}})};
+        let requested=control.clone();let caller=thread::spawn(move||requested.request("original",Path::new("."),respond()));
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while control.0.observer_compaction.lock().unwrap().pending.is_none() {
+            assert!(!caller.is_finished(),"터미널 질문 응답이 기존 관찰자 슬롯에 도달하기 전에 거절되었다");
+            assert!(Instant::now()<deadline,"관찰자 슬롯 대기 기한 초과");thread::sleep(Duration::from_millis(1));
+        }
+        assert!(control.request("original",Path::new("."),respond()).is_err());
+        assert!(control.request("original",Path::new("."),ConversationRequest::Attach).is_err());
+        assert_eq!(control.terminal_write(||Ok(7)).unwrap(),7);
+        let server=thread::spawn(move|| {
+            let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+            let request=read_request(&mut socket);assert_eq!(request["method"],"turn/steer");
+            assert_eq!(request["params"]["threadId"],"original");assert_eq!(request["params"]["expectedTurnId"],"turn-async");
+            assert_eq!(request["params"]["input"][0]["text"],format!("<send_user_message_question_reply>\n{}\n</send_user_message_question_reply>",json!([{"answer":"진행","question":"계속할까요?","questionItemId":id}])));
+            reply(&mut socket,&request,json!({"turnId":"turn-async"}));assert_closed_without_input(&mut socket);
+        });
+        control.observer_compact(&mut rpc,"original");
+        let response=caller.join().unwrap().unwrap();assert_eq!(response["status"],"accepted");assert_eq!(response["resolved"],false);
+        assert!(control.request("original",Path::new("."),respond()).is_err());
+        assert_eq!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+        assert!(!control.0.owned.load(Ordering::Acquire));assert!(!*control.0.input.lock().unwrap());assert!(control.0.worker.lock().unwrap().is_none());
+        assert_eq!(control.terminal_write(||Ok(8)).unwrap(),8);assert_eq!(rpc.next_id,1);
+        control.observer_message("original",async_notification(async_reply_item(id))).unwrap();assert!(control.pending_snapshot().unwrap().2.is_empty());
+        drop(rpc);server.join().unwrap();
+    }
+    #[test]
     fn async_public_respond_steers_exact_turn_as_user_input_and_waits_for_observed_resolution() {
         for outcome in ["accepted","unsupported","mismatch","lost","wrongTurn"] {
             let(control,mut rpc,listener)=fixture();control.0.owned.store(true,Ordering::Release);
