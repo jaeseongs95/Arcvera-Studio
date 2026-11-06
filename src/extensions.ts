@@ -1,4 +1,5 @@
 import { bindAttribute, bindText, t, unbindText } from './i18n';
+import './extensions.css';
 
 export interface ExtensionPlugin {
   pluginId: string; name: string; marketplaceName: string; version: string | null;
@@ -14,22 +15,25 @@ export interface ExtensionHook {
   enabled: boolean; isManaged: boolean; currentHash: string; trustStatus: 'managed' | 'untrusted' | 'trusted' | 'modified';
 }
 export interface ExtensionHooks { items: ExtensionHook[]; warnings: string[]; errors: { path: string; message: string }[] }
+export interface ExtensionMcpServer { name: string; transport: 'stdio' | 'streamableHttp' | 'unknown'; enabled: boolean; configuredIn: string[] }
+export interface ExtensionMcpServers { items: ExtensionMcpServer[]; userFile: string }
 export interface ExtensionsSnapshot {
   executable: string; cwd: string | null;
   plugins: { installed: ExtensionPlugin[]; available: ExtensionPlugin[] } | null;
   marketplaces: ExtensionMarketplace[] | null; skills: ExtensionSkill[] | null;
   hooks: ExtensionHooks | null;
+  mcpServers?: ExtensionMcpServers | null;
   skillDestinations: { user: string | null; project: string | null };
-  errors: { section: 'plugins' | 'marketplaces' | 'skills' | 'hooks'; message: string }[];
+  errors: { section: 'plugins' | 'marketplaces' | 'skills' | 'hooks' | 'mcpServers'; message: string }[];
 }
 interface ExtensionsHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(ko: string, error?: boolean, en?: string): void;
 }
-type Tab = 'plugins' | 'skills' | 'hooks' | 'marketplaces';
-const TABS: readonly Tab[] = ['plugins', 'skills', 'hooks', 'marketplaces'];
+type Tab = 'plugins' | 'skills' | 'hooks' | 'marketplaces' | 'mcpServers';
+const TABS: readonly Tab[] = ['plugins', 'skills', 'hooks', 'marketplaces', 'mcpServers'];
 type Mutation = { operation: string; [key: string]: unknown };
-type Row = { id: string; title: string; subtitle: string; searchable: string[]; item: ExtensionPlugin | ExtensionSkill | ExtensionMarketplace | ExtensionHook };
+type Row = { id: string; title: string; subtitle: string; searchable: string[]; item: ExtensionPlugin | ExtensionSkill | ExtensionMarketplace | ExtensionHook | ExtensionMcpServer };
 
 export function createExtensionsManager(host: ExtensionsHost) {
   const dialog = document.createElement('dialog'); dialog.id = 'extensions-dialog';
@@ -38,12 +42,16 @@ export function createExtensionsManager(host: ExtensionsHost) {
   dialog.innerHTML = `<div class="dialog-heading"><div><span class="eyebrow" id="extensions-eyebrow"></span><h2 id="extensions-title"></h2></div><button id="extensions-close" class="icon-button">×</button></div>
     <p id="extensions-description"></p>
     <dl class="extensions-context"><dt id="extensions-executable-label"></dt><dd id="extensions-executable"></dd><dt id="extensions-project-label"></dt><dd id="extensions-project"></dd></dl>
-    <div class="extensions-tabs" role="tablist"><button id="extensions-tab-plugins" role="tab" aria-controls="extensions-content" data-tab="plugins"></button><button id="extensions-tab-skills" role="tab" aria-controls="extensions-content" data-tab="skills"></button><button id="extensions-tab-hooks" role="tab" aria-controls="extensions-content" data-tab="hooks"></button><button id="extensions-tab-marketplaces" role="tab" aria-controls="extensions-content" data-tab="marketplaces"></button></div>
+    <div class="extensions-tabs" role="tablist"><button id="extensions-tab-plugins" role="tab" aria-controls="extensions-content" data-tab="plugins"></button><button id="extensions-tab-skills" role="tab" aria-controls="extensions-content" data-tab="skills"></button><button id="extensions-tab-hooks" role="tab" aria-controls="extensions-content" data-tab="hooks"></button><button id="extensions-tab-marketplaces" role="tab" aria-controls="extensions-content" data-tab="marketplaces"></button><button id="extensions-tab-mcpServers" role="tab" aria-controls="extensions-content" data-tab="mcpServers"></button></div>
     <div class="extensions-tools"><label for="extensions-search" id="extensions-search-label"></label><input id="extensions-search" type="search" maxlength="200" autocomplete="off"/><button id="extensions-plugin-discover" class="quiet-button"></button><button id="extensions-plugin-search" class="quiet-button" hidden></button><button id="extensions-refresh" class="quiet-button"></button></div>
     <div id="extensions-status" role="status" aria-live="polite"></div><div id="extensions-error" class="inline-error" role="alert" hidden></div>
     <section id="extensions-content" class="extensions-panes" role="tabpanel"><div class="extensions-list-pane"><div id="extensions-list" role="listbox" tabindex="0"></div><div class="extensions-paging"><small id="extensions-range"></small><button id="extensions-previous" class="quiet-button" hidden></button><button id="extensions-more" class="quiet-button" hidden></button></div></div><div class="extensions-detail-pane"><div id="extensions-detail"></div>
       <form id="extensions-skill-form" class="extensions-form" hidden><h3 id="extensions-import-title"></h3><label for="extensions-skill-source" id="extensions-skill-source-label"></label><div class="extensions-picker"><input id="extensions-skill-source" readonly/><button type="button" id="extensions-skill-choose" class="quiet-button"></button></div><label for="extensions-skill-name" id="extensions-skill-name-label"></label><input id="extensions-skill-name" maxlength="64" pattern="[a-z0-9_][a-z0-9_\\-]{0,63}" required/><small id="extensions-skill-name-help"></small><label for="extensions-skill-scope" id="extensions-skill-scope-label"></label><select id="extensions-skill-scope"><option value="user" id="extensions-scope-user"></option><option value="project" id="extensions-scope-project"></option></select><small id="extensions-skill-destination"></small><button id="extensions-skill-import" class="primary-button" type="submit"></button></form>
       <form id="extensions-marketplace-form" class="extensions-form" hidden><h3 id="extensions-marketplace-title"></h3><label for="extensions-marketplace-source" id="extensions-marketplace-source-label"></label><input id="extensions-marketplace-source" maxlength="4096" required/><label for="extensions-marketplace-ref" id="extensions-marketplace-ref-label"></label><input id="extensions-marketplace-ref" maxlength="200"/><button id="extensions-marketplace-add" class="primary-button" type="submit"></button></form>
+      <form id="extensions-mcp-form" class="extensions-form" hidden autocomplete="off"><h3 id="extensions-mcp-title"></h3><small id="extensions-mcp-scope"></small><label for="extensions-mcp-name" id="extensions-mcp-name-label"></label><input id="extensions-mcp-name" maxlength="128" required/><label for="extensions-mcp-transport" id="extensions-mcp-transport-label"></label><select id="extensions-mcp-transport"><option value="stdio">STDIO</option><option value="streamableHttp">Streamable HTTP</option></select>
+        <div id="extensions-mcp-stdio"><label for="extensions-mcp-command" id="extensions-mcp-command-label"></label><input id="extensions-mcp-command" maxlength="4096"/><label for="extensions-mcp-args" id="extensions-mcp-args-label"></label><textarea id="extensions-mcp-args" maxlength="65536" rows="3">[]</textarea><small id="extensions-mcp-args-help"></small><label for="extensions-mcp-env" id="extensions-mcp-env-label"></label><input id="extensions-mcp-env" type="password" maxlength="65536" autocomplete="new-password"/><small id="extensions-mcp-env-help"></small></div>
+        <div id="extensions-mcp-http" hidden><label for="extensions-mcp-url" id="extensions-mcp-url-label"></label><input id="extensions-mcp-url" maxlength="8192"/><label for="extensions-mcp-bearer" id="extensions-mcp-bearer-label"></label><input id="extensions-mcp-bearer" maxlength="256"/><small id="extensions-mcp-bearer-help"></small></div><button id="extensions-mcp-add" class="primary-button" type="submit"></button>
+      </form>
     </div></section>
     <div id="extensions-review" class="extensions-review" hidden><strong id="extensions-review-title"></strong><pre id="extensions-review-target"></pre><p id="extensions-review-scope"></p><div class="extensions-review-actions"><button id="extensions-review-cancel" class="quiet-button"></button><button id="extensions-review-confirm" class="primary-button"></button></div></div>
     <small id="extensions-effect"></small>`;
@@ -51,11 +59,11 @@ export function createExtensionsManager(host: ExtensionsHost) {
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   const text = (selector: string, ko: string, en: string) => bindText($(selector), ko, en);
   for (const [selector, ko, en] of [
-    ['#extensions-eyebrow', '확장 관리', 'EXTENSIONS'], ['#extensions-title', '플러그인·스킬·Hook', 'Plugins, skills & hooks'],
+    ['#extensions-eyebrow', '확장 관리', 'EXTENSIONS'], ['#extensions-title', '플러그인·스킬·Hook·MCP', 'Plugins, skills, hooks & MCP'],
     ['#extensions-description', '설치된 확장을 관리하거나 필요한 플러그인을 찾아 추가하세요.', 'Manage installed extensions or find a plugin to add.'],
     ['#extensions-executable-label', '실행 파일', 'Executable'], ['#extensions-project-label', '프로젝트', 'Project'],
     ['#extensions-tab-plugins', '플러그인', 'Plugins'], ['#extensions-tab-skills', '스킬', 'Skills'], ['#extensions-tab-marketplaces', '마켓플레이스', 'Marketplaces'],
-    ['#extensions-tab-hooks', 'Hook', 'Hooks'], ['#extensions-plugin-discover', '플러그인 추가', 'Add a plugin'], ['#extensions-plugin-search', '찾기', 'Find'],
+    ['#extensions-tab-mcpServers', 'MCP 서버', 'MCP servers'], ['#extensions-tab-hooks', 'Hook', 'Hooks'], ['#extensions-plugin-discover', '플러그인 추가', 'Add a plugin'], ['#extensions-plugin-search', '찾기', 'Find'],
     ['#extensions-search-label', '목록 검색', 'Search list'], ['#extensions-refresh', '새로 고침', 'Refresh'],
     ['#extensions-more', '50개 더 보기', 'Show 50 more'],
     ['#extensions-previous', '이전 항목', 'Previous entries'],
@@ -66,6 +74,12 @@ export function createExtensionsManager(host: ExtensionsHost) {
     ['#extensions-skill-import', '가져오기 검토', 'Review import'], ['#extensions-marketplace-title', '마켓플레이스 등록', 'Add a marketplace'],
     ['#extensions-marketplace-source-label', '로컬 경로 또는 Git 주소', 'Local path or Git URL'], ['#extensions-marketplace-ref-label', 'Git 리비전 (선택)', 'Git revision (optional)'],
     ['#extensions-marketplace-add', '등록 검토', 'Review registration'], ['#extensions-review-cancel', '취소', 'Cancel'], ['#extensions-review-confirm', '실행', 'Apply'],
+    ['#extensions-mcp-title', 'MCP 서버 추가', 'Add an MCP server'], ['#extensions-mcp-name-label', '새 서버 이름', 'New server name'],
+    ['#extensions-mcp-transport-label', '연결 방식', 'Transport'], ['#extensions-mcp-command-label', '실행 파일 또는 명령', 'Executable or command'],
+    ['#extensions-mcp-args-label', '인수 (JSON 문자열 배열)', 'Arguments (JSON string array)'], ['#extensions-mcp-args-help', '예: ["-y", "@example/mcp"]. 각 인수를 따로 전달합니다.', 'Example: ["-y", "@example/mcp"]. Each argument is passed separately.'],
+    ['#extensions-mcp-env-label', '환경변수 (선택 · JSON 객체)', 'Environment variables (optional JSON object)'], ['#extensions-mcp-env-help', '예: {"TOKEN":"value"}. 입력값은 검토 요약과 목록에 표시하지 않습니다.', 'Example: {"TOKEN":"value"}. Values are omitted from the review summary and inventory.'],
+    ['#extensions-mcp-url-label', '서버 URL', 'Server URL'], ['#extensions-mcp-bearer-label', 'Bearer token 환경변수 이름 (선택)', 'Bearer token environment variable (optional)'],
+    ['#extensions-mcp-bearer-help', '토큰 값이 아닌 환경변수 이름을 입력하세요.', 'Enter the environment variable name, not its token value.'], ['#extensions-mcp-add', '추가 검토', 'Review addition'],
     ['#extensions-effect', '변경 후 새 세션에서 구성을 확인하세요. 열린 터미널은 재시작하지 않습니다.', 'Check the configuration in a new session after changes. Open terminals are not restarted.'],
   ]) text(selector, ko, en);
   bindAttribute($('#extensions-close'), 'aria-label', '확장 관리 닫기', 'Close extension manager');
@@ -73,8 +87,8 @@ export function createExtensionsManager(host: ExtensionsHost) {
   bindAttribute($('#extensions-list'), 'aria-label', '확장 목록', 'Extension list');
   const search = $<HTMLInputElement>('#extensions-search');
   const selections: Partial<Record<Tab, string>> = {};
-  const limits: Record<Tab, number> = { plugins: 50, skills: 50, hooks: 50, marketplaces: 50 };
-  const starts: Record<Tab, number> = { plugins: 0, skills: 0, hooks: 0, marketplaces: 0 };
+  const limits: Record<Tab, number> = { plugins: 50, skills: 50, hooks: 50, marketplaces: 50, mcpServers: 50 };
+  const starts: Record<Tab, number> = { plugins: 0, skills: 0, hooks: 0, marketplaces: 0, mcpServers: 0 };
   let tab: Tab = 'plugins'; let snapshot: ExtensionsSnapshot | undefined; let cwd: string | null = null;
   let version = 0; let busy = false; let mutation: Promise<ExtensionsSnapshot> | undefined;
   let pendingRead: { token: number; cwd: string | null; catalogQuery: string | null } | undefined; let readPump: Promise<void> | undefined;
@@ -88,12 +102,13 @@ export function createExtensionsManager(host: ExtensionsHost) {
   function showError(error: unknown) { $('#extensions-error').hidden = false; $('#extensions-error').textContent = preview(errorMessage(error)); }
   function setBusy(value: boolean) {
     busy = value; const blocked = value || exitRequested; dialog.setAttribute('aria-busy', String(blocked));
-    for (const control of dialog.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button:not(#extensions-close),input,select')) control.disabled = blocked;
+    for (const control of dialog.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('button:not(#extensions-close),input,select,textarea')) control.disabled = blocked;
     if (!blocked) {
       $<HTMLOptionElement>('#extensions-scope-project').disabled = !snapshot?.skillDestinations.project;
       if (!snapshot?.skillDestinations.project && $<HTMLSelectElement>('#extensions-skill-scope').value === 'project') $<HTMLSelectElement>('#extensions-skill-scope').value = 'user';
       $<HTMLButtonElement>('#extensions-skill-import').disabled = !snapshot?.skillDestinations[$<HTMLSelectElement>('#extensions-skill-scope').value as 'user' | 'project'];
       $<HTMLButtonElement>('#extensions-marketplace-add').disabled = !snapshot?.marketplaces;
+      $<HTMLButtonElement>('#extensions-mcp-add').disabled = !snapshot?.mcpServers;
       $('#extensions-list').querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false);
       updateDestination();
     }
@@ -128,6 +143,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       return items.map(item => ({ id: item.pluginId, title: item.name, subtitle: `${item.marketplaceName}${item.version ? ` · ${item.version}` : ''}`, searchable: [item.name, item.pluginId, item.marketplaceName, item.source], item }));
     }
     if (tab === 'skills') return (snapshot.skills ?? []).map(item => ({ id: item.path, title: item.name, subtitle: item.description, searchable: [item.name, item.description, item.path, item.scope, item.pluginId ?? ''], item }));
+    if (tab === 'mcpServers') return (snapshot.mcpServers?.items ?? []).map(item => ({ id: item.name, title: item.name, subtitle: `${item.transport} · ${item.enabled ? t('사용 설정됨', 'Configured enabled') : t('사용 안 함', 'Disabled')}`, searchable: [item.name, item.transport, ...item.configuredIn], item }));
     if (tab === 'hooks') return (snapshot.hooks?.items ?? []).map(item => ({ id: item.key, title: item.eventName, subtitle: `${item.source} · ${item.enabled ? t('사용 중', 'Enabled') : t('사용 안 함', 'Disabled')} · ${hookTrust(item)}`, searchable: [item.key, item.eventName, item.sourcePath, item.source, item.pluginId ?? '', hookHandler(item)], item }));
     return (snapshot.marketplaces ?? []).map(item => ({ id: item.name, title: item.name, subtitle: item.source, searchable: [item.name, item.source, item.path ?? ''], item }));
   }
@@ -152,6 +168,11 @@ export function createExtensionsManager(host: ExtensionsHost) {
         action(actions, 'extensions-plugin-toggle', plugin.enabled ? '사용 안 함' : '사용', plugin.enabled ? 'Disable' : 'Enable', () => review({ operation: 'setPluginEnabled', pluginId: plugin.pluginId, enabled: !plugin.enabled }, plugin.pluginId, '플러그인 사용 설정', 'Change plugin activation', ...userScope));
         action(actions, 'extensions-plugin-remove', '플러그인 제거…', 'Remove plugin…', () => review({ operation: 'removePlugin', pluginId: plugin.pluginId }, plugin.pluginId, '플러그인을 제거할까요?', 'Remove this plugin?', ...userScope));
       } else action(actions, 'extensions-plugin-install', '플러그인 설치…', 'Install plugin…', () => review({ operation: 'installPlugin', selector: `${plugin.name}@${plugin.marketplaceName}` }, `${plugin.name}@${plugin.marketplaceName}`, '플러그인 설치', 'Install plugin', ...userScope));
+    } else if (tab === 'mcpServers') {
+      const server = row.item as ExtensionMcpServer;
+      metadata(data, '연결 방식', 'Transport', server.transport);
+      metadata(data, '설정 범위', 'Configured in', server.configuredIn.map(scope => ({ user: t('사용자', 'User'), project: t('프로젝트', 'Project'), profile: t('프로필', 'Profile'), managedOrOther: t('관리 또는 기타', 'Managed or other') })[scope] ?? scope).join(', '));
+      const state = document.createElement('p'); bindText(state, '저장된 구성입니다. 연결·인증 상태는 새 세션에서 확인하세요.', 'Saved configuration. Check connection and authentication in a new session.'); detail.append(state);
     } else if (tab === 'skills') {
       const skill = row.item as ExtensionSkill;
       const description = document.createElement('p'); description.textContent = preview(skill.description); detail.append(description);
@@ -213,6 +234,9 @@ export function createExtensionsManager(host: ExtensionsHost) {
     if (sectionErrors.length) { $('#extensions-error').textContent = preview(sectionErrors.map(error => error.message).join('\n')); $('#extensions-error').hidden = false; }
     else $('#extensions-error').hidden = true;
     $('#extensions-content').setAttribute('aria-labelledby', `extensions-tab-${tab}`);
+    $('#extensions-mcp-form').hidden = tab !== 'mcpServers';
+    $<HTMLButtonElement>('#extensions-mcp-add').disabled = busy || exitRequested || !snapshot?.mcpServers;
+    text('#extensions-mcp-scope', snapshot?.mcpServers ? `사용자 구성에 새 이름만 저장합니다: ${snapshot.mcpServers.userFile}` : '쓰기 가능한 사용자 구성을 확인하지 못했습니다. 새로 고침하세요.', snapshot?.mcpServers ? `New names only in user configuration: ${snapshot.mcpServers.userFile}` : 'Writable user configuration is unavailable. Refresh to retry.');
     $('#extensions-skill-form').hidden = tab !== 'skills'; $('#extensions-marketplace-form').hidden = tab !== 'marketplaces';
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
       const selected = button.dataset.tab === tab; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
@@ -267,7 +291,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     const operation = host.call<ExtensionsSnapshot>('extensions_mutate', { cwd, request }); mutation = operation;
     try {
       const value = await operation;
-      if (current(token)) { if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
+      if (current(token)) { if (request.operation === 'addMcpServer') clearMcpInputs(); if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
       else host.notify('확장 구성이 변경되었습니다. 확장 관리를 다시 열어 확인하세요.', false, 'Extension configuration changed. Reopen the manager to review it.');
     } catch (error) {
       if (current(token)) { snapshot = undefined; renderList(); showError(error); status('변경을 완료하지 못했습니다. 오류와 실제 구성을 확인하세요.', 'The change could not be completed. Review the error and refresh the actual configuration.'); }
@@ -275,7 +299,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     } finally { if (mutation === operation) mutation = undefined; if (current(token)) setBusy(false); }
   }
   $('#extensions-close').onclick = () => dialog.close();
-  dialog.onclose = () => { version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; };
+  dialog.onclose = () => { clearMcpInputs(); version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; };
   $('#extensions-refresh').onclick = load; search.oninput = () => { if (!busy && !exitRequested) { limits[tab] = 50; starts[tab] = 0; cancelReview(); renderList(); } };
   $('#extensions-plugin-discover').onclick = () => {
     if (busy || exitRequested) return;
@@ -324,6 +348,39 @@ export function createExtensionsManager(host: ExtensionsHost) {
     if (!sourcePath || !base) { status('소스 폴더와 저장 위치를 먼저 선택하세요.', 'Choose a source folder and an available destination first.'); return; }
     const destination = `${base.replace(/[\\/]+$/, '')}${base.includes('\\') ? '\\' : '/'}${name}`;
     review({ operation: 'importSkill', sourcePath, name, scope }, `${sourcePath}\n→ ${destination}`, '스킬 폴더 가져오기', 'Import skill folder', scope === 'project' ? '현재 프로젝트에 새 폴더를 만듭니다. 기존 폴더는 덮어쓰지 않습니다.' : '사용자 스킬 폴더에 복사합니다. 모든 프로젝트에서 발견할 수 있습니다.', scope === 'project' ? 'Creates a new folder in the current project. Existing folders are never overwritten.' : 'Copies into the user skills directory, where all projects can discover it.');
+  };
+  function clearMcpInputs() {
+    for (const id of ['name', 'command', 'env', 'url', 'bearer']) $<HTMLInputElement>(`#extensions-mcp-${id}`).value = '';
+    $<HTMLTextAreaElement>('#extensions-mcp-args').value = '[]';
+  }
+  function updateMcpTransport() {
+    const stdio = $<HTMLSelectElement>('#extensions-mcp-transport').value === 'stdio';
+    $('#extensions-mcp-stdio').hidden = !stdio; $('#extensions-mcp-http').hidden = stdio;
+  }
+  $('#extensions-mcp-form').oninput = cancelReview;
+  $('#extensions-mcp-transport').onchange = () => { cancelReview(); updateMcpTransport(); };
+  $('#extensions-mcp-form').onsubmit = event => {
+    event.preventDefault(); if (busy || exitRequested || !snapshot?.mcpServers) return;
+    const name = $<HTMLInputElement>('#extensions-mcp-name').value;
+    if (!name || name.length > 128 || [...name].some(char => !/[A-Za-z0-9]/.test(char) && !'-_:@/.'.includes(char))) { showError(t('서버 이름은 영문·숫자와 - _ : @ / . 문자로 128자 이내여야 합니다.', 'Use 1–128 letters, digits, or - _ : @ / . for the server name.')); return; }
+    const type = $<HTMLSelectElement>('#extensions-mcp-transport').value;
+    let transport: Record<string, unknown>;
+    try {
+      if (type === 'stdio') {
+        const command = $<HTMLInputElement>('#extensions-mcp-command').value;
+        const args: unknown = JSON.parse($<HTMLTextAreaElement>('#extensions-mcp-args').value);
+        const env: unknown = JSON.parse($<HTMLInputElement>('#extensions-mcp-env').value || '{}');
+        if (!command.trim() || !Array.isArray(args) || !args.every(arg => typeof arg === 'string') || !env || typeof env !== 'object' || Array.isArray(env) || !Object.values(env).every(value => typeof value === 'string')) throw Error();
+        transport = { type, command, args, env };
+      } else {
+        const url = $<HTMLInputElement>('#extensions-mcp-url').value; const parsed = new URL(url);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash) throw Error();
+        const bearerTokenEnvVar = $<HTMLInputElement>('#extensions-mcp-bearer').value;
+        transport = { type, url, bearerTokenEnvVar: bearerTokenEnvVar || null };
+      }
+    } catch { showError(t('MCP 입력 형식을 확인하세요. 명령과 JSON 인수·환경변수 또는 HTTP(S) 주소가 필요합니다.', 'Check the MCP input format: command with JSON arguments/environment, or an HTTP(S) URL.')); return; }
+    if (snapshot.mcpServers.items.some(server => server.name === name)) { showError(t('같은 이름의 서버가 이미 있습니다. 새 이름을 입력하세요.', 'A server with this name already exists. Choose a new name.')); return; }
+    review({ operation: 'addMcpServer', name, transport }, `${name} · ${type}`, 'MCP 서버 추가', 'Add an MCP server', '선택한 CLI의 사용자 구성에 새 서버를 저장합니다. 새 세션에서 연결을 확인하세요. 기존 서버는 덮어쓰지 않습니다.', 'Saves a new server in the selected CLI user configuration. Check its connection in a new session. Existing servers are never overwritten.');
   };
   $('#extensions-marketplace-source').oninput = cancelReview; $('#extensions-marketplace-ref').oninput = cancelReview;
   $('#extensions-marketplace-form').onsubmit = event => {
