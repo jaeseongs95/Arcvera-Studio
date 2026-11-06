@@ -116,9 +116,12 @@ export function createUpdateSettings({ host, call }: Options) {
       await call(`install_${selected.target}_update`, { confirmed: true, version: selected.version });
       pending = undefined; snapshots.delete(selected.target);
       if (!disposed) result.textContent = t('업데이트 처리 결과와 버전을 확인하세요.', 'Check the update operation result and version.');
-    } catch {
+    } catch (failure) {
       pending = undefined; snapshots.delete(selected.target);
-      if (!disposed) result.textContent = t('업데이트를 완료하지 못했습니다. 현재 앱과 버전을 확인한 후 다시 시도하세요.', 'The update did not complete. Check the application and version before retrying.');
+      if (!disposed) {
+        const explanation = typeof failure === 'string' && failure.length <= 1000 ? failure : '';
+        result.textContent = `${t('업데이트를 완료하지 못했습니다. 현재 앱과 버전을 확인한 후 다시 시도하세요.', 'The update did not complete. Check the application and version before retrying.')}${explanation ? ` ${explanation}` : ''}`;
+      }
     } finally { installing = false; if (!disposed) render(); }
   };
   toggle.onchange = async () => {

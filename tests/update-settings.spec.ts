@@ -22,7 +22,7 @@ async function setup(page: Page, enabled = false) {
         if (state.delayCheck) return new Promise(resolve => { state.resolveCheck = resolve; });
         return state.snapshots[command.includes('desktop') ? 'desktop' : 'codex'];
       }
-      if (command.startsWith('install_')) { if (state.installFailure) throw new Error('fixture'); return null; }
+      if (command.startsWith('install_')) { if (state.installFailure) throw typeof state.installFailure === 'string' ? state.installFailure : new Error('fixture'); return null; }
       throw new Error('Unexpected fixture command');
     }};
     state.mountUpdates = async () => { state.updates?.dispose(); state.updates = createUpdateSettings(options); await state.updates.start(); };
@@ -109,10 +109,11 @@ test('US08 simultaneous product offers are queued without installing either prod
 
 test('US09 a failed install cannot retry without a fresh explicit check', async ({ page }) => {
   await setup(page);
-  await page.evaluate(() => { (window as any).installFailure = true; });
+  await page.evaluate(() => { (window as any).installFailure = '진행 중인 세션이 있어 업데이트를 보류했습니다.'; });
   await page.locator('[data-target=desktop] button').click();
   await page.getByRole('button', { name: '예', exact: true }).click();
   await expect(page.locator('.update-install-result')).toContainText('완료하지 못했습니다');
+  await expect(page.locator('.update-install-result')).toContainText('진행 중인 세션이 있어 업데이트를 보류했습니다.');
   await expect(page.getByRole('button', { name: '예', exact: true })).toBeDisabled();
   expect(await page.evaluate(() => (window as any).updateCalls.filter((c: any) => c.command.startsWith('install_')).length)).toBe(1);
   await page.getByRole('button', { name: '아니오', exact: true }).click();

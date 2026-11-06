@@ -26,3 +26,7 @@
 실행: 2026-11-06 `npx playwright test tests/session-tools-layout.spec.ts tests/update-settings.spec.ts --reporter=line`, 종료 코드 0, 전체 14 PASS 중 업데이트 7 PASS. 첫 실행의 저장 실패 복구 시험은 Playwright uncheck가 최종 unchecked를 요구해 정상 복구와 충돌한 오라클 오류였고 click 후 저장 실패/원래 checked를 직접 확인하도록 수정했다. 최초 FAIL 자료는 `test-results/followup-first`에 보존했다. 두 제품 안내 큐와 설치 실패 후 명시 재확인 사례는 실행 전에 추가했다.
 
 `npm run build` 및 `cargo metadata --locked --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml` 종료 코드 0. metadata는 Rust 컴파일/링크/시험을 하지 않는다. 실제 Desktop 서명 공개키·버전 서명 자산이 미구성이고 Codex 지정 버전 설치 계약이 미지원이라 실제 설치는 NOT_RUN이다. 이를 숨기거나 설치 완료로 처리하지 않는다.
+
+US09 오류 안내 보완(실행 전): native installer가 진행 중 세션 등의 고정된 설명 문자열을 반환하면 팝업에 그 이유를 함께 표시한다. 오류 객체/형식 미확인은 일반 실패 안내로 남긴다. 오류 안내는 textContent로만 표시하고 설치 실패 후 새 명시 조회가 없으면 재시도하지 않는다.
+
+US09 보완 실제 실행: `npx playwright test tests/update-settings.spec.ts -g US09 --reporter=line`, 종료 코드 0, 1 PASS. native의 보류 이유 문자열 표시·실패 후 예 비활성·재확인 전 중복 설치 없음·명시 재확인 후 재시도를 확인했다. `test-results/desktop160-install-failure-ui` 보존. 실제 installer 실행은 하지 않았다.

@@ -5,7 +5,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{io::Read, sync::{Mutex, RwLock}, time::{Duration, Instant}};
-use tauri::{Manager, State};
+use tauri::State;
 use tauri_plugin_updater::UpdaterExt;
 
 const DESKTOP_REPO: &str = "jaeseongs95/opendiy-desktop";
@@ -221,18 +221,18 @@ fn validate_manifest(bytes: &[u8], tag: &str, version: &Version) -> Result<Value
     Ok(raw)
 }
 
+// UpdaterExt injects cleanup_before_exit by default. Replace that callback:
+// Windows invokes it BEFORE ShellExecuteW, which can still fail or be refused.
+// Keep the UI intact on Err; after successful launch the plugin exits directly.
+fn preserve_app_before_installer_launch() {}
+
 fn restore(app: &tauri::AppHandle, raw: Value) -> Result<tauri_plugin_updater::Update, String> {
     let key = public_key().ok_or("업데이트 설치 미구성: 신뢰 공개 키가 지정되지 않았습니다.")?;
-    let handle = app.clone();
     app.updater_builder().pubkey(key).timeout(REQUEST_LIMIT)
         .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/latest.json").parse().map_err(|_| "업데이트 주소 구성 오류")?])
         .map_err(|_| "업데이트 설치 주소를 구성할 수 없습니다.")?
-        .on_before_exit(move || {
-            // Windows updater exits directly, bypassing RunEvent::ExitRequested.
-            // Engine's update gate is still held and no owned PTY/management worker exists.
-            handle.state::<crate::ExitState>().0.store(true, std::sync::atomic::Ordering::Release);
-            handle.cleanup_before_exit();
-        }).build().map_err(|_| "업데이트 설치 환경을 구성할 수 없습니다.")?
+        .on_before_exit(preserve_app_before_installer_launch)
+        .build().map_err(|_| "업데이트 설치 환경을 구성할 수 없습니다.")?
         .restore_update(raw).map_err(|_| "서명 업데이트 대상이나 설치 환경을 확인할 수 없습니다.")?
         .ok_or_else(|| "설치할 새 Desktop 버전이 없습니다.".into())
 }
@@ -295,9 +295,7 @@ pub async fn install_desktop_update(app: tauri::AppHandle, engine: State<'_, Eng
         // race Windows' direct exit; an active/unknown session is never stopped.
         engine.with_desktop_update_gate(|| {
             let bytes = get_bytes(&client, update.download_url.as_str(), INSTALLER_LIMIT, deadline)?;
-            let result = update.install(bytes).map_err(|_| "업데이트 서명 검증 또는 설치 시작에 실패했습니다. 설치 완료로 처리하지 않았습니다.".to_owned());
-            if result.is_err() { app.state::<crate::ExitState>().0.store(false, std::sync::atomic::Ordering::Release); }
-            result
+            update.install(bytes).map_err(|_| "업데이트 서명 검증 또는 설치 시작에 실패했습니다. 설치 완료로 처리하지 않았습니다.".to_owned())
         })
         })
     }).await.map_err(|_| "Desktop 업데이트 설치 작업자가 종료되었습니다. 결과를 확인하세요.")?
@@ -427,6 +425,13 @@ mod tests {
             assert!(with_install_operation::<()>(|| panic!("second installer must not start")).is_err());
             Ok(())
         }).unwrap();
+        // Inject the installer's Err at the real native admission boundary.
+        // This proves permit release, not real ShellExecute/UAC or UI survival.
+        let launch_failure = with_install_operation::<()>(|| {
+            assert!(with_native_operation::<()>(|| panic!("installer still owns admission")).is_err());
+            Err("fixture: installer launch was refused".into())
+        });
+        assert_eq!(launch_failure.unwrap_err(), "fixture: installer launch was refused");
         with_native_operation(|| Ok(())).unwrap();
     }
     #[test]
