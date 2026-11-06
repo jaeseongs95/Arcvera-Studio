@@ -2,6 +2,7 @@ import { bindAttribute, onLanguageChange, t } from './i18n';
 import './context-controls.css';
 
 interface ContextStatus {
+  threadId?: string;
   connected: boolean;
   guiConnected: boolean;
   tokenUsage?: { last?: { totalTokens?: number }; modelContextWindow?: number | null };
@@ -25,6 +26,7 @@ interface Options {
   compact(): Promise<{ status?: string }>;
   notify(ko: string, error: boolean, en: string): void;
   capabilitiesChanged?(supported: { passiveSubscription: boolean; subagents: boolean; cron: boolean }): void;
+  connectionChanged?(connected: boolean, threadId?: string): void;
 }
 interface SessionContextSettings {
   supported: boolean;
@@ -61,6 +63,7 @@ export function createContextControls(options: Options) {
   const canAttempt = () => snapshot?.compactSupported === true && snapshot.canCompact === true;
   function publishCapabilities() {
     options.capabilitiesChanged?.({ passiveSubscription: snapshot?.passiveSubscriptionSupported === true, subagents: snapshot?.subagentsSupported === true, cron: snapshot?.cronSupported === true });
+    options.connectionChanged?.(visible && snapshot?.connected === true, typeof snapshot?.threadId === 'string' ? snapshot.threadId : undefined);
   }
   function invalidateCapabilities() {
     supportEpoch++;

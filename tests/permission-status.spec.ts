@@ -79,8 +79,9 @@ test('PERM08 이전 세대의 늦은 응답이 새 세션을 덮지 않는다', 
   await fixture(page);
   await page.evaluate(() => { const s = window as any; s.permissionFixture.hold = true; void s.openPermission('session-A', 7, '이전 세션'); });
   await expect(page.getByRole('dialog')).toContainText('확인하고 있습니다.');
-  await page.evaluate(() => { const s = window as any; s.permissionFixture.response.permissions.activePermissionProfile.id = 'new-profile'; return s.openPermission('session-B', 8, '새 세션'); });
-  await expect(page.getByRole('dialog')).toContainText('new-profile');
+  await page.evaluate(() => { const s = window as any; s.permissionFixture.response.permissions.activePermissionProfile.id = 'new-profile'; void s.openPermission('session-B', 8, '새 세션'); });
+  await expect(page.getByRole('dialog')).toContainText('새 세션');
+  await expect(page.getByRole('dialog')).toContainText('확인하고 있습니다.');
   await page.evaluate(() => (window as any).permissionFixture.release());
   await expect(page.getByRole('dialog')).toContainText('새 세션');
   await expect(page.getByRole('dialog')).toContainText('new-profile');

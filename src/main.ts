@@ -39,6 +39,7 @@ const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: S
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
+const permissionConnections = new Map<string, { generation: number; threadId?: string; connected: boolean }>();
 const pending = new Map<string, Output[]>();
 const resolving = new Set<string>();
 const unlisteners: UnlistenFn[] = [];
@@ -579,6 +580,12 @@ function mountConversation(session: Session) {
   contextControls.set(session.id, createContextControls({
     host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, call, notify,
     capabilitiesChanged(supported) { toggle.hidden = !supported.passiveSubscription; subagentsButton.hidden = !supported.subagents; },
+    connectionChanged(connected, threadId) {
+      const current = sessions.get(session.id);
+      if (current?.generation !== session.generation) return;
+      permissionConnections.set(session.id, { generation: session.generation, threadId, connected });
+      updatePermissionButton(current);
+    },
     compact: () => conversation && !conversationHost.hidden ? conversation.compact() : call('conversation_request', { id: session.id, generation: session.generation, request: { type: 'compact' } }),
   }));
 }
@@ -660,9 +667,9 @@ function createTerminal(session: Session) {
   bindAttribute(cronButton, 'aria-label', '예약 작업', 'Scheduled jobs'); bindAttribute(cronButton, 'title', '예약 작업', 'Scheduled jobs');
   cronButton.onclick = () => { const current = sessions.get(session.id); if (!cronButton.hidden && current && !exitInProgress) void cronManager.open(current); };
   const projectMove = document.createElement('button'); projectMove.className = 'project-move icon-button'; projectMove.textContent = '▱'; bindAttribute(projectMove, 'aria-label', '프로젝트로 이동', 'Move to project'); bindAttribute(projectMove, 'title', '프로젝트로 이동', 'Move to project'); projectMove.onclick = () => projectManager.move(sessions.get(session.id)!); card.querySelector('.card-actions')!.prepend(projectMove);
-  const permissions = document.createElement('button'); permissions.className = 'permission-status-open icon-button'; permissions.type = 'button'; permissions.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V6z"/><path d="M8 12l3 3 5-6"/></svg>'; permissions.setAttribute('aria-haspopup', 'dialog');
+  const permissions = document.createElement('button'); permissions.className = 'permission-status-open icon-button'; permissions.type = 'button'; permissions.hidden = true; permissions.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V6z"/><path d="M8 12l3 3 5-6"/></svg>'; permissions.setAttribute('aria-haspopup', 'dialog');
   bindAttribute(permissions, 'title', '권한 확인', 'View permissions'); bindAttribute(permissions, 'aria-label', '권한 확인', 'View permissions');
-  permissions.onclick = () => { const current = sessions.get(session.id); if (current) void permissionStatus.open({ id: current.id, generation: current.generation, title: current.title }); };
+  permissions.onclick = () => { const current = sessions.get(session.id); if (!permissions.hidden && !permissions.disabled && current) void permissionStatus.open({ id: current.id, generation: current.generation, title: current.title }); };
   card.querySelector('.card-actions')!.append(permissions);
   card.querySelector('.drag-handle')!.addEventListener('dragstart', event => { dragging = session.id; (event as DragEvent).dataTransfer!.effectAllowed = 'move'; (event as DragEvent).dataTransfer!.setData('text/plain', session.id); card.classList.add('dragging'); });
   card.addEventListener('dragend', () => { dragging = ''; card.classList.remove('dragging'); });
@@ -680,6 +687,7 @@ function recordExplicitStop(session: SessionInfo) {
   }
 }
 function removeSession(id: string, preserveRestore = false) {
+  permissionConnections.delete(id); permissionStatus.forget(id);
   const session = sessions.get(id);
   if (!preserveRestore && session) recordExplicitStop(session);
   if (!preserveRestore && session?.threadId) {
@@ -695,6 +703,7 @@ function receiveSession(info: SessionInfo, persist = true) {
   const previous = sessions.get(info.id); const session = updateSession(previous, info);
   if (session === previous) return;
   sessions.set(session.id, session);
+  if (previous && (previous.generation !== session.generation || previous.threadId !== session.threadId)) { permissionConnections.delete(session.id); permissionStatus.forget(session.id); }
   // Pending restores retain object identity while current membership advances.
   for (const request of saved) if (request.threadId && request.threadId === session.threadId && request.sessionId === session.id && typeof session.projectRevision === 'number' && session.projectRevision >= (request.projectRevision ?? 0)) {
     Object.assign(request, { projectId: session.projectId ?? null, projectAssigned: session.projectAssigned ?? false, projectRevision: session.projectRevision });
@@ -832,11 +841,23 @@ function updateConversationVisibility() {
   for (const [id, controller] of contextControls) {
     const view = terminals.get(id); const session = sessions.get(id);
     controller.setVisible(native && !!session?.active && !!view && !view.card.hidden && !document.hidden && nativeWindowVisible);
+    if (session) updatePermissionButton(session);
   }
   for (const [id, controller] of conversations) {
     const view = terminals.get(id);
     void controller.setForeground(!!view && !view.card.hidden && !document.hidden && nativeWindowVisible).catch(error => notify('대화 화면을 갱신하지 못했습니다. 해당 세션을 다시 선택하세요.', true, 'Could not refresh the conversation view. Select the session again.'));
   }
+}
+
+function updatePermissionButton(session: Session) {
+  const view = terminals.get(session.id);
+  const button = view?.card.querySelector<HTMLButtonElement>('.permission-status-open');
+  if (!view || !button) return;
+  const connection = permissionConnections.get(session.id);
+  const eligible = native && !exitInProgress && session.active && !!session.threadId && !['starting', 'stopping'].includes(session.state)
+    && !view.card.hidden && !document.hidden && nativeWindowVisible && connection?.generation === session.generation && connection.threadId === session.threadId && connection.connected;
+  button.hidden = !permissionStatus.updateAvailability(session, eligible);
+  button.disabled = !eligible;
 }
 document.addEventListener('visibilitychange', updateConversationVisibility);
 
@@ -872,7 +893,7 @@ function renderAll() {
     card.querySelector<HTMLButtonElement>('.session-restart')!.disabled = !native || !workspaceReady || restoringWorkspace || exitInProgress || restartingSessions.has(id) || !session.threadId || ['starting', 'stopping'].includes(session.state);
     card.querySelector<HTMLButtonElement>('.stop')!.disabled = restartingSessions.has(id) || exitInProgress;
     card.querySelector<HTMLButtonElement>('.cron-open')!.disabled = !native || exitInProgress;
-    card.querySelector<HTMLButtonElement>('.permission-status-open')!.disabled = !native || exitInProgress || !session.active;
+    updatePermissionButton(session);
     card.querySelector<HTMLButtonElement>('.subagents-open')!.disabled = !native || !session.active || !session.threadId || exitInProgress;
     card.querySelector('.terminal-title')!.textContent = session.title;
     card.querySelector('.terminal-path')!.textContent = `▱  ${session.cwd}`;
@@ -935,7 +956,10 @@ $('#project-tabs').addEventListener('keydown', event => {
   selectProject(tabs[next].dataset.projectKey ?? ''); $('#project-tabs [aria-selected="true"]').focus();
 });
 const extensionsManager = createExtensionsManager({ call, notify });
-const permissionStatus = createPermissionStatus({ call });
+const permissionStatus = createPermissionStatus({ call, availabilityChanged(id, generation) {
+  const current = sessions.get(id);
+  if (current?.generation === generation) updatePermissionButton(current);
+} });
 const settingsDialog = $<HTMLDialogElement>('#settings-dialog');
 const updatesHost = document.createElement('section'); settingsDialog.append(updatesHost);
 const updateSettings = createUpdateSettings({ host: updatesHost, call });
