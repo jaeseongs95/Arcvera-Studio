@@ -213,8 +213,8 @@ mod first_resolution_tests {
         let engine = engine();
         let pair = pair();
         let first = PendingResolution::new(&engine, pair.clone());
-        let second = PendingResolution::new(&engine, pair.clone());
         first.entered();
+        let second = PendingResolution::new(&engine, pair.clone());
         second.entered();
         let selected = first.finish().unwrap();
         assert_eq!(selected.generation, 1);
@@ -323,8 +323,8 @@ mod first_resolution_tests {
         let engine = engine();
         let pair = pair();
         let first = PendingResolution::new(&engine, pair.clone());
-        let second = PendingResolution::new(&engine, pair);
         first.entered();
+        let second = PendingResolution::new(&engine, pair);
         second.entered();
         let selected = first.finish().unwrap();
         let (entered_tx, entered_rx) = mpsc::channel();

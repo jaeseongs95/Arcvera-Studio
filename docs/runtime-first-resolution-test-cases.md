@@ -23,7 +23,7 @@
 
 Windows 기존 native Rust runner의 `session::runtime_source_tests::first_resolution_tests`에서 실행한다. 기존 child test module을 재사용하고 새 module 선언을 만들지 않는다. `Engine::new(:memory:)`, 합성 CLI/server 경로와 source manifest만 사용하며, 실제 CLI·파일 선택·네트워크·모델을 호출하지 않는다. `runtime_pair_snapshot_with`가 문제가 있는 실제 `Engine.start`의 resolution 경계이므로 이 컴포넌트 경계에서 시험한다. 전체 Engine.start/PTy/공식 CLI 정상 사용을 이 결과로 주장하지 않는다.
 
-각 worker는 별도 OS thread에서 실제 resolver에 진입한 뒤 arrival을 전송하고 release 채널을 기다린다. main은 필요한 두 arrival을 모두 받은 뒤 한 worker만 먼저 확정시키고 다른 worker를 해제한다. 채널 deadline은 5초이며, 실행기 실패/timeout은 assertion RED와 구분한다. 같은 테스트 바이트와 명령을 RED/GREEN에서 유지한다.
+각 worker는 별도 OS thread에서 실제 resolver에 진입한 뒤 arrival을 전송하고 release 채널을 기다린다. 첫 worker의 arrival을 받은 뒤 둘째를 생성하여, 외부 callback의 try_lock 검사가 다른 worker의 정상 최초 잠금과 경합하지 않게 한다. 두 resolver가 함께 대기하는 조건은 유지한다. main은 두 arrival을 모두 받은 뒤 한 worker만 먼저 확정시키고 다른 worker를 해제한다. 채널 deadline은 5초이며, 실행기 실패/timeout은 assertion RED와 구분한다. 같은 테스트 바이트와 명령을 RED/GREEN에서 유지한다.
 
 | ID / 요구 | 입력·사전조건 | 절차 | 기대 결과 및 pass/fail 기준 | 작성 시 실제 |
 |---|---|---|---|---|
@@ -54,3 +54,5 @@ RED: base의 원 함수 + 새 테스트 파일 그대로를 격리 CI 후보에 
 - `git diff --check` 실제 exit 0. 수정 함수 diff, 신규 시험의 lock 해제 순서, 세 파일의 UTF-8 no BOM/LF 보존을 직접 확인했다. 컴파일·Rust 시험·실제 동시성 RED/GREEN·공식 CLI 재실행·GUI는 전부 **NOT_RUN**이다. rustfmt나 신규 build도 실행하지 않았다.
 - CS 검토: `RFR-FENCE`, `RFR-LOCK`, `RFR-CANCEL`, `RFR-READY`의 구현 조건은 정적으로 반영했지만 동적 의무는 아직 UNVERIFIED. 기존 준비 중 거절 정책은 보존하므로 모든 동시 `Engine.start` 성공을 보장하는 변경이 아니다.
 - root가 동일 시험 바이트로 원 함수 RED와 수정 함수 GREEN 및 기존 `runtime_preparation_tests`/전체 native 회귀를 실행한다. 원 공식 smoke01 FAIL과 새 결과를 혼합하지 않는다. 이 인계는 제품 완료·설치·배포 승인이나 독립 감사 PASS를 뜻하지 않는다.
+
+독립 코드 검토 후 두-worker 생성 순서를 위처럼 고쳤다. 기존 f7f6321 CI의 native success는 원 시험 바이트의 결과이며, 이전 시험 SHA는 이 변경 뒤의 시험 바이트와 다르다. 최초 RED 18ce65b도 이전 시험 바이트로 실행 중인 별도 근거다. 후속 CI는 새 바이트와 대상 commit으로 구분한다. 제품 함수는 이 시험 수정에서 바뀌지 않았다.
