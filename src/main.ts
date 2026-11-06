@@ -19,6 +19,7 @@ import './weekly-usage.css';
 import { createConversation } from './conversation';
 import { installTerminalExternalLinks, openExternalUrl } from './external-links';
 import { createPermissionStatus } from './permission-status';
+import { createUpdateSettings } from './update-settings';
 import { createContextControls } from './context-controls';
 import { createCronManager } from './cron-manager';
 import { createSubagentManager } from './subagent-manager';
@@ -936,6 +937,8 @@ $('#project-tabs').addEventListener('keydown', event => {
 const extensionsManager = createExtensionsManager({ call, notify });
 const permissionStatus = createPermissionStatus({ call });
 const settingsDialog = $<HTMLDialogElement>('#settings-dialog');
+const updatesHost = document.createElement('section'); settingsDialog.append(updatesHost);
+const updateSettings = createUpdateSettings({ host: updatesHost, call });
 const github = document.createElement('button'); github.id = 'github-open'; github.type = 'button'; github.className = 'side-link';
 bindText(github, 'GitHub · jaeseongs95', 'GitHub · jaeseongs95');
 github.onclick = () => void openExternalUrl('https://github.com/jaeseongs95').catch(error => notifyError('GitHub 열기 실패', 'Could not open GitHub', error));
@@ -1227,7 +1230,7 @@ async function initialize() {
     void sessionBrowser.refreshProjects().catch(error => notifyError('프로젝트 목록 조회 실패', 'Could not load projects', error));
     await resumeWorkspace();
   } catch (error) { notifyError('초기화 실패', 'Could not initialize', error); }
-  finally { $('#app').setAttribute('aria-busy', 'false'); }
+  finally { $('#app').setAttribute('aria-busy', 'false'); void updateSettings.start(); }
 }
 
 function seedDemo() {
@@ -1245,4 +1248,4 @@ window.addEventListener('beforeunload', () => { exitInProgress = true; for (cons
 initialization = initialize();
 
 window.addEventListener('beforeunload', () => questionCenter.dispose());
-window.addEventListener('beforeunload', () => permissionStatus.dispose());
+window.addEventListener('beforeunload', () => { permissionStatus.dispose(); updateSettings.dispose(); });

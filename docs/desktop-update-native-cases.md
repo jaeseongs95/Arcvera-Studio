@@ -1,0 +1,46 @@
+# Desktop 네이티브 업데이트 사례
+
+대상: `desktop_updates.rs`, `session_exit.rs`, 앱 설정 저장. 운영 앱·공유 daemon·실제 인증/설정·다른 세션 로그는 시험 대상에서 제외한다. 구현 전 사례를 고정하며 실제 실행 결과는 별도로 갱신한다.
+
+## 불변조건과 설계 경계
+
+- U1: 백그라운드 ON/OFF는 앱 메타데이터에 저장한다. 수동 조회는 설정과 무관하다.
+- U2: 조회는 고정 GitHub stable release metadata만 읽는다. 사용자 확인 전 설치 파일 다운로드·설치는 0회다. renderer에는 상태·검증한 버전·고정 저장소 release URL·지원 여부·일반 오류만 전달한다.
+- U3: Desktop 설치는 빌드에 명시한 신뢰 공개 키, 동일 릴리스의 서명 정보 manifest, 서명 및 버전 결속 검증이 모두 필요하다. 키를 만들거나 서명 생략으로 우회하지 않는다.
+- U4 (`CONC-CLAIM-001`, `CONC-CANCEL-004`): 업데이트 설치 gate가 이긴 이후 새 세션 생성은 실패한다. 세션 생성이 먼저 이기면 업데이트가 실패하고 세션은 중단되지 않는다. 완료 phase·프로세스 없음·reaper 완료·정리 실패 없음이 모두 필요하다.
+- U5 (`CONC-LOCK-003`): updater 직렬 요청 → native exclusive admission → extension admission → runtime 확인(해제) → registry → process/done 순서만 사용한다. 일반 native worker는 native read admission을 작업·정리 전체에 보유한다. 네트워크 중 registry/process/done lock을 잡지 않는다. 실패 시 gate가 소유한 exiting 상태만 복원한다.
+- U6: Codex는 선택한 실행 파일의 제한된 `--version`만 조회하며 daemon 시작/전환/설치 명령을 만들지 않는다. release identity 또는 설치 계약 미확인 상태는 unknown/미구성으로 구별한다.
+
+조회·서명/호스트 adapter는 신규 모듈에, 기존 세션 admission과 설정 접근은 Engine의 작은 메서드에 둔다. renderer는 파일·명령·엔드포인트를 지정하지 않는다. 별도 범용 provider 프레임워크는 만들지 않는다.
+
+## 실행 전 사례
+
+| ID | 요구 | 입력·사전조건 | 절차 | 기대 결과·합격 기준 | 실제 결과 |
+| --- | --- | --- | --- | --- | --- |
+| NU01 | U1 | 격리 임시 SQLite, 설정 없음 | 조회 → false 저장 → 닫기/재열기 → true 저장 | 기본 true, false/true 정확 지속 저장, 무효 저장값 오류 | NOT_RUN |
+| NU02 | U2 | 메타데이터 fixture: stable 1.7.0, 설치 키 없음 | 현재 1.6.0 및 1.7.0과 각각 비교 | available/current 구별, 설치 미구성, 조회에서 artifact download 0 | NOT_RUN |
+| NU03 | U2 | prerelease/draft/잘못된 tag/과대 또는 잘못된 JSON | 공개 parser 경계 호출 | 최신으로 오인하지 않고 오류, 외부 본문·URL 반사 없음 | NOT_RUN |
+| NU04 | U3 | 확인 false, stale version, 신뢰키 없음 | 설치 준비 경계 호출 | 설치·artifact 다운로드 전에 오류 | NOT_RUN |
+| NU05 | U3 | 고정 repo 외 URL, 서명 없음, version 불일치 manifest | manifest 검증 | 모두 거부, renderer가 URL/키를 지정할 수 없음 | NOT_RUN |
+| NU06 | U4 | 완료된 격리 Engine | update gate 획득 → 세션 allocate → gate drop → allocate | lease 동안 allocate 실패, drop 후 성공 | NOT_RUN |
+| NU07 | U4 | 격리 Engine의 신규 또는 cleanup_failed 또는 reaper 미완료 세션 | gate 획득 시도 | 실패, stop_requested false 보존, exiting 복원 | NOT_RUN |
+| NU08 | U4/U5 | extension permit 또는 이미 exiting Engine | gate 획득 시도 | 작업/종료를 침범하지 않고 실패, 기존 exiting true 보존 | NOT_RUN |
+| NU09 | U4 | 빈 격리 Engine, barrier 동시 allocate/gate 시도 | 결정적 상호 경쟁 | gate 승리 시 allocate 실패, allocate 승리 시 gate 실패, 세션 중단 0 | NOT_RUN |
+| NU10 | U6 | official CLI/plain SemVer 및 R37/R38 문자열 | Codex 버전 비교 | OpenDIY identity 없는 CLI unknown, build metadata 차이 무시 금지, 설치 미지원 | NOT_RUN |
+| NU11 | U2/U5 | 동시 조회/설치, 느린/과대 HTTP | 직렬 요청 및 제한 reader 경계 | 중복 요청 거부, 20초 deadline·메타데이터 256KiB 상한 | NOT_RUN |
+| NU12 | U3/U4 | 서명된 fixture installer·명시 키·Windows 격리 GUI | 사용자 예 → 다운로드 → gate → plugin install | 실제 서명 실패 거부 및 성공 installer 실행/재시작 확인; 운영 설치 제외 | NOT_RUN (root 직렬 시험 필요) |
+| NU13 | U4/U5 | 공통 native operation read permit 보유 | update exclusive permit 획득 시도 | 설치 gate 진입 전 실패, 기존 조회·설정·선택창 작업 중단 0 | NOT_RUN |
+| NU14 | U4/U5 | update exclusive permit 보유 | 다른 thread의 native operation 시작 시도 | callback 실행 0, 명확 busy; exclusive drop 후 정상 진입 | NOT_RUN |
+| NU15 | U4/U5 | runtime.preparing 또는 runtime.changing | Engine update gate 호출 | 설치 callback 실행 0, 기존 runtime 상태 보존, exiting false 복원 | NOT_RUN |
+
+기본 runner: `cargo test --manifest-path src-tauri/Cargo.toml desktop_updates -- --test-threads=1` 및 `cargo test --manifest-path src-tauri/Cargo.toml update_gate -- --test-threads=1`. 로컬 Cargo/GUI는 root가 직렬 실행한다. 테스트 코드 작성과 실호스트 서명 installer 검증을 구분한다. 원본 없는 신규 기능이므로 무의미한 red/green은 만들지 않으며 회귀 민감도는 반례 fixture와 경쟁 사례로 확인한다.
+
+공식 근거: [Tauri updater](https://v2.tauri.app/plugin/updater/), [updater 2.14.1 API](https://docs.rs/tauri-plugin-updater/2.14.1/tauri_plugin_updater/struct.Updater.html). `restore_update`는 원시 manifest를 다시 네트워크 조회하지 않고 adapter에서 제한 검증한 값으로 Update를 구성하며, 서명이 버전에 결속돼 있어야 한다.
+
+## 구현 중 확인한 경계
+
+- 공개 GitHub 최신 메타데이터(2026-11-06 조회): Desktop `v1.3.2`, Codex `v0.166.0-r37.20261104`, 둘 다 draft/prerelease=false. Codex의 정식 릴리스는 SemVer prerelease 필드에 패치 식별자를 넣으므로 GitHub stable 플래그와 전체 버전을 함께 보존한다.
+- `updater 2.14.1`의 Windows `install()`은 `on_before_exit` 후 `ShellExecuteW`가 성공하면 직접 `std::process::exit(0)`한다. 정상 IPC 반환을 설치 완료 증거로 사용하지 않는다.
+- session gate는 PTY 생성과 extension/weekly 작업의 admission을 막는다. lib.rs의 공통 native worker는 read permit, installer는 exclusive permit을 작업 전체에 보유해 catalog/external/runtime 진단·준비·설정·선택창의 늦은 진입을 막는다. Engine은 runtime.preparing/changing도 확인한다. 단일 프로세스 개수 snapshot으로 경쟁을 해결했다고 주장하지 않는다.
+- CLI 담당이 확인하고 root가 대조한 계약에 따르면 `codex update --check`는 ZIP 다운로드·추출을 하며, `update`는 feed를 다시 조회하고 expectedTag/archiveSHA pin API가 없다. native는 이 두 명령을 호출하지 않는다. 계약 공백이 해소되기 전 Codex 앱 내 설치는 미구성이다.
+- `git diff --check`는 종료 0이다. Cargo/서명 installer/GUI 실행은 root 직렬 실행 전까지 NOT_RUN이다.

@@ -134,6 +134,20 @@ impl Store {
             .map(|_| ()).map_err(|e| format!("Save app language setting: {e}"))
     }
 
+    pub fn background_update_checks(&self) -> Result<bool, String> {
+        let saved: Option<String> = self.connection.query_row("SELECT value FROM app_settings WHERE key='background_update_checks'", [], |row| row.get(0))
+            .optional().map_err(|_| "업데이트 확인 설정을 읽을 수 없습니다.")?;
+        match saved.as_deref() {
+            None | Some("true") => Ok(true), Some("false") => Ok(false),
+            Some(_) => Err("저장된 업데이트 확인 설정이 올바르지 않습니다. 설정을 다시 선택하세요.".into()),
+        }
+    }
+
+    pub fn set_background_update_checks(&self, enabled: bool) -> Result<(), String> {
+        self.connection.execute("INSERT INTO app_settings(key,value) VALUES('background_update_checks',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [if enabled { "true" } else { "false" }])
+            .map(|_| ()).map_err(|_| "업데이트 확인 설정을 저장할 수 없습니다.".into())
+    }
+
     pub fn codex_executable(&self) -> Result<Option<String>, String> {
         self.connection.query_row("SELECT value FROM app_settings WHERE key='codex_executable'", [], |row| row.get(0))
             .optional().map_err(|e| format!("Read app executable setting: {e}"))

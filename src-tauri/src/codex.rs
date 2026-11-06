@@ -18,6 +18,19 @@ use uuid::Uuid;
 use crate::process_job::ProcessJob;
 use crate::owned_process::{self, Child, ChildStdin, Command as OwnedCommand, Stdio as OwnedStdio};
 
+/// Read-only, fixed command for the Desktop update adapter. No server startup.
+pub(crate) fn update_version_with_executable(exe: &OsString, cancelled: &Arc<AtomicBool>, deadline: Instant) -> Result<String, String> {
+    let cwd = env::current_dir().map_err(|_| "CLI 버전 조회 폴더를 확인할 수 없습니다.")?;
+    if Instant::now() >= deadline { return Err("CLI 버전 조회 시간이 초과되었습니다.".into()); }
+    let bytes = extensions::command_stdout_until(exe, &cwd, &["--version".into()], deadline, Some(cancelled))
+        .map_err(|_| "선택한 CLI 버전을 조회하지 못했습니다.")?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "선택한 CLI 버전 응답이 올바른 UTF-8이 아닙니다.")?.trim();
+    if text.is_empty() || text.len() > 256 || text.chars().any(char::is_control) {
+        return Err("선택한 CLI 버전 응답 형식을 확인할 수 없습니다.".into());
+    }
+    Ok(text.into())
+}
+
 const TOKEN_ENV: &str = "AGENT_GRID_REMOTE_TOKEN";
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const HELP_TIMEOUT: Duration = Duration::from_secs(10);

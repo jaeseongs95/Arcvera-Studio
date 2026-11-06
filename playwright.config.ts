@@ -11,7 +11,7 @@ const sourceFixtures = [
   'conversation', 'cron-manager', 'external-links', 'link-drag',
   'project-management', 'project-switch-scroll', 'project-tabs',
   'question-center-limits', 'question-center', 'saved-cron', 'startup-runtime',
-  'subagent-manager', 'terminal-flow', 'weekly-usage', 'permission-status', 'mcp-manager',
+  'subagent-manager', 'terminal-flow', 'weekly-usage', 'permission-status', 'mcp-manager', 'update-settings',
 ].map(name => `**/${name}.spec.ts`);
 
 export default defineConfig({
