@@ -157,11 +157,6 @@ fn codex_status(current: String, tag: String) -> UpdateStatus {
 }
 
 fn request_client() -> Result<Client, String> {
-    // The updater registers ring only in its own check path; our reads run first.
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        // Another caller may win registration. Keep that process-wide provider.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
     Client::builder().user_agent(concat!("OpenDIY-Desktop/", env!("CARGO_PKG_VERSION")))
         .timeout(REQUEST_LIMIT).connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
