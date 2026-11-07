@@ -1109,3 +1109,136 @@ test('복사 실패를 알리고 숨김·뒤로 전환·폐기 후 검색과 늦
   await expect(view(page).locator('*')).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).clipboardWrites)).toBe(2);
 });
+
+// D0035: real controller/DOM boundary; original tests above remain byte-for-byte.
+async function d0035Poll(page: Page, turnId: string, events: { method: string; params: Record<string, unknown> }[]) {
+  const marker = await page.evaluate(({ turnId, events }) => {
+    const f = (window as any).conversationFixture;
+    for (const event of events) f.queue.push({ seq: f.nextSeq++, ...event });
+    const id = `d0035-marker-${f.nextSeq}`;
+    f.queue.push({ seq: f.nextSeq++, method: 'item/completed', params: { threadId: 'thread-a', turnId, item: { id, type: 'agentMessage', text: id } } });
+    return id;
+  }, { turnId, events });
+  await expect(view(page).locator(`[data-item-id="${marker}"]`)).toContainText(marker);
+}
+
+test('D0035 LN01 compact 실패의 현재 선택·option 상태·원문·공개 상태가 일치한다', async ({ page }) => {
+  await conversation(page); await view(page).locator('.conversation-input').fill('실패 뒤 보존할 초안');
+  await page.evaluate(async () => { await (window as any).conversation.compact(); });
+  const message = 'stream disconnected before completion: Compaction completed without an assistant summary';
+  await d0035Poll(page, 'compacted-turn', [
+    { method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: 'inProgress' } } },
+    { method: 'error', params: { threadId: 'thread-a', turnId: 'compacted-turn', willRetry: false, error: { message } } },
+    { method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: 'failed', error: { message } } } },
+  ]);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('compacted-turn');
+  await expect(view(page).locator('.conversation-turns option:checked')).toContainText('failed');
+  await expect(view(page).locator('.conversation-error')).toHaveCount(1);
+  await expect(view(page).locator('.conversation-error .conversation-content')).toHaveText(message);
+  await expect(view(page).locator('.conversation-status')).toContainText('작업이 실패했습니다');
+  await expect(view(page).locator('.conversation-status')).not.toContainText('완료 확인을 기다립니다');
+  await expect(view(page).locator('.conversation-input')).toHaveValue('실패 뒤 보존할 초안');
+});
+
+test('D0035 LN02 ACK는 기존 이력을 보존하고 실제 started에서 새 turn을 선택해 완료 상태를 맞춘다', async ({ page }) => {
+  await conversation(page); await view(page).locator('.conversation-input').fill('정상 완료 뒤 초안');
+  await page.evaluate(async () => { await (window as any).conversation.compact(); });
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('recent-turn');
+  await expect(view(page).locator('.conversation-turns option[value="compacted-turn"]')).toContainText('inProgress');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+  await expect(view(page).locator('.conversation-more')).toBeVisible();
+  await d0035Poll(page, 'compacted-turn', [{ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: 'inProgress' } } }]);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('compacted-turn');
+  await expect(view(page).locator('.conversation-turns option:checked')).toContainText('inProgress');
+  await expect(view(page).locator('.conversation-messages')).not.toContainText('const safe = true');
+  await d0035Poll(page, 'compacted-turn', [{ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: 'completed' } } }]);
+  await expect(view(page).locator('.conversation-turns option:checked')).toContainText('completed');
+  await expect(view(page).locator('.conversation-status')).toContainText('작업을 완료했습니다');
+  await expect(view(page).locator('.conversation-input')).toHaveValue('정상 완료 뒤 초안');
+});
+
+for (const state of ['completed', 'failed']) for (const newer of [false, true]) {
+  test(`D0035 LN03 완료보다 늦은 ACK는 선택·최종 상태·후속 실행을 되돌리지 않는다 ${state}/${newer}`, async ({ page }) => {
+    await conversation(page); await view(page).locator('.conversation-input').fill('늦은 ACK 뒤 초안');
+    await page.evaluate(() => { const s = window as any; s.conversationFixture.holdStart = true; s.d0035Compact = s.conversation.compact(); });
+    await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.some((c: any) => c.args?.request?.type === 'compact'))).toBe(true);
+    const events: { method: string; params: Record<string, unknown> }[] = [
+      { method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: 'inProgress' } } },
+      { method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'compacted-turn', status: state, ...(state === 'failed' ? { error: { message: '서버가 알린 압축 실패' } } : {}) } } },
+    ];
+    if (newer) events.push({ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'newer-live-turn', status: 'inProgress' } } });
+    await d0035Poll(page, newer ? 'newer-live-turn' : 'compacted-turn', events);
+    await page.evaluate(async () => { const s = window as any; s.conversationFixture.releaseStart(); await s.d0035Compact; });
+    await expect(view(page).locator('.conversation-turns')).toHaveValue(newer ? 'newer-live-turn' : 'compacted-turn');
+    await expect(view(page).locator('.conversation-turns option:checked')).toContainText(newer ? 'inProgress' : state);
+    await expect(view(page).locator('.conversation-status')).not.toContainText('완료 확인을 기다립니다');
+    await expect(view(page).locator('.conversation-input')).toHaveValue('늦은 ACK 뒤 초안');
+    if (newer) await expect(view(page).locator('.conversation-stop')).toBeEnabled();
+    else { await expect(view(page).locator('.conversation-stop')).toBeDisabled(); await expect(view(page).locator('.conversation-status')).toContainText(state === 'failed' ? '작업이 실패했습니다' : '작업을 완료했습니다'); }
+  });
+}
+
+test('D0035 LN04 이전 turn 완료와 다른 thread 시작은 현재 실행을 바꾸지 않는다', async ({ page }) => {
+  await conversation(page);
+  await d0035Poll(page, 'current-live', [{ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'current-live', status: 'inProgress' } } }]);
+  await d0035Poll(page, 'current-live', [
+    { method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'recent-turn', status: 'failed', error: { message: '이전 turn 오류' } } } },
+    { method: 'turn/started', params: { threadId: 'foreign-thread', turn: { id: 'foreign-turn', status: 'inProgress' } } },
+    { method: 'turn/completed', params: { threadId: 'foreign-thread', turn: { id: 'current-live', status: 'failed', error: { message: '다른 thread 오류' } } } },
+  ]);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('current-live');
+  await expect(view(page).locator('.conversation-turns option:checked')).toContainText('inProgress');
+  await expect(view(page).locator('.conversation-turns option[value="recent-turn"]')).toContainText('failed');
+  await expect(view(page).locator('.conversation-turns option[value="foreign-turn"]')).toHaveCount(0);
+  await expect(view(page).locator('.conversation-messages')).not.toContainText('이전 turn 오류');
+  await expect(view(page).locator('.conversation-messages')).not.toContainText('다른 thread 오류');
+  await expect(view(page).locator('.conversation-stop')).toBeEnabled();
+});
+
+test('D0035 LN05 현재 완료가 수동 과거 이력 선택과 초안을 가로채지 않는다', async ({ page }) => {
+  await conversation(page); await view(page).locator('.conversation-input').fill('과거 이력을 보며 쓰는 초안');
+  await d0035Poll(page, 'current-live', [{ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: 'current-live', status: 'inProgress' } } }]);
+  await view(page).locator('.conversation-turns').selectOption('recent-turn');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+  await d0035Poll(page, 'recent-turn', [{ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'current-live', status: 'failed', error: { message: '선택하지 않은 실행의 실패' } } } }]);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('recent-turn');
+  await expect(view(page).locator('.conversation-turns option[value="current-live"]')).toContainText('failed');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+  await expect(view(page).locator('.conversation-messages')).not.toContainText('선택하지 않은 실행의 실패');
+  await expect(view(page).locator('.conversation-input')).toHaveValue('과거 이력을 보며 쓰는 초안');
+});
+
+test('D0035 LN05 더 늦은 ACK는 요청 뒤 선택한 과거 페이지와 초안을 보존한다', async ({ page }) => {
+  await conversation(page); await view(page).locator('.conversation-input').fill('ACK 대기 중 이력 탐색 초안');
+  await page.evaluate(() => { const s = window as any; s.conversationFixture.holdStart = true; s.d0035Compact = s.conversation.compact(); });
+  await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.some((c: any) => c.args?.request?.type === 'compact'))).toBe(true);
+  await view(page).locator('.conversation-older').click();
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('older-turn');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+  await page.evaluate(async () => { const s = window as any; s.conversationFixture.releaseStart(); await s.d0035Compact; });
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('older-turn');
+  await expect(view(page).locator('.conversation-turns option[value="compacted-turn"]')).toContainText('inProgress');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+  await expect(view(page).locator('.conversation-input')).toHaveValue('ACK 대기 중 이력 탐색 초안');
+});
+
+test('D0035 LN06 연속50 시작 뒤에도 선택 목록20 상한과 최신 실패를 보존한다', async ({ page }) => {
+  await conversation(page); await view(page).locator('.conversation-input').fill('누적 이벤트 뒤 초안');
+  const events: { method: string; params: Record<string, unknown> }[] = Array.from({ length: 50 }, (_, i) => ({ method: 'turn/started', params: { threadId: 'thread-a', turn: { id: `bounded-live-${i}`, status: 'inProgress' } } }));
+  events.push({ method: 'turn/completed', params: { threadId: 'thread-a', turn: { id: 'bounded-live-49', status: 'failed', error: { message: '마지막 실행 실패' } } } });
+  await d0035Poll(page, 'bounded-live-49', events);
+  await expect(view(page).locator('.conversation-turns option')).toHaveCount(20);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('bounded-live-49');
+  await expect(view(page).locator('.conversation-turns option:checked')).toContainText('failed');
+  await expect(view(page).locator('.conversation-input')).toHaveValue('누적 이벤트 뒤 초안');
+});
+
+test('D0035 LN06 backend page20 상한을 넘은 목록은 기존 선택·본문을 보존하며 거부한다', async ({ page }) => {
+  await conversation(page);
+  await page.evaluate(() => { (window as any).conversationFixture.pageResult = { data: Array.from({ length: 21 }, (_, i) => ({ id: `oversize-${i}`, status: 'completed' })), nextCursor: null }; });
+  await view(page).locator('.conversation-refresh').click();
+  await expect(view(page).locator('.conversation-status')).toContainText('요청을 완료하지 못했습니다');
+  await expect(view(page).locator('.conversation-turns option')).toHaveCount(1);
+  await expect(view(page).locator('.conversation-turns')).toHaveValue('recent-turn');
+  await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
+});
