@@ -44,3 +44,16 @@ NP01 / 실제 notices 준비 재현(수정 실행 전 사례): root가 직접 �
 자원 설정 대조: 기존 windows.yml/native는 CARGO_BUILD_JOBS=2, CARGO_INCREMENTAL=0이다. helper workflow에는 둘다 없었으므로 동일값을 job env에 최소추가한다. RUST_TEST_THREADS는 compile-only job에 실제case실행이 없어 추가하지 않는다. 기존 Rust cache shared-key windows/save-if false는 보존하며 첫CI 시간3분대나 compile캐시 완전재사용 여부로 cache hit를 단정하지 않는다. 새후보의 notices 생성/compile 결과와 cache관측은 실제CI 뒤 root가 별도로 기록한다.
 
 NP01 준비 정적결과: 수정workflow YAML parse 및 기존native와 setup-node24/npm cache·CARGO_BUILD_JOBS2/CARGO_INCREMENTAL0 일치 대조 exit0, npm ci→실제notices script→--no-run compile 순서 대조 exit0이다. 전체 PowerShell run6개 AST parse오류0, git diff --check exit0이다. 새후보 CI/notices 실제생성/compile/로컬5case는 NOT_RUN이며, 수정경로는 workflow와 이사례문서2개뿐이다.
+
+NP02 / NSIS native directory argument (2026-11-08)
+
+# NSIS 경로 회귀 사례(구현 전)
+
+NP02: helper actual14의 원 `/D=D:/codex/build/u-<32hex>/install`을 보존한다. NSIS v311 Main.c:256–260은 /D 뒤를 그대로 저장하고 util.c:350–387은 drive `:\`만 root로 인정한다. actual14 컴파일러 판본/NSIS PID는 미확인이다. 제품 restore는 explicit /D를 넣지 않는다.
+
+같은 helper가 실제 updater와 install_armed 이벤트에 공급하는 내부 formatter를 공유해 pure Rust test가 수작업으로 적은 Windows native `/D=D:\codex\build\u-0123456789abcdef0123456789abcdef\install`과 비교한다. 피검사 알고리즘으로 기대값을 만들지 않는다. 원5개 pure validator는 유지하고 경로 사례1개를 추가해6개를 기대한다.
+
+먼저 원 slash 동작을 보존한 formatter 추출+같은 회귀 test를 CI에서 실행해 assertion RED를 확인한다. 이후 formatter의 separator 변환만 고쳐 같은 test/argv/CI 설정으로 GREEN을 확인한다. root만 commit/push한다. localRust/실제installer/GUI/daemon/HTTPS/제품변경0. 이 pure 형식 검사로 NSIS 실제 설치나 APP_JOB 생존을 통과시키지 않는다.
+
+원14 FAIL/native7phase/shortsocket/transport회수와 원helper0b/EXEcecf44a8를 보존한다. 다음 actual에는 새helper해시/parentoracle의 nativearg 기대값 결속과 별도 fresh 영향감사가 필요하다.
+

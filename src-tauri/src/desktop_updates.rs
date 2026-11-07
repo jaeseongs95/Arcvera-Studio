@@ -407,6 +407,10 @@ pub(crate) mod actual_probe {
         validate_manifest(&serde_json::to_vec(&raw).map_err(|e| e.to_string())?, &format!("v{}", input.version), &Version::parse(&input.version).map_err(|e| e.to_string())?)
     }
 
+    fn nsis_install_arg(root: &str) -> String {
+        format!("/D={root}/install")
+    }
+
     pub fn run() -> Result<(), String> {
         require(std::env::args_os().count() == 1, "argc must be 1; never forward libtest arguments")?;
         let path = std::env::var("OD_UPDATER_ACTUAL_CONFIG").map_err(|_| "missing parent config")?;
@@ -452,7 +456,7 @@ pub(crate) mod actual_probe {
         let update = app.updater_builder().pubkey(public.trim()).target("windows-x86_64")
             .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/latest.json").parse().map_err(|e| format!("endpoint: {e}"))?]).map_err(|e| e.to_string())?
             .configure_client(|_| panic!("probe must reuse product get_bytes, never Update.download/check"))
-            .clear_installer_args().installer_arg(format!("/D={}/install", input.fixture_root))
+            .clear_installer_args().installer_arg(nsis_install_arg(&input.fixture_root))
             .on_before_exit(move || match hook_log.lock() { Ok(mut hook) => hook(), Err(_) => std::process::abort() })
             .build().map_err(|e| e.to_string())?.restore_update(raw).map_err(|e| e.to_string())?.ok_or("no component update")?;
         require(update.current_version == "0.1.0" && update.version == input.version, "mock/actual version boundary mismatch")?;
@@ -474,7 +478,7 @@ pub(crate) mod actual_probe {
         require(digest(&read_file(Path::new(&path), METADATA_LIMIT)?) == expected, "parent config changed")?;
         event(&mut log, "tamper_rejected", serde_json::json!({"beforeExitCalls":0,"originalsUnchanged":true}))?;
         if input.mode == "tamper-only" { return event(&mut log, "tamper_only_complete", Value::Null); }
-        event(&mut log, "install_armed", serde_json::json!({"installerArgLast":format!("/D={}/install", input.fixture_root),"expectedExe":format!("{}/install/{}.exe",input.fixture_root,input.main_binary),"expectedExeSHA256":input.installed_exe_sha256,"installerComplete":"UNKNOWN","restart":"UNKNOWN","parentOracleRequired":true}))?;
+        event(&mut log, "install_armed", serde_json::json!({"installerArgLast":nsis_install_arg(&input.fixture_root),"expectedExe":format!("{}/install/{}.exe",input.fixture_root,input.main_binary),"expectedExeSHA256":input.installed_exe_sha256,"installerComplete":"UNKNOWN","restart":"UNKNOWN","parentOracleRequired":true}))?;
         // Windows success exits inside the plugin. No child-side PASS can follow.
         let result = update.install(downloaded);
         event(&mut log, "install_returned", serde_json::json!({"beforeExitCalls":calls.load(Ordering::SeqCst),"error":format!("{result:?}")}))?;
@@ -484,6 +488,13 @@ pub(crate) mod actual_probe {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn probe_nsis_install_argument_uses_native_windows_directory() {
+            assert_eq!(
+                nsis_install_arg("D:/codex/build/u-0123456789abcdef0123456789abcdef"),
+                r"/D=D:\codex\build\u-0123456789abcdef0123456789abcdef\install"
+            );
+        }
         #[test]
         fn probe_paths_reject_aliases_and_nsis_delimiters() {
             assert!(safe_path("D:/codex/build/u-abc/install"));

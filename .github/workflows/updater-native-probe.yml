@@ -118,11 +118,11 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked --features actual-updater-probe --lib desktop_updates::actual_probe::tests:: -- --nocapture --test-threads=1 1> "$env:PROBE_OUTPUT/actual-unit.stdout.txt" 2> "$env:PROBE_OUTPUT/actual-unit.stderr.txt"
           if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stdout.txt";Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stderr.txt";throw 'Actual TEST helper pure validators failed'}
           $unit=Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stdout.txt" -Raw
-          if($unit -notmatch 'test result: ok\. 5 passed; 0 failed; 0 ignored;'){throw 'Exact five pure validators were not confirmed'}
+          if($unit -notmatch 'test result: ok\. 6 passed; 0 failed; 0 ignored;'){throw 'Exact six pure validators were not confirmed'}
           git diff --exit-code -- src-tauri/Cargo.lock
           if($LASTEXITCODE -ne 0){throw 'Cargo.lock changed'}
           $exe="$env:PROBE_OUTPUT/native/updater_actual_probe.exe"
-          @{level='Default-off TEST component compilation and pure validation only';profile='dev';helperCommit=(git rev-parse HEAD);compileExitCode=0;purePass=5;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/actual-compile-result.json" -Encoding utf8NoBOM
+          @{level='Default-off TEST component compilation and pure validation only';profile='dev';helperCommit=(git rev-parse HEAD);compileExitCode=0;purePass=6;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/actual-compile-result.json" -Encoding utf8NoBOM
       - name: Upload helper executable and evidence (not release assets)
         if: always()
         uses: actions/upload-artifact@v4
