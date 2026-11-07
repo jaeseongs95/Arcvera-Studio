@@ -1,0 +1,112 @@
+name: Updater 1.6.3 native probe compilation
+
+on:
+  push:
+    branches: [test/desktop163-native-verify]
+    paths:
+      - src-tauri/tests/updater_native_probe.rs
+      - .github/workflows/updater-native163.yml
+      - docs/updater-native163-cases.ko.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: updater-native163-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-probe:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_TERM_COLOR: never
+      OD_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+      OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Check frozen source and exact public trust key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $frozen='d03a00e54e5c72947d2d20705932fb17110f5bd3'
+          $allowed=@('src-tauri/tests/updater_native_probe.rs','.github/workflows/updater-native163.yml','docs/updater-native163-cases.ko.md')
+          $changed=@(git diff --name-only $frozen HEAD)
+          if($LASTEXITCODE -ne 0){throw 'Cannot compare frozen source'}
+          foreach($file in $changed){if($file -notin $allowed){throw ('Out-of-scope change: '+$file)}}
+          $publicBytes=[Text.Encoding]::UTF8.GetBytes($env:OD_UPDATER_PUBLIC_KEY)
+          $publicSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($publicBytes)).ToLowerInvariant()
+          if($publicBytes.Length -ne 152 -or $publicSha -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact public key required'}
+          $out=Join-Path $env:RUNNER_TEMP 'native163-probe-results'
+          New-Item -ItemType Directory -Path $out | Out-Null
+          "PROBE_OUTPUT=$out" >> $env:GITHUB_ENV
+          [IO.File]::WriteAllBytes("$out/public-key.pub",$publicBytes)
+          @{kind='native163-test-only';helperCommit=(git rev-parse HEAD);productSource=$frozen;changedPaths=$changed;publicKeySha256=$publicSha;releaseCandidate=$false}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath "$out/source-binding.json" -Encoding utf8NoBOM
+      - name: Reuse existing native cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          save-if: 'false'
+      - name: Read exact frozen 1.6.3 package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'signed163.zip'
+          $headers=@{Authorization=('Bearer '+$env:GH_TOKEN);Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          Invoke-WebRequest -Uri 'https://api.github.com/repos/jaeseongs95/opendiy-desktop/actions/artifacts/13591620469/zip' -Headers $headers -OutFile $zip
+          $sha=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($sha -ne '6f6268e28a9486f7d8df96d8186cd8c9ad2efe32ddc78c0801285b86be90c605'){throw 'Frozen package archive changed'}
+          $unpacked=Join-Path $env:RUNNER_TEMP 'signed163'
+          Expand-Archive -LiteralPath $zip -DestinationPath $unpacked
+          $manifests=@(Get-ChildItem -LiteralPath $unpacked -Filter latest.json -File -Recurse)
+          if($manifests.Count -ne 1){throw 'Exactly one frozen updater manifest required'}
+          $fixture=Join-Path $env:PROBE_OUTPUT 'fixture'
+          New-Item -ItemType Directory -Path $fixture|Out-Null
+          $pins=@{
+            'latest.json'='21753af1a68d9c23cfefe5e8ce4f537683e4f8235c7b28a218b341b7f5b969f5'
+            'OpenDIYDesktop-1.6.3-windows-x64-setup.exe'='7a858ba1ded3fc6f77c324f49d9d554dc47791411dea754466d041f35d7e5231'
+            'OpenDIYDesktop-1.6.3-windows-x64-setup.exe.sig'='ec042928c2c2c164bc7c802894f6baa8144350fc92bf396b5d108b9fec2eae5d'
+          }
+          foreach($name in $pins.Keys){
+            $file=Join-Path $manifests[0].DirectoryName $name
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pins[$name]){throw ('Frozen input changed: '+$name)}
+            Copy-Item -LiteralPath $file -Destination (Join-Path $fixture $name)
+          }
+          @{ciRun='42414088993';artifactId='13591620469';archiveSha256=$sha;actualCases='NOT_RUN';productPackaging=$false;install=$false}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/input-binding.json" -Encoding utf8NoBOM
+      - run: npm ci
+      - run: node scripts/notices.mjs
+      - name: Compile native integration target for local execution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --features tauri/test --test updater_native_probe --no-run --message-format=json 1> "$env:PROBE_OUTPUT/build.jsonl" 2> "$env:PROBE_OUTPUT/build.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$env:PROBE_OUTPUT/build.stderr.txt";throw 'Native target compilation failed'}
+          $messages=@(Get-Content -LiteralPath "$env:PROBE_OUTPUT/build.jsonl"|ForEach-Object {$_|ConvertFrom-Json})
+          $probes=@($messages|Where-Object {$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_native_probe' -and $_.executable})
+          if($probes.Count -ne 1){throw 'Exactly one native test executable required'}
+          New-Item -ItemType Directory -Path "$env:PROBE_OUTPUT/native"|Out-Null
+          $exe="$env:PROBE_OUTPUT/native/updater_native_probe.exe"
+          Copy-Item -LiteralPath $probes[0].executable -Destination $exe
+          git diff --exit-code -- src-tauri/Cargo.lock
+          if($LASTEXITCODE -ne 0){throw 'Cargo.lock changed'}
+          @{compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();source=(git rev-parse HEAD);actualCaseRunCount=0;actualPluginVerify='NOT_RUN';download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-native163-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/native163-probe-results
+          if-no-files-found: error
+          retention-days: 7
