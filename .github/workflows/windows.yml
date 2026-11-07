@@ -23,7 +23,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Updater manifest packaging regressions
-        run: node --test scripts/updater-manifest.test.mjs
+        run: node --test scripts/updater-manifest.test.mjs scripts/notices.test.mjs
       - run: npm test
       - run: npm run build
       - run: npx playwright install chromium

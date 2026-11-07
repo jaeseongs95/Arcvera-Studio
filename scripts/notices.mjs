@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 const parts = ['# Third-party notices', 'Generated from the installed dependency sources. OpenDIY Desktop is MIT licensed.'];
 function include(name, version, license, directory) {
   parts.push(`## ${name} ${version}\n\nLicense: ${license || 'See package source'}`);
-  const files = fs.readdirSync(directory).filter(name => /^(licen[cs]e|copying|notice)([.-]|$)/i.test(name));
+  const files = fs.readdirSync(directory).filter(name => /^(licen[cs]e|copying|notice)([._-]|$)/i.test(name));
   for (const file of files) {
     const absolute = path.join(directory, file);
     if (fs.statSync(absolute).isFile()) parts.push(`### ${file}\n\n\`\`\`text\n${fs.readFileSync(absolute, 'utf8')}\n\`\`\``);
