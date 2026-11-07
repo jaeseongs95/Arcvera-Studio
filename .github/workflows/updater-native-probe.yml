@@ -100,7 +100,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $exe="$env:PROBE_OUTPUT/native/updater_native_probe.exe"
-          @{level='Helper compilation only; run PN01-PN07 locally with own loopback fixture';compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;actualPluginVerify='NOT_RUN';mockRuntime='NOT_RUN';download='NOT_RUN';shellExecute='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
+          @{level='Helper compilation only; run PN01-PN05 locally';compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;actualPluginVerify='NOT_RUN';mockRuntime='NOT_RUN';download='NOT_RUN';shellExecute='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
       - name: Upload helper executable and evidence (not release assets)
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,20 +1,5 @@
 # Updater native probe — 실행 전 사례
 
-## 추가 실제 loopback 다운로드 사례 — 2026-11-07, 구현·실행 전
-
-기존 PN01~05의 helper source4784와 CI42337313905/local03 실제5PASS/exit0 결과를 보존한다. 아래 두 사례는 새 helper 후보의 별도 경계다. 기존 offline 사례의 network 금지를 해제하지 않는다. 제품4f·원 latest/installer/.sig·공개키·Cargo.lock은 바꾸지 않는다. helper-only CI에서 기존 cache로 컴파일만 한 뒤 이 PC에서 실행한다.
-
-| ID | 입력·절차 | 기대 및 실패 기준 |
-|---|---|---|
-| PN06 | 같은 고정 서명 NSIS를 자체 Node HTTP 서버의 `127.0.0.1:<새 포트>/<own nonce>/valid.exe`로 제공한다. MockRuntime에 별도 updater builder를 만들고, proxy를 끄고 5초 timeout을 둔다. 원 metadata/signature를 restore한 Update의 download_url만 자체 loopback으로 바꾸고 실제 `Update.download`를 호출한다. | 정확한 원 전체 바이트/SHA, 실제 chunk 총합·Content-Length 및 finish callback, valid GET 정확1회. 원 파일 불변, beforeExit0/install0/restart0. byte 검사를 mocked 반환으로 대체하지 않는다. |
-| PN07 | PN06과 같지만 서버가 메모리의 installer byte0만 XOR1한 전체 길이의 payload를 제공한다. 원 signature와 version은 그대로 둔다. 실제 `Update.download`를 호출한다. | 전체 전송·finish callback 뒤 `Error::Minisign`이어야 한다. helper는 바이트를 설치하지 않고 beforeExit0/install0/restart0, tampered GET 정확1회. IO/timeout/HTTP 오류를 서명 거부로 판정하지 않는다. |
-
-서버는 새 loopback 포트와 nonce의 두 경로만 허용한다. 인증 헤더가 있으면 거부하고 헤더 원문을 기록하지 않는다. 최종 helper exit0·7case의 실제 결과·서버 요청2개·오류0 및 소켓/리스너/프로세스 종료를 확인한다. 실패·timeout은 원자료를 남기며 자동 재실행하지 않는다. 원 PN01~05의 실제 verify 경계도 그대로 실행해 offline client panic 방어가 보존됐는지 확인한다.
-
-updater-v2.14.1 `Update.download`는 body 수신→finish callback→verify 순서다. finish callback은 서명 통과나 설치 진입 증거가 아니다. HTTP loopback은 전송 fixture이며 TLS·실제 GitHub 공개 다운로드·사용자 제품의 정상 offer→download→install→자동 재시작을 대체하지 않는다. metadata check·외부 endpoint·GUI·설치·재시작·privatekey 접근0을 유지한다. HTTP를 허용하려고 제품 보안 설정이나 전역 proxy/인증서를 바꾸지 않는다. 실제 케이스 결과는 새 실행 뒤 별도 artifact로 기록한다.
-
-아래 원 준비 기록의 network0·NOT_RUN은 당시 PN01~05/준비 단계의 범위와 시각을 나타낸다. 추가된 두 download 사례에 그대로 적용하거나 과거 원결과를 덮어쓰지 않는다.
-
 대상은 동결 제품 source `4f2a33cf8adcc731048b06804c56aca805e29584`, updater crate `2.14.1`, 최종 CI `42331873361`의 artifact `13558466303`이다. 이것은 helper-only 시험 후보이며 제품·릴리스 후보가 아니다. 제품 src/버전/기존 windows.yml/Cargo.lock/최종 asset 변경0, signing secret/private key 사용0, GUI/설치/재시작0이다.
 
 입력 ZIP SHA256 `59887ad85ed2f3c93a6dce0758d6fca85768ef6b4d9dd330d1c04590c8335525`를 먼저 확인한다. ZIP 내부 실제 updater `latest.json`과 installer/.sig 원본을 읽기만 한다. manifest/endpoint/comparator를 가짜 offer로 바꾸지 않는다. `restore_update`는 저장된 실제 metadata를 native plugin에 복원하는 공개 API다. `check/download/install`은 호출하지 않는다.
