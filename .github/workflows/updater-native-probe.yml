@@ -23,12 +23,18 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
       CARGO_TERM_COLOR: never
       OD_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
       - name: Preserve frozen product and select helper-only scope
         shell: pwsh
         run: |
@@ -74,6 +80,8 @@ jobs:
           }
           Get-ChildItem -LiteralPath $fixtureOutput -File|ForEach-Object {@{file=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/fixture-sha256.json" -Encoding utf8NoBOM
           @{ciRun='42331873361';artifactId='13558466303';archiveSha256=$digest;publicationObserved='NOT_CHECKED';inputMode='Unchanged actual CI metadata, not fake latest'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/input-binding.json" -Encoding utf8NoBOM
+      - run: npm ci
+      - run: node scripts/notices.mjs
       - name: Compile only the native integration probe target
         shell: pwsh
         run: |
