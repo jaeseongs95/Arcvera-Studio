@@ -1,0 +1,221 @@
+name: TEST 1.6.3 signed isolation package
+on:
+  push:
+    branches: [test/desktop163-signed-isolation]
+permissions:
+  contents: read
+jobs:
+  test163_package:
+    if: github.ref == 'refs/heads/test/desktop163-signed-isolation'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - name: Existing packaging and TEST configuration checks
+        run: node --test scripts/test163-package.test.mjs scripts/updater-manifest.test.mjs scripts/notices.test.mjs
+      - run: node scripts/notices.mjs
+      - name: Bind unchanged product and exact TEST configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $base='d03a00e54e5c72947d2d20705932fb17110f5bd3'
+          $allowed=@('src-tauri/tauri.conf.json','.github/workflows/windows-test163.yml','scripts/test163-package.test.mjs','docs/desktop163-test40-cases.ko.md')
+          $changed=@(git diff --name-only $base HEAD)
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object{$_ -notin $allowed}).Count){throw 'Only TEST identity and packaging preparation may differ from frozen d03'}
+          $original=(git show "$($base):src-tauri/tauri.conf.json"|Out-String|ConvertFrom-Json -AsHashtable)
+          if($LASTEXITCODE -ne 0){throw 'Frozen d03 config required'}
+          $config=Get-Content src-tauri/tauri.conf.json -Raw|ConvertFrom-Json -AsHashtable
+          $overlay=Get-Content src-tauri/tauri.bundle.conf.json -Raw|ConvertFrom-Json -AsHashtable
+          if($config.productName -ne 'OpenDIY Desktop 163 TEST' -or $config.identifier -ne 'io.agentgrid.desktop.test163' -or $config.app.windows[0].title -ne 'OpenDIY Desktop 163 TEST'){throw 'Exact TEST identity required'}
+          if((Get-FileHash src-tauri/tauri.bundle.conf.json -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'b6bbbefa97941668ba87bdafef87dc8e31c146512915f615b2ed374ccb18a5ce'){throw 'Resources-only bundle overlay must remain byte-identical'}
+          $merged=$config|ConvertTo-Json -Depth 30|ConvertFrom-Json -AsHashtable
+          $merged.bundle.resources=$overlay.bundle.resources
+          $restored=$merged|ConvertTo-Json -Depth 30|ConvertFrom-Json -AsHashtable
+          $restored.productName=$original.productName
+          $restored.identifier=$original.identifier
+          $restored.app.windows[0].title=$original.app.windows[0].title
+          if(($restored|ConvertTo-Json -Depth 30 -Compress) -cne ($original|ConvertTo-Json -Depth 30 -Compress)){throw 'Merged config differs beyond exact three identity values'}
+          $inputs=@('package.json','package-lock.json','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','src-tauri/tauri.bundle.conf.json','src-tauri/src/lib.rs','src-tauri/src/desktop_updates.rs','src-tauri/src/process_job.rs','src-tauri/vendor/tauri-plugin-updater/src/updater.rs','src-tauri/vendor/portable-pty/src/lib.rs','LICENSE','THIRD_PARTY_NOTICES.md')
+          $pins=@($inputs|ForEach-Object{@{path=$_;bytes=(Get-Item -LiteralPath $_).Length;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          New-Item -ItemType Directory -Path artifacts/test163-package -Force|Out-Null
+          @{base=$base;commit='${{ github.sha }}';run='${{ github.run_id }}';branch='${{ github.ref }}';changed=$changed;originalConfig=$original;baseConfig=$config;bundleOverlay=$overlay;mergedConfig=$merged;inputPins=$pins;publicKeySHA256='a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803';testOnly=$true;actualGUI='NOT_RUN';install='NOT_RUN';publish='NOT_RUN'}|ConvertTo-Json -Depth 30|Set-Content -Encoding utf8NoBOM artifacts/test163-package/source-binding.json
+      - name: Build updater-signed Windows package
+        shell: pwsh
+        env:
+          OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if ([string]::IsNullOrWhiteSpace($env:OPENDIY_UPDATER_PUBLIC_KEY)) { throw 'Set repository variable OPENDIY_UPDATER_PUBLIC_KEY before requesting updater packaging' }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Set repository secret TAURI_SIGNING_PRIVATE_KEY before requesting updater packaging' }
+          $publicBytes=[Text.Encoding]::UTF8.GetBytes($env:OPENDIY_UPDATER_PUBLIC_KEY)
+          $publicSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($publicBytes)).ToLowerInvariant()
+          if($publicBytes.Length -ne 152 -or $publicSha -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact existing public key required'}
+          # Only the public key is written to the temporary config; private material stays in the runner environment.
+          $updaterConfig = Join-Path $env:RUNNER_TEMP 'opendiy-updater-public.json'
+          @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:OPENDIY_UPDATER_PUBLIC_KEY.Trim() } } } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM -LiteralPath $updaterConfig
+          & npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --config $updaterConfig --bundles nsis -- --locked 2>&1 | Tee-Object -Variable updaterBuildLog
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { exit $buildExit }
+          # Tauri 2.12.4 warns on a mismatched key pair; this packaging mode must fail instead.
+          if (($updaterBuildLog -join "`n").Contains('does not match the public key')) { throw 'Updater signing key pair does not match; no updater assets will be prepared' }
+      - name: Prepare portable executable and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/test163-package -Force | Out-Null
+          Copy-Item src-tauri/target/release/opendiy-desktop.exe artifacts/test163-package/opendiy-desktop.exe
+          $gridVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe "artifacts/test163-package/OpenDIYDesktop-$gridVersion-windows-x64-setup.exe"
+          Copy-Item LICENSE artifacts/test163-package/
+          Copy-Item THIRD_PARTY_NOTICES.md artifacts/test163-package/
+          Copy-Item src-tauri/Cargo.lock artifacts/test163-package/Cargo.lock
+          @{ commit = '${{ github.sha }}'; run = '${{ github.run_id }}'; platform = 'windows-x64'; signed = $false; updaterSigned = $true; testOnly = $true; identifier = 'io.agentgrid.desktop.test163' } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM artifacts/test163-package/build-info.json
+          Compress-Archive -Path artifacts/test163-package/opendiy-desktop.exe,artifacts/test163-package/LICENSE,artifacts/test163-package/THIRD_PARTY_NOTICES.md,artifacts/test163-package/build-info.json -DestinationPath "artifacts/test163-package/opendiy-desktop-$gridVersion-windows-x64-portable.zip"
+          $probeExe = (Resolve-Path 'artifacts/test163-package/opendiy-desktop.exe').Path
+          $probeReport = Join-Path $PWD 'artifacts/test163-package/self-test.json'
+          $probeArgs = @('--self-test','--duration-seconds','60','--report',('"{0}"' -f $probeReport))
+          $probeStarted = [DateTime]::UtcNow.ToString('o')
+          $probeExit = $null
+          $probeLaunchError = $null
+          $probeExeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeExe).Hash.ToLowerInvariant()
+          try {
+            $probe = Start-Process -FilePath $probeExe -ArgumentList $probeArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$PWD/artifacts/test163-package/self-test.stdout.txt" -RedirectStandardError "$PWD/artifacts/test163-package/self-test.stderr.txt"
+            $probeExit = $probe.ExitCode
+          } catch {
+            $probeLaunchError = $_.Exception.Message
+            throw
+          } finally {
+            $probeEvidence = @{
+              commit = '${{ github.sha }}'; run = '${{ github.run_id }}'
+              executable = $probeExe; executableSha256 = $probeExeSha
+              arguments = $probeArgs; startedAtUtc = $probeStarted; finishedAtUtc = [DateTime]::UtcNow.ToString('o')
+              exitCode = $probeExit; launchError = $probeLaunchError
+              reportExists = Test-Path -LiteralPath $probeReport -PathType Leaf
+            }
+            if ($probeEvidence.reportExists) {
+              $probeEvidence.reportBytes = (Get-Item -LiteralPath $probeReport).Length
+              $probeEvidence.reportSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeReport).Hash.ToLowerInvariant()
+            }
+            $probeEvidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM artifacts/test163-package/self-test-execution.json
+          }
+          if ($probeExit -ne 0) { throw "Packaged PTY self-test failed: $probeExit" }
+          Get-ChildItem artifacts/test163-package -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Set-Content -Encoding utf8NoBOM artifacts/test163-package/SHA256SUMS.txt
+      - name: Prepare updater assets without publishing
+        run: node scripts/updater-manifest.mjs src-tauri/target/release/bundle/nsis artifacts/test163-package/updater
+      - name: Verify unchanged inputs and bind final package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $binding=Get-Content artifacts/test163-package/source-binding.json -Raw|ConvertFrom-Json
+          foreach($pin in $binding.inputPins){
+            if((Get-Item -LiteralPath $pin.path).Length -ne $pin.bytes -or (Get-FileHash -LiteralPath $pin.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256){throw "Build changed pinned input: $($pin.path)"}
+          }
+          $self=Get-Content artifacts/test163-package/self-test.json -Raw|ConvertFrom-Json
+          if($self.fail -ne 0 -or $self.pass -le 0){throw 'Packaged self-test assertion report required'}
+          $files=@(Get-ChildItem artifacts/test163-package -Recurse -File|Where-Object{$_.Name -ne 'package-binding.json' -and $_.Name -ne 'SHA256SUMS.txt'}|ForEach-Object{@{path=[IO.Path]::GetRelativePath((Join-Path $PWD 'artifacts/test163-package'),$_.FullName);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
+          @{commit='${{ github.sha }}';run='${{ github.run_id }}';testOnly=$true;productName='OpenDIY Desktop 163 TEST';identifier='io.agentgrid.desktop.test163';version='1.6.3';inputPinsUnchanged=$true;packagedPtyPass=$self.pass;packagedPtyFail=$self.fail;files=$files;actualGUI='NOT_RUN';install='NOT_RUN';publish='NOT_RUN'}|ConvertTo-Json -Depth 8|Set-Content -Encoding utf8NoBOM artifacts/test163-package/package-binding.json
+          Get-ChildItem artifacts/test163-package -Recurse -File|Where-Object{$_.FullName -ne (Join-Path $PWD 'artifacts/test163-package/SHA256SUMS.txt')}|ForEach-Object{'{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),[IO.Path]::GetRelativePath((Join-Path $PWD 'artifacts/test163-package'),$_.FullName)}|Set-Content -Encoding utf8NoBOM artifacts/test163-package/SHA256SUMS.txt
+      - name: Compile TEST163 default-off helper after product binding
+        shell: pwsh
+        env:
+          OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $out='artifacts/test163-package/helper'
+          New-Item -ItemType Directory -Path $out|Out-Null
+          $source='src-tauri/src/desktop_updates.rs'
+          $original=[IO.File]::ReadAllBytes((Join-Path $PWD $source))
+          $originalSHA=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+          $productBinding=Get-Content artifacts/test163-package/package-binding.json -Raw|ConvertFrom-Json
+          $publicBytes=[Text.Encoding]::UTF8.GetBytes($env:OPENDIY_UPDATER_PUBLIC_KEY)
+          $publicSHA=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($publicBytes)).ToLowerInvariant()
+          if($publicBytes.Length -ne 152 -or $publicSHA -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact existing public key required'}
+          $patch=@'
+          'use strict';
+          const fs=require('node:fs'),c=require('node:crypto'),assert=require('node:assert/strict');
+          const file=process.argv[2],bytes=fs.readFileSync(file),text=bytes.toString('utf8'),sha=b=>c.createHash('sha256').update(b).digest('hex');
+          const start=text.indexOf('#[cfg(all(windows, feature = "actual-updater-probe"))]'),end=text.indexOf('\nfn restore(',start);
+          assert(start>=0&&end>start,'Exact default-off actual_probe boundary required');
+          const old='"io.agentgrid.desktop.test"',next='"io.agentgrid.desktop.test163"',moduleText=text.slice(start,end);
+          assert.equal(moduleText.split(old).length-1,3,'Only validator and two pure-test fixture identity tokens');
+          assert(!text.includes(next),'Fresh helper binding only');
+          const patched=text.slice(0,start)+moduleText.replaceAll(old,next)+text.slice(end);
+          assert.equal(sha(Buffer.from(patched.replaceAll(next,old),'utf8')),sha(bytes),'Exact inverse source bytes required');
+          fs.writeFileSync(file,Buffer.from(patched,'utf8'));
+          console.log(JSON.stringify({kind:'test163-helper-identity-only.v1',originalSourceSHA256:sha(bytes),helperSourceSHA256:sha(Buffer.from(patched,'utf8')),replacements:3,identifier:'io.agentgrid.desktop.test163',scope:'default-off actual_probe identity only after product package binding',defaultOffFeature:'actual-updater-probe'}));
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD "$out/rebind.cjs"),$patch,[Text.UTF8Encoding]::new($false))
+          $buildExit=$null
+          $unitExit=$null
+          $helperSHA=$null
+          try {
+            node "$out/rebind.cjs" $source 1> "$out/source-binding.json" 2> "$out/rebind.stderr.txt"
+            if($LASTEXITCODE -ne 0){throw 'Helper identity binding failed'}
+            git diff -- $source 1> "$out/identity-only.diff"
+            if($LASTEXITCODE -ne 0){throw 'Helper diff capture failed'}
+            Copy-Item -LiteralPath $source -Destination "$out/desktop_updates.test163.rs"
+            cargo build --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --bin updater_actual_probe --message-format=json 1> "$out/build.jsonl" 2> "$out/build.stderr.txt"
+            $buildExit=$LASTEXITCODE
+            if($buildExit -ne 0){throw 'TEST163 default-off helper compilation failed'}
+            $messages=@(Get-Content -LiteralPath "$out/build.jsonl"|ForEach-Object{$_|ConvertFrom-Json})
+            $helpers=@($messages|Where-Object{$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_actual_probe' -and $_.executable})
+            if($helpers.Count -ne 1){throw 'Exactly one TEST163 helper artifact required'}
+            Copy-Item -LiteralPath $helpers[0].executable -Destination "$out/updater_actual_probe.exe"
+            $helperSHA=(Get-FileHash -LiteralPath "$out/updater_actual_probe.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+            cargo test --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --lib desktop_updates::actual_probe::tests:: -- --nocapture --test-threads=1 1> "$out/unit.stdout.txt" 2> "$out/unit.stderr.txt"
+            $unitExit=$LASTEXITCODE
+            if($unitExit -ne 0 -or (Get-Content -LiteralPath "$out/unit.stdout.txt" -Raw) -notmatch 'test result: ok\. 6 passed; 0 failed; 0 ignored;'){throw 'Existing six pure helper validator cases required'}
+          } finally {
+            [IO.File]::WriteAllBytes((Join-Path $PWD $source),$original)
+            $restoredSHA=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+            $productUnchanged=$true
+            $inputsUnchanged=$true
+            foreach($pin in (Get-Content artifacts/test163-package/source-binding.json -Raw|ConvertFrom-Json).inputPins){
+              if((Get-Item -LiteralPath $pin.path).Length -ne $pin.bytes -or (Get-FileHash -LiteralPath $pin.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256){$inputsUnchanged=$false}
+            }
+            foreach($pin in $productBinding.files){
+              $file=Join-Path 'artifacts/test163-package' $pin.path
+              if((Get-Item -LiteralPath $file).Length -ne $pin.bytes -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256){$productUnchanged=$false}
+            }
+            @{commit='${{ github.sha }}';run='${{ github.run_id }}';productBase='d03a00e54e5c72947d2d20705932fb17110f5bd3';sourceOriginalSHA256=$originalSHA;sourceRestoredSHA256=$restoredSHA;sourceRestored=($originalSHA -eq $restoredSHA);inputPinsUnchanged=$inputsUnchanged;productPinsUnchanged=$productUnchanged;compileExit=$buildExit;pureTestsExit=$unitExit;helperSHA256=$helperSHA;identifier='io.agentgrid.desktop.test163';publicKeySHA256=$publicSHA;actualHelperExecution='NOT_RUN';actualInstall='NOT_RUN'}|ConvertTo-Json -Depth 5|Set-Content -Encoding utf8NoBOM "$out/compile-result.json"
+            if($originalSHA -ne $restoredSHA -or !$productUnchanged -or !$inputsUnchanged){throw 'Original source and packaged product must remain unchanged'}
+          }
+          Get-ChildItem artifacts/test163-package -Recurse -File|Where-Object{$_.FullName -ne (Join-Path $PWD 'artifacts/test163-package/SHA256SUMS.txt')}|ForEach-Object{'{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),[IO.Path]::GetRelativePath((Join-Path $PWD 'artifacts/test163-package'),$_.FullName)}|Set-Content -Encoding utf8NoBOM artifacts/test163-package/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opendiy-desktop-TEST163-signed-${{ github.sha }}
+          path: artifacts/test163-package/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve packaged PTY and source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TEST163-packaged-pty-evidence-${{ github.sha }}
+          path: |
+            artifacts/test163-package/self-test.json
+            artifacts/test163-package/self-test.stdout.txt
+            artifacts/test163-package/self-test.stderr.txt
+            artifacts/test163-package/self-test-execution.json
+            artifacts/test163-package/source-binding.json
+            artifacts/test163-package/helper/
+          if-no-files-found: warn
+          retention-days: 14
