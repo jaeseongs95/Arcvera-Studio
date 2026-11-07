@@ -7,6 +7,9 @@ on:
     paths:
       - src-tauri/tests/updater_native_probe.rs
       - src-tauri/Cargo.toml
+      - src-tauri/src/desktop_updates.rs
+      - src-tauri/src/lib.rs
+      - src-tauri/src/bin/updater_actual_probe.rs
       - .github/workflows/updater-native-probe.yml
       - docs/updater-native-probe-cases.ko.md
 
@@ -27,6 +30,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_TERM_COLOR: never
       OD_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+      OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,7 +44,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $frozen='4f2a33cf8adcc731048b06804c56aca805e29584'
-          $allowed=@('src-tauri/tests/updater_native_probe.rs','src-tauri/Cargo.toml','.github/workflows/updater-native-probe.yml','docs/updater-native-probe-cases.ko.md')
+          $allowed=@('src-tauri/tests/updater_native_probe.rs','src-tauri/Cargo.toml','.github/workflows/updater-native-probe.yml','docs/updater-native-probe-cases.ko.md','src-tauri/src/desktop_updates.rs','src-tauri/src/lib.rs','src-tauri/src/bin/updater_actual_probe.rs')
           $changed=@(git diff --name-only $frozen HEAD)
           if($LASTEXITCODE -ne 0){throw 'Cannot compare frozen source'}
           foreach($file in $changed){if($file -notin $allowed){throw ('Out-of-scope source change: '+$file)}}
@@ -101,6 +105,24 @@ jobs:
           $ErrorActionPreference='Stop'
           $exe="$env:PROBE_OUTPUT/native/updater_native_probe.exe"
           @{level='Helper compilation only; run PN01-PN05 locally';compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;actualPluginVerify='NOT_RUN';mockRuntime='NOT_RUN';download='NOT_RUN';shellExecute='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
+      - name: Compile actual TEST helper and run pure validators only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          cargo build --manifest-path src-tauri/Cargo.toml --locked --features actual-updater-probe --bin updater_actual_probe --message-format=json 1> "$env:PROBE_OUTPUT/actual-build.jsonl" 2> "$env:PROBE_OUTPUT/actual-build.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-build.stderr.txt";throw 'Actual TEST helper compilation failed'}
+          $messages=@(Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-build.jsonl"|ForEach-Object {$_|ConvertFrom-Json})
+          $probes=@($messages|Where-Object {$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_actual_probe' -and $_.executable})
+          if($probes.Count -ne 1){throw 'One actual TEST helper executable required'}
+          Copy-Item -LiteralPath $probes[0].executable -Destination "$env:PROBE_OUTPUT/native/updater_actual_probe.exe"
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --features actual-updater-probe --lib desktop_updates::actual_probe::tests:: -- --nocapture --test-threads=1 1> "$env:PROBE_OUTPUT/actual-unit.stdout.txt" 2> "$env:PROBE_OUTPUT/actual-unit.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stdout.txt";Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stderr.txt";throw 'Actual TEST helper pure validators failed'}
+          $unit=Get-Content -LiteralPath "$env:PROBE_OUTPUT/actual-unit.stdout.txt" -Raw
+          if($unit -notmatch 'test result: ok\. 5 passed; 0 failed; 0 ignored;'){throw 'Exact five pure validators were not confirmed'}
+          git diff --exit-code -- src-tauri/Cargo.lock
+          if($LASTEXITCODE -ne 0){throw 'Cargo.lock changed'}
+          $exe="$env:PROBE_OUTPUT/native/updater_actual_probe.exe"
+          @{level='Default-off TEST component compilation and pure validation only';profile='dev';helperCommit=(git rev-parse HEAD);compileExitCode=0;purePass=5;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/actual-compile-result.json" -Encoding utf8NoBOM
       - name: Upload helper executable and evidence (not release assets)
         if: always()
         uses: actions/upload-artifact@v4
