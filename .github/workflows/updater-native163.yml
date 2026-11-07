@@ -100,9 +100,20 @@ jobs:
           New-Item -ItemType Directory -Path "$env:PROBE_OUTPUT/native"|Out-Null
           $exe="$env:PROBE_OUTPUT/native/updater_native_probe.exe"
           Copy-Item -LiteralPath $probes[0].executable -Destination $exe
+          # Integration-test EXEs do not inherit the product's embedded manifest.
+          $manifest=@'
+          <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+            <assemblyIdentity version="1.0.0.0" processorArchitecture="amd64" name="OpenDIY.NativeUpdaterProbe.Manifest38" type="win32"/>
+            <dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="amd64" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency>
+          </assembly>
+          '@
+          [IO.File]::WriteAllText("$exe.manifest",($manifest.Replace("`r`n","`n").Replace("`n","`r`n")+"`r`n"),[Text.UTF8Encoding]::new($false))
+          $manifestSha=(Get-FileHash -LiteralPath "$exe.manifest" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($manifestSha -ne '5a7bfc4da7cbe416d607178091a5b5c6b9a5de3167cf4859ec398fb36347fa20'){throw 'Native helper manifest differs from the locally verified sidecar'}
           git diff --exit-code -- src-tauri/Cargo.lock
           if($LASTEXITCODE -ne 0){throw 'Cargo.lock changed'}
-          @{compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();source=(git rev-parse HEAD);actualCaseRunCount=0;actualPluginVerify='NOT_RUN';download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
+          @{compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();probeManifestSha256=$manifestSha;source=(git rev-parse HEAD);actualCaseRunCount=0;actualPluginVerify='NOT_RUN';download='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
       - uses: actions/upload-artifact@v4
         if: always()
         with:
