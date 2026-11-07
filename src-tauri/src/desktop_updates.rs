@@ -227,9 +227,335 @@ fn validate_manifest(bytes: &[u8], tag: &str, version: &Version) -> Result<Value
 }
 
 // UpdaterExt injects cleanup_before_exit by default. Replace that callback:
-// Windows invokes it BEFORE ShellExecuteW, which can still fail or be refused.
+// Windows invokes it BEFORE installer launch, which can still fail or be refused.
 // Keep the UI intact on Err; after successful launch the plugin exits directly.
 fn preserve_app_before_installer_launch() {}
+
+/// Explicitly enabled native component, never a product offer or UI-consent test.
+#[cfg(all(windows, feature = "actual-updater-probe"))]
+pub(crate) mod actual_probe {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::{
+        fs::{self, File, OpenOptions},
+        io::{Read, Write},
+        os::windows::fs::MetadataExt,
+        path::Path,
+        sync::{atomic::{AtomicUsize, Ordering}, Arc},
+    };
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Pin { name: String, sha256: String }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Inputs {
+        schema_version: u32,
+        nonce: String,
+        fixture_root: String,
+        mode: String,
+        // Component transport only. Never rewrite the signed release metadata URL.
+        transport_url: String,
+        version: String,
+        product_name: String,
+        identifier: String,
+        main_binary: String,
+        installed_exe_sha256: String,
+        installer: Pin,
+        signature: Pin,
+        manifest: Pin,
+        public_key: Pin,
+        merged_config: Pin,
+        package_receipt: Pin,
+    }
+
+    fn require(ok: bool, reason: &str) -> Result<(), String> {
+        if ok { Ok(()) } else { Err(reason.into()) }
+    }
+
+    fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+
+    fn valid_sha(value: &str) -> bool {
+        value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+
+    fn validate_transport(value: &str) -> Result<Url, String> {
+        require(!value.is_empty() && value.len() <= 16 * 1024 && value.trim() == value
+            && !value.chars().any(char::is_control), "invalid component transport URL")?;
+        let url = Url::parse(value).map_err(|_| "invalid component transport URL")?;
+        require(url.scheme() == "https" && url.host_str().is_some() && url.username().is_empty()
+            && url.password().is_none() && url.fragment().is_none(), "transport requires HTTPS without credentials or fragment")?;
+        Ok(url)
+    }
+
+    fn transport_observation(input: &str, transport: &Url, metadata: &Url) -> Value {
+        // Never serialize either full URL: a temporary transport query can be sensitive.
+        serde_json::json!({
+            "componentOnly":true,"transportDiffersFromMetadata":transport != metadata,
+            "transportHost":transport.host_str(),"transportPath":transport.path(),
+            "transportUrlSHA256":digest(input.as_bytes()),"requestUrlSHA256":digest(transport.as_str().as_bytes()),
+            "metadataHost":metadata.host_str(),"metadataPath":metadata.path(),
+            "metadataUrlSHA256":digest(metadata.as_str().as_bytes())
+        })
+    }
+
+    // No normalization: reject aliases, traversal, whitespace and shell/NSIS delimiters.
+    fn safe_path(path: &str) -> bool {
+        path.starts_with("D:/codex/build/") && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+            && path.bytes().enumerate().all(|(i, b)| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.') || (i == 1 && b == b':'))
+    }
+
+    fn no_reparse(path: &Path, directory: bool) -> Result<(), String> {
+        for ancestor in path.ancestors() {
+            let metadata = fs::symlink_metadata(ancestor).map_err(|e| format!("exact path metadata: {e}"))?;
+            require(metadata.file_attributes() & 0x400 == 0, "reparse point refused")?;
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        require(if directory { metadata.is_dir() } else { metadata.is_file() }, "unexpected path type")
+    }
+
+    fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+        no_reparse(path, false)?;
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        require(file.metadata().map_err(|e| e.to_string())?.len() <= limit as u64, "input size limit")?;
+        bounded_read(file, limit)
+    }
+
+    fn pinned(root: &str, pin: &Pin, limit: usize) -> Result<Vec<u8>, String> {
+        require(!pin.name.is_empty() && pin.name != "." && !pin.name.contains("..")
+            && pin.name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && valid_sha(&pin.sha256), "invalid file pin")?;
+        let bytes = read_file(&Path::new(root).join("inputs").join(&pin.name), limit)?;
+        require(digest(&bytes) == pin.sha256, "input SHA256 mismatch")?;
+        Ok(bytes)
+    }
+
+    fn validate_identity(input: &Inputs) -> Result<(), String> {
+        require(input.schema_version == 1 && matches!(input.mode.as_str(), "tamper-only" | "install"), "schema/mode refused")?;
+        require(input.nonce.len() == 32 && input.nonce.bytes().all(|b| b.is_ascii_hexdigit()), "nonce must be 32 hex bytes")?;
+        // The real CLI control socket is 103 bytes with this exact TEST root;
+        // the previous prefix produced a 122-byte socket and exceeded SUN_LEN.
+        require(input.fixture_root == format!("D:/codex/build/u-{}", input.nonce) && safe_path(&input.fixture_root), "own fixture path refused")?;
+        require(input.identifier == "io.agentgrid.desktop.test" && input.product_name.ends_with(" TEST")
+            && input.product_name.len() <= 80 && input.product_name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_')), "TEST identity required")?;
+        require(!input.main_binary.is_empty() && input.main_binary.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            && valid_sha(&input.installed_exe_sha256), "installed TEST executable pin required")?;
+        let version = Version::parse(&input.version).map_err(|e| e.to_string())?;
+        require(version > Version::new(0, 1, 0) && version.pre.is_empty() && version.build.is_empty(), "actual stable signed version required")
+    }
+
+    fn verify_installer(input: &Inputs) -> Result<(), String> {
+        require(!input.installer.name.is_empty() && !input.installer.name.contains("..")
+            && input.installer.name.ends_with(".exe") && input.installer.name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && valid_sha(&input.installer.sha256), "invalid bare installer pin")?;
+        let path = Path::new(&input.fixture_root).join("inputs").join(&input.installer.name);
+        no_reparse(&path, false)?;
+        let mut file = File::open(&path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut magic = [0; 2];
+        file.read_exact(&mut magic).map_err(|e| e.to_string())?;
+        require(magic == *b"MZ", "bare NSIS executable required")?;
+        hasher.update(magic);
+        let mut chunk = [0; 65536];
+        let mut size = 2usize;
+        loop {
+            let n = file.read(&mut chunk).map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            size += n;
+            require(size <= INSTALLER_LIMIT, "original installer size limit")?;
+            hasher.update(&chunk[..n]);
+        }
+        require(size >= 2 && format!("{:x}", hasher.finalize()) == input.installer.sha256, "original installer SHA256 mismatch")
+    }
+
+    fn event(file: &mut File, phase: &str, details: Value) -> Result<(), String> {
+        let line = serde_json::json!({"phase":phase,"details":details,"pid":std::process::id()});
+        writeln!(file, "{line}").map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        println!("{line}");
+        std::io::stdout().flush().map_err(|e| e.to_string())
+    }
+
+    fn validate_package(input: &Inputs) -> Result<Value, String> {
+        let root = &input.fixture_root;
+        let config: Value = serde_json::from_slice(&pinned(root, &input.merged_config, METADATA_LIMIT)?).map_err(|e| e.to_string())?;
+        require(config["productName"] == input.product_name && config["identifier"] == input.identifier && config["version"] == input.version
+            && config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser", "merged TEST config mismatch")?;
+        for value in [&config["bundle"]["fileAssociations"], &config["plugins"]["deep-link"]] {
+            require(value.is_null() || value.as_array().is_some_and(|v| v.is_empty()), "associations/deep links outside TEST install scope")?;
+        }
+        for value in [&config["bundle"]["windows"]["minimumWebview2Version"], &config["bundle"]["windows"]["nsis"]["minimumWebview2Version"]] {
+            require(value.is_null() || value == "", "shared WebView2 update minimum must be absent")?;
+        }
+        let windows = config["app"]["windows"].as_array().ok_or("TEST window config missing")?;
+        require(!windows.is_empty() && windows.iter().all(|w| w["title"].as_str().is_some_and(|s| s.ends_with(" TEST"))), "TEST window title required")?;
+        // The parent's pinned CI/package receipt is the binary-to-config binding.
+        // JSON config alone cannot prove the NSIS executable's embedded identity.
+        let receipt: Value = serde_json::from_slice(&pinned(root, &input.package_receipt, METADATA_LIMIT)?).map_err(|e| e.to_string())?;
+        for (field, expected) in [
+            ("kind", "signed-test-package-binding.v1"), ("productName", input.product_name.as_str()),
+            ("identifier", input.identifier.as_str()), ("version", input.version.as_str()),
+            ("installerSHA256", input.installer.sha256.as_str()), ("mergedConfigSHA256", input.merged_config.sha256.as_str()),
+            ("installedExeSHA256", input.installed_exe_sha256.as_str()), ("mainBinary", input.main_binary.as_str()),
+        ] { require(receipt[field] == expected, "parent package receipt mismatch")?; }
+        require(receipt["sourceCommit"].as_str().is_some_and(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            && receipt["ciRunId"].as_str().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())), "CI/source binding missing")?;
+        let raw = serde_json::from_slice::<Value>(&pinned(root, &input.manifest, METADATA_LIMIT)?).map_err(|e| e.to_string())?;
+        let signature = String::from_utf8(pinned(root, &input.signature, 16 * 1024)?).map_err(|e| e.to_string())?;
+        require(raw["platforms"]["windows-x86_64"]["signature"] == signature.trim(), "original signature metadata mismatch")?;
+        validate_manifest(&serde_json::to_vec(&raw).map_err(|e| e.to_string())?, &format!("v{}", input.version), &Version::parse(&input.version).map_err(|e| e.to_string())?)
+    }
+
+    fn nsis_install_arg(root: &str) -> String {
+        format!("/D={}\\install", root.replace('/', "\\"))
+    }
+
+    pub fn run() -> Result<(), String> {
+        require(std::env::args_os().count() == 1, "argc must be 1; never forward libtest arguments")?;
+        let path = std::env::var("OD_UPDATER_ACTUAL_CONFIG").map_err(|_| "missing parent config")?;
+        let expected = std::env::var("OD_UPDATER_ACTUAL_CONFIG_SHA256").map_err(|_| "missing parent config SHA256")?;
+        require(safe_path(&path) && valid_sha(&expected), "invalid config path/SHA256")?;
+        let bytes = read_file(Path::new(&path), METADATA_LIMIT)?;
+        require(digest(&bytes) == expected, "config SHA256 mismatch")?;
+        let input: Inputs = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        validate_identity(&input)?;
+        let transport = validate_transport(&input.transport_url)?;
+        require(path == format!("{}/inputs/probe.json", input.fixture_root), "config outside own exact path")?;
+        let root = Path::new(&input.fixture_root);
+        no_reparse(root, true)?;
+        require(read_file(&root.join("OWNER.txt"), 128)? == format!("od161-updater-actual:{}", input.nonce).as_bytes(), "own marker mismatch")?;
+        for (name, suffix) in [("HOME", "home"), ("CODEX_HOME", "home/codex"), ("APPDATA", "appdata"),
+            ("LOCALAPPDATA", "localappdata"), ("TEMP", "temp"), ("TMP", "temp"),
+            ("AGENT_GRID_WORKSPACE_DIR", "workspace"), ("WEBVIEW2_USER_DATA_FOLDER", "webview")] {
+            let own = format!("{}/{suffix}", input.fixture_root);
+            require(std::env::var(name).ok().as_deref() == Some(own.as_str()), "own environment binding missing")?;
+            no_reparse(Path::new(&own), true)?;
+        }
+        no_reparse(&root.join("install"), true)?;
+        no_reparse(&root.join("evidence"), true)?;
+        let raw = validate_package(&input)?;
+        let public = String::from_utf8(pinned(&input.fixture_root, &input.public_key, 16 * 1024)?).map_err(|e| e.to_string())?;
+        require(public.trim() == public_key().ok_or("probe has no build-time configured public key")?, "public key differs from build-time product trust")?;
+        verify_installer(&input)?;
+        let mut log = OpenOptions::new().write(true).create_new(true).open(root.join("evidence/probe-events.jsonl")).map_err(|e| e.to_string())?;
+        event(&mut log, "inputs_validated", serde_json::json!({"mode":input.mode,"configSHA256":expected,"originalSHA256":input.installer.sha256,"componentCurrentVersion":"0.1.0","normalProductOffer":false}))?;
+        crate::process_job::install_app_job()?;
+        event(&mut log, "app_job_installed", Value::Null)?;
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.config_mut().plugins.0.insert("updater".into(), serde_json::json!({"pubkey":""}));
+        let app = tauri::test::mock_builder().plugin(tauri_plugin_updater::Builder::new().build()).build(context).map_err(|e| e.to_string())?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook_calls = calls.clone();
+        let mut hook_log = log.try_clone().map_err(|e| e.to_string())?;
+        let hook_log = Mutex::new(move || {
+            preserve_app_before_installer_launch();
+            let count = hook_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if event(&mut hook_log, "before_exit", serde_json::json!({"calls":count})).is_err() { std::process::abort(); }
+        });
+        let update = app.updater_builder().pubkey(public.trim()).target("windows-x86_64")
+            .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/latest.json").parse().map_err(|e| format!("endpoint: {e}"))?]).map_err(|e| e.to_string())?
+            .configure_client(|_| panic!("probe must reuse product get_bytes, never Update.download/check"))
+            .clear_installer_args().installer_arg(nsis_install_arg(&input.fixture_root))
+            .on_before_exit(move || match hook_log.lock() { Ok(mut hook) => hook(), Err(_) => std::process::abort() })
+            .build().map_err(|e| e.to_string())?.restore_update(raw).map_err(|e| e.to_string())?.ok_or("no component update")?;
+        require(update.current_version == "0.1.0" && update.version == input.version, "mock/actual version boundary mismatch")?;
+        let client = request_client()?;
+        event(&mut log, "download_started", transport_observation(&input.transport_url, &transport, &update.download_url))?;
+        let mut downloaded = get_bytes(&client, transport.as_str(), INSTALLER_LIMIT, Instant::now() + REQUEST_LIMIT)?;
+        require(digest(&downloaded) == input.installer.sha256, "download SHA256 differs from preserved signed original")?;
+        update.verify(&downloaded).map_err(|e| format!("original signature: {e}"))?;
+        event(&mut log, "download_verified", serde_json::json!({"bytes":downloaded.len(),"sha256":digest(&downloaded)}))?;
+        downloaded[0] ^= 1;
+        let rejection = update.install(&downloaded);
+        downloaded[0] ^= 1;
+        require(matches!(rejection, Err(tauri_plugin_updater::Error::Minisign(_))), "tamper must return native Minisign error")?;
+        require(calls.load(Ordering::SeqCst) == 0, "tamper entered before-exit hook")?;
+        update.verify(&downloaded).map_err(|e| e.to_string())?;
+        verify_installer(&input)?;
+        validate_package(&input)?;
+        pinned(&input.fixture_root, &input.public_key, 16 * 1024)?;
+        require(digest(&read_file(Path::new(&path), METADATA_LIMIT)?) == expected, "parent config changed")?;
+        event(&mut log, "tamper_rejected", serde_json::json!({"beforeExitCalls":0,"originalsUnchanged":true}))?;
+        if input.mode == "tamper-only" { return event(&mut log, "tamper_only_complete", Value::Null); }
+        event(&mut log, "install_armed", serde_json::json!({"installerArgLast":nsis_install_arg(&input.fixture_root),"expectedExe":format!("{}/install/{}.exe",input.fixture_root,input.main_binary),"expectedExeSHA256":input.installed_exe_sha256,"installerComplete":"UNKNOWN","restart":"UNKNOWN","parentOracleRequired":true}))?;
+        // Windows success exits inside the plugin. No child-side PASS can follow.
+        let result = update.install(downloaded);
+        event(&mut log, "install_returned", serde_json::json!({"beforeExitCalls":calls.load(Ordering::SeqCst),"error":format!("{result:?}")}))?;
+        Err("install returned; installer completion/restart not established".into())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn probe_nsis_install_argument_uses_native_windows_directory() {
+            assert_eq!(
+                nsis_install_arg("D:/codex/build/u-0123456789abcdef0123456789abcdef"),
+                r"/D=D:\codex\build\u-0123456789abcdef0123456789abcdef\install"
+            );
+        }
+        #[test]
+        fn probe_paths_reject_aliases_and_nsis_delimiters() {
+            assert!(safe_path("D:/codex/build/u-abc/install"));
+            for bad in ["C:/Users/Someone", "D:/codex/build/../production", "D:/codex/build/a b", "D:/codex/build/a/", "D:/codex/build/a\\b", "D:/codex/build/a:stream", "D:/codex/build/a\"/R"] { assert!(!safe_path(bad), "{bad}"); }
+        }
+        #[test]
+        fn probe_pins_require_exact_lowercase_sha256() {
+            assert!(valid_sha(&"ab".repeat(32)));
+            for bad in ["", "ABC", &"g".repeat(64), &"a".repeat(63)] { assert!(!valid_sha(bad)); }
+        }
+        #[test]
+        fn probe_identity_refuses_production_and_forged_current_version() {
+            let pin = serde_json::json!({"name":"pending","sha256":"ab".repeat(32)});
+            let mut input: Inputs = serde_json::from_value(serde_json::json!({
+                "schemaVersion":1,"nonce":"a".repeat(32),"fixtureRoot":format!("D:/codex/build/u-{}","a".repeat(32)),
+                "transportUrl":"https://artifact.example.invalid/parser-only.exe",
+                "mode":"tamper-only","version":"1.6.2","productName":"OpenDIY Desktop TEST","identifier":"io.agentgrid.desktop.test",
+                "mainBinary":"opendiy-desktop","installedExeSha256":"ab".repeat(32),"installer":pin,"signature":pin,"manifest":pin,
+                "publicKey":pin,"mergedConfig":pin,"packageReceipt":pin
+            })).unwrap();
+            assert_eq!(format!("{}/home/codex/app-server-control/app-server-control.sock", input.fixture_root).len(), 103);
+            assert!(validate_identity(&input).is_ok());
+            let short_root = input.fixture_root.clone();
+            input.fixture_root = format!("D:/codex/build/od161-updater-actual-{}", input.nonce);
+            assert!(validate_identity(&input).is_err());
+            input.fixture_root = short_root;
+            input.identifier = "io.agentgrid.desktop".into();
+            assert!(validate_identity(&input).is_err());
+            input.identifier = "io.agentgrid.desktop.test".into();
+            input.version = "0.1.0".into();
+            assert!(validate_identity(&input).is_err());
+            input.version = "1.6.2-beta.1".into();
+            assert!(validate_identity(&input).is_err());
+        }
+        #[test]
+        fn probe_transport_rejects_scheme_credentials_and_fragment() {
+            for bad in ["http://artifact.example.invalid/a.exe", "file:///a.exe", "https://user@artifact.example.invalid/a.exe",
+                "https://user:password@artifact.example.invalid/a.exe", "https://artifact.example.invalid/a.exe#fragment",
+                "https://artifact.example.invalid/a.exe#", " https://artifact.example.invalid/a.exe", "https://artifact.example.invalid/a.exe\n?token=x"] {
+                assert!(validate_transport(bad).is_err());
+            }
+            // Parser-only synthetic examples. No endpoint existence/download assertion.
+            assert!(validate_transport("https://artifact.example.invalid/a.exe").is_ok());
+            assert!(validate_transport("https://artifact.example.invalid/a.exe?token=PARSER_ONLY_QUERY").is_ok());
+        }
+        #[test]
+        fn probe_transport_observation_redacts_query_and_marks_component_boundary() {
+            let raw = "https://artifact.example.invalid/a.exe?token=PARSER_ONLY_QUERY";
+            let transport = validate_transport(raw).unwrap();
+            let metadata = Url::parse("https://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.6.2/a.exe").unwrap();
+            let observed = transport_observation(raw, &transport, &metadata);
+            assert_eq!(observed["componentOnly"], true);
+            assert_eq!(observed["transportDiffersFromMetadata"], true);
+            assert_eq!(observed["transportHost"], "artifact.example.invalid");
+            assert_eq!(observed["transportPath"], "/a.exe");
+            assert_eq!(observed["transportUrlSHA256"], digest(raw.as_bytes()));
+            assert!(!observed.to_string().contains("PARSER_ONLY_QUERY"));
+            assert!(!observed.to_string().contains("?token="));
+        }
+    }
+}
 
 fn restore(app: &tauri::AppHandle, raw: Value) -> Result<tauri_plugin_updater::Update, String> {
     let key = public_key().ok_or("업데이트 설치 미구성: 신뢰 공개 키가 지정되지 않았습니다.")?;

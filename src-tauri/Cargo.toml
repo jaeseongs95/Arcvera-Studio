@@ -1,6 +1,6 @@
 [package]
 name = "opendiy-desktop"
-version = "1.6.2"
+version = "1.6.3"
 description = "Independent terminal workspace for local coding agents"
 authors = ["OpenDIY Desktop contributors"]
 license = "MIT"
@@ -10,6 +10,15 @@ default-run = "opendiy-desktop"
 [[bin]]
 name = "opendiy-desktop"
 path = "src/main.rs"
+
+[[bin]]
+name = "updater_actual_probe"
+path = "src/bin/updater_actual_probe.rs"
+required-features = ["actual-updater-probe"]
+
+[features]
+# Explicit TEST component only, excluded from product builds.
+actual-updater-probe = ["tauri/test"]
 
 [lib]
 name = "agent_grid_lib"
@@ -46,3 +55,4 @@ strip = true
 
 [patch.crates-io]
 portable-pty = { path = "vendor/portable-pty" }
+tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }

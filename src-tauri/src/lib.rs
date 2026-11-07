@@ -3,6 +3,8 @@ mod codex_settings;
 mod conversation_attachments;
 mod executable_picker;
 mod desktop_updates;
+#[cfg(all(windows, feature = "actual-updater-probe"))]
+pub use desktop_updates::actual_probe::run as run_updater_actual_probe;
 mod external_links;
 mod flow;
 #[cfg(test)]
