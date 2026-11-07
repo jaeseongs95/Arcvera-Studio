@@ -97,15 +97,19 @@ export function createContextControls(options: Options) {
     if (options.statusHost.textContent !== status) options.statusHost.textContent = status;
     const used = snapshot?.tokenUsage?.last?.totalTokens;
     const capacity = snapshot?.tokenUsage?.modelContextWindow;
-    const valid = typeof used === 'number' && Number.isSafeInteger(used) && used >= 0 && typeof capacity === 'number' && Number.isSafeInteger(capacity) && capacity > 0;
+    const validUsage = typeof used === 'number' && Number.isSafeInteger(used) && used >= 0;
+    const validCapacity = typeof capacity === 'number' && Number.isSafeInteger(capacity) && capacity > 0;
+    const valid = validUsage && validCapacity;
     const percent = valid ? Math.min(100, Math.max(0, Math.round(used / capacity * 100))) : undefined;
-    const fresh = snapshot?.connected === true && snapshot.tokenUsageFresh === true;
+    const fresh = valid && snapshot?.connected === true && snapshot.tokenUsageFresh === true;
     amount.textContent = percent === undefined || !fresh ? '—' : `${percent}%`;
     fill.style.strokeDasharray = `${percent ?? 0} 100`;
     host.classList.toggle('context-stale', !fresh);
     host.classList.toggle('context-compacting', busy || snapshot?.compacting === true);
-    const ko = valid ? `컨텍스트 ${percent}% · 최근 모델 응답 사용량 ${used.toLocaleString('ko-KR')} / ${capacity.toLocaleString('ko-KR')} 토큰${fresh ? '' : ' · 마지막 확인값, 현재 사용량 미확인'} · 클릭하여 새로고침` : '컨텍스트 사용량 미확인 · 클릭하여 새로고침';
-    const en = valid ? `Context ${percent}% · latest model response usage ${used.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} tokens${fresh ? '' : ' · last known value, current usage unknown'} · click to refresh` : 'Context usage unknown · click to refresh';
+    const unavailableKo = snapshot?.connected !== true ? '세션의 관측 연결을 확인하지 못했습니다.' : !validUsage ? '사용량 알림을 기다리는 중입니다.' : !validCapacity ? '모델의 컨텍스트 한도를 확인하지 못했습니다.' : '새 사용량 알림을 기다리는 중입니다.';
+    const unavailableEn = snapshot?.connected !== true ? 'The session observation connection could not be confirmed.' : !validUsage ? 'Waiting for a usage notification.' : !validCapacity ? 'The model context limit could not be confirmed.' : 'Waiting for a new usage notification.';
+    const ko = `${valid ? `컨텍스트 ${percent}% · 최근 모델 응답 사용량 ${used.toLocaleString('ko-KR')} / ${capacity.toLocaleString('ko-KR')} 토큰${fresh ? '' : ' · 마지막 확인값, 현재 사용량 미확인'}` : '컨텍스트 사용량 미확인'}${fresh ? '' : ` · ${unavailableKo}`} · 클릭하여 세션 컨텍스트 크기 설정`;
+    const en = `${valid ? `Context ${percent}% · latest model response usage ${used.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} tokens${fresh ? '' : ' · last known value, current usage unknown'}` : 'Context usage unknown'}${fresh ? '' : ` · ${unavailableEn}`} · click to set this session’s context size`;
     bindAttribute(usage, 'title', ko, en); bindAttribute(usage, 'aria-label', ko, en);
     compact.title = reason(); compact.setAttribute('aria-label', reason());
     usage.disabled = !visible || reading || settingsReading || changing;
@@ -162,7 +166,11 @@ export function createContextControls(options: Options) {
     settingsReading = true; const editorVersion = ++editorEpoch; render();
     try {
       const value = await options.call<unknown>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'contextSettings' } });
-      if (!alive(version) || editorVersion !== editorEpoch || !verifiedSettings(value)) return;
+      if (!alive(version) || editorVersion !== editorEpoch) return;
+      if (!verifiedSettings(value)) {
+        options.notify('이 세션의 컨텍스트 크기 설정 지원을 확인하지 못했습니다.', false, 'Context size settings could not be confirmed for this session.');
+        return;
+      }
       closeEditor();
       let current = value; const dialogVersion = editorEpoch;
       const dialog = document.createElement('dialog'); editor = dialog; dialog.className = 'session-context-dialog';
@@ -208,7 +216,9 @@ export function createContextControls(options: Options) {
       reset.addEventListener('click', () => void change(null)); close.addEventListener('click', closeEditor);
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeEditor(); });
       actions.append(apply, reset, close); dialog.append(heading, explanation, summary, label, input, message, actions); document.body.append(dialog); showCurrent(); dialog.showModal();
-    } catch { /* An unconfirmed read offers no editing; the usage refresh remains available. */ }
+    } catch {
+      if (alive(version) && editorVersion === editorEpoch) options.notify('세션 컨텍스트 크기 설정 조회에 실패했습니다. 연결을 확인한 뒤 다시 시도하세요.', true, 'Session context size settings could not be read. Check the connection and try again.');
+    }
     finally { settingsReading = false; if (!disposed) render(); }
   }
   usage.addEventListener('click', () => void openSettings(), { signal: abort.signal });

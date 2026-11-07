@@ -11,13 +11,20 @@ async function fixture(page: Page) {
     const data = state.contextFixture = {
       reads: 0, preparations: 0, mutations: 0, notices: [] as any[], capabilities: [] as boolean[], supportSnapshots: [] as any[], failure: false, hold: false,
       release: () => {}, holdRead: false, releaseRead: () => {}, result: 'started',
+      settingsReads: 0, settingsFailure: false, settingsResult: { supported: false } as any,
       snapshot: { revision: 1, connected: true, guiConnected: true, tokenUsage: { total: { totalTokens: 900000 }, last: { totalTokens: 40000 }, modelContextWindow: 100000 }, tokenUsageFresh: true, compacting: false, active: false, canCompact: true, compactSupported: true } as any,
     };
     state.contextControls = createContextControls({
       host, statusHost, sessionId: 'context-session', generation: 9,
       capabilitiesChanged(supported: { passiveSubscription: boolean; subagents: boolean; cron: boolean }) { data.capabilities.push(supported.passiveSubscription); data.supportSnapshots.push(supported); },
       async call(command: string, args: any) {
-        if (command !== 'conversation_request' || args.id !== 'context-session' || args.generation !== 9 || args.request.type !== 'contextStatus') throw Error('관측 이외의 호출');
+        if (command !== 'conversation_request' || args.id !== 'context-session' || args.generation !== 9) throw Error('다른 세션 호출');
+        if (args.request.type === 'contextSettings') {
+          data.settingsReads++;
+          if (data.settingsFailure) throw Error('PRIVATE_TOKEN_PATH_NEVER_REAL');
+          return structuredClone(data.settingsResult);
+        }
+        if (args.request.type !== 'contextStatus') throw Error('관측 이외의 호출');
         data.reads++; const snapshot = structuredClone(data.snapshot);
         if (data.holdRead) { data.holdRead = false; await new Promise<void>(resolve => { data.releaseRead = resolve; }); }
         if (data.failure) throw Error('PRIVATE_TOKEN_PATH_NEVER_REAL');
@@ -37,6 +44,76 @@ async function fixture(page: Page) {
     state.contextControls.setVisible(true);
   });
 }
+
+test('D0031 CX01 사용량 미수신은 알림 대기로 설명하고 서버 새로고침으로 안내하지 않는다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  await page.evaluate(() => { const w = window as any; delete w.contextFixture.snapshot.tokenUsage; w.contextFixture.snapshot.tokenUsageFresh = false; w.contextControls.setVisible(false); w.contextControls.setVisible(true); });
+  await expect(usage).toHaveText('—');
+  await expect(usage).toHaveAttribute('title', /사용량 알림을 기다리는 중/);
+  await expect(usage).toHaveAttribute('aria-label', /컨텍스트 크기 설정/);
+  await expect(usage).not.toHaveAttribute('title', /새로고침/);
+});
+
+test('D0031 CX02 관측 연결 실패와 마지막 사용량을 구분한다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  await page.evaluate(() => { const w = window as any; Object.assign(w.contextFixture.snapshot, { connected: false, guiConnected: false, tokenUsageFresh: false }); w.contextControls.setVisible(false); w.contextControls.setVisible(true); });
+  await expect(usage).toHaveText('—');
+  await expect(usage).toHaveAttribute('title', /관측 연결을 확인하지 못했습니다/);
+  await expect(usage).toHaveAttribute('title', /마지막 확인값/);
+});
+
+test('D0031 CX03 사용량의 모델 한도가 없으면 미확인 상태로 설명한다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  await page.evaluate(() => { const w = window as any; w.contextFixture.snapshot.tokenUsage.modelContextWindow = null; w.contextControls.setVisible(false); w.contextControls.setVisible(true); });
+  await expect(usage).toHaveText('—');
+  await expect(usage).toHaveAttribute('title', /모델의 컨텍스트 한도를 확인하지 못했습니다/);
+  await expect(page.locator('#context-fixture')).toHaveClass(/context-stale/);
+});
+
+test('D0031 CX04 설정 지원 미확인 응답에도 클릭 결과를 알린다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  for (const value of [{ supported: false }, null, { supported: true, canChange: false }]) {
+    await page.evaluate(value => { (window as any).contextFixture.settingsResult = value; }, value);
+    const before = await page.evaluate(() => (window as any).contextFixture.notices.length);
+    await usage.click();
+    await expect.poll(() => page.evaluate(() => (window as any).contextFixture.notices.length)).toBe(before + 1);
+    expect(await page.evaluate(() => (window as any).contextFixture.notices.at(-1)?.ko)).toContain('크기 설정 지원을 확인하지 못했습니다');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  }
+  expect(await page.evaluate(() => (window as any).contextFixture.mutations)).toBe(0);
+});
+
+test('D0031 CX05 설정 조회 오류를 알리고 비밀 원문 없이 재시도할 수 있다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  await page.evaluate(() => { (window as any).contextFixture.settingsFailure = true; });
+  await usage.click();
+  await expect.poll(() => page.evaluate(() => (window as any).contextFixture.notices.at(-1)?.ko)).toContain('크기 설정 조회에 실패했습니다');
+  expect(await page.evaluate(() => JSON.stringify((window as any).contextFixture.notices))).not.toContain('PRIVATE_TOKEN');
+  await expect(usage).toBeEnabled();
+  await page.evaluate(() => { const f = (window as any).contextFixture; f.settingsFailure = false; f.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 }; });
+  await usage.click();
+  await expect(page.getByRole('dialog', { name: '세션 컨텍스트 크기' })).toBeVisible();
+});
+
+test('D0031 CX06 정상 크기 설정 조회는 기존 세션 설정창만 연다', async ({ page }) => {
+  await fixture(page);
+  const usage = page.locator('#context-fixture .context-usage');
+  await expect(usage).toHaveText('40%');
+  await page.evaluate(() => { (window as any).contextFixture.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 }; });
+  await usage.click();
+  await expect(page.getByRole('dialog', { name: '세션 컨텍스트 크기' })).toBeVisible();
+  expect(await page.evaluate(() => ({ reads: (window as any).contextFixture.settingsReads, writes: (window as any).contextFixture.mutations, notices: (window as any).contextFixture.notices.length }))).toEqual({ reads: 1, writes: 0, notices: 0 });
+});
 
 test('컨텍스트는 누적 사용량이 아닌 최근 사용량 비율을 표시하고 누락값을 0으로 표시하지 않는다', async ({ page }) => {
   await fixture(page);
