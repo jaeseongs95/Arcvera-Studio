@@ -1,0 +1,103 @@
+name: Updater native probe (helper only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [test/desktop161-updater-native]
+    paths:
+      - src-tauri/tests/updater_native_probe.rs
+      - src-tauri/Cargo.toml
+      - .github/workflows/updater-native-probe.yml
+      - docs/updater-native-probe-cases.ko.md
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: updater-native-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-probe:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+      OD_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve frozen product and select helper-only scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $frozen='4f2a33cf8adcc731048b06804c56aca805e29584'
+          $allowed=@('src-tauri/tests/updater_native_probe.rs','src-tauri/Cargo.toml','.github/workflows/updater-native-probe.yml','docs/updater-native-probe-cases.ko.md')
+          $changed=@(git diff --name-only $frozen HEAD)
+          if($LASTEXITCODE -ne 0){throw 'Cannot compare frozen source'}
+          foreach($file in $changed){if($file -notin $allowed){throw ('Out-of-scope source change: '+$file)}}
+          $publicBytes=[Text.Encoding]::UTF8.GetBytes($env:OD_UPDATER_PUBLIC_KEY)
+          $publicSha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($publicBytes)).ToLowerInvariant()
+          if($publicBytes.Length -ne 152 -or $publicSha -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact final public-key bytes required; source-default empty key is not the final key'}
+          $out=Join-Path $env:RUNNER_TEMP 'updater-native-probe-results'
+          New-Item -ItemType Directory -Path $out | Out-Null
+          "PROBE_OUTPUT=$out" >> $env:GITHUB_ENV
+          [IO.File]::WriteAllBytes("$out/public-key.pub",$publicBytes)
+          @{kind='helper-only-source-binding';helperCommit=(git rev-parse HEAD);productSource=$frozen;changedPaths=$changed;publicKeySha256=$publicSha;privateKeyAccess=$false;releaseCandidate=$false}|ConvertTo-Json -Depth 4|Set-Content -LiteralPath "$out/source-binding.json" -Encoding utf8NoBOM
+      - name: Reuse native Windows Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: windows
+          save-if: "false"
+      - name: Download exact final CI archive (read only)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $zip=Join-Path $env:RUNNER_TEMP 'final-ci42331873361.zip'
+          $headers=@{Authorization=('Bearer '+$env:GH_TOKEN);Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          Invoke-WebRequest -Uri 'https://api.github.com/repos/jaeseongs95/opendiy-desktop/actions/artifacts/13558466303/zip' -Headers $headers -OutFile $zip
+          $digest=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($digest -ne '59887ad85ed2f3c93a6dce0758d6fca85768ef6b4d9dd330d1c04590c8335525'){throw 'Final CI archive SHA256 mismatch'}
+          $fixtureDirectory=Join-Path $env:RUNNER_TEMP 'final-ci42331873361-input'
+          Expand-Archive -LiteralPath $zip -DestinationPath $fixtureDirectory
+          $manifests=@(Get-ChildItem -LiteralPath $fixtureDirectory -Filter latest.json -File -Recurse)
+          if($manifests.Count -ne 1){throw 'One exact final updater manifest required'}
+          $fixtureOutput=Join-Path $env:PROBE_OUTPUT 'fixture'
+          New-Item -ItemType Directory -Path $fixtureOutput|Out-Null
+          foreach($name in @('latest.json','OpenDIYDesktop-1.6.1-windows-x64-setup.exe','OpenDIYDesktop-1.6.1-windows-x64-setup.exe.sig','SHA256SUMS.txt')){
+            Copy-Item -LiteralPath (Join-Path $manifests[0].DirectoryName $name) -Destination (Join-Path $fixtureOutput $name)
+          }
+          Get-ChildItem -LiteralPath $fixtureOutput -File|ForEach-Object {@{file=$_.Name;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/fixture-sha256.json" -Encoding utf8NoBOM
+          @{ciRun='42331873361';artifactId='13558466303';archiveSha256=$digest;publicationObserved='NOT_CHECKED';inputMode='Unchanged actual CI metadata, not fake latest'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/input-binding.json" -Encoding utf8NoBOM
+      - name: Compile only the native integration probe target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --test updater_native_probe --no-run --message-format=json 1> "$env:PROBE_OUTPUT/build.jsonl" 2> "$env:PROBE_OUTPUT/build.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$env:PROBE_OUTPUT/build.stderr.txt";throw 'Native probe compilation failed'}
+          $messages=@(Get-Content -LiteralPath "$env:PROBE_OUTPUT/build.jsonl"|ForEach-Object {$_|ConvertFrom-Json})
+          $probes=@($messages|Where-Object {$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_native_probe' -and $_.executable})
+          if($probes.Count -ne 1){throw 'One compiled native probe executable required'}
+          New-Item -ItemType Directory -Path "$env:PROBE_OUTPUT/native"|Out-Null
+          Copy-Item -LiteralPath $probes[0].executable -Destination "$env:PROBE_OUTPUT/native/updater_native_probe.exe"
+          git diff --exit-code -- src-tauri/Cargo.lock
+          if($LASTEXITCODE -ne 0){throw 'Cargo.lock changed'}
+      - name: Record compile-only boundary (root runs cases locally)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $exe="$env:PROBE_OUTPUT/native/updater_native_probe.exe"
+          @{level='Helper compilation only; run PN01-PN05 locally';compileExitCode=0;probeExeSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();actualCaseRunCount=0;actualPluginVerify='NOT_RUN';mockRuntime='NOT_RUN';download='NOT_RUN';shellExecute='NOT_RUN';install='NOT_RUN';restart='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$env:PROBE_OUTPUT/compile-result.json" -Encoding utf8NoBOM
+      - name: Upload helper executable and evidence (not release assets)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-native-probe-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/updater-native-probe-results
+          if-no-files-found: error
+          retention-days: 7

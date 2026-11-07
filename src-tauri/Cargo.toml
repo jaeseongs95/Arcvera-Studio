@@ -44,5 +44,9 @@ opt-level = "s"
 lto = "thin"
 strip = true
 
+[dev-dependencies]
+# Test-only MockRuntime; no additional dependency package or lockfile change.
+tauri = { version = "2", features = ["test"] }
+
 [patch.crates-io]
 portable-pty = { path = "vendor/portable-pty" }
