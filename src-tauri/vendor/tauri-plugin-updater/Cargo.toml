@@ -191,6 +191,7 @@ version = "0.4"
 version = "0.61.0"
 features = [
     "Win32_Foundation",
+    "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",

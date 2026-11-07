@@ -2480,11 +2480,42 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn nsis_launch_missing_file_returns_error() {
+        use windows_sys::Win32::System::{
+            JobObjects::{
+                IsProcessInJob, QueryInformationJobObject, JobObjectExtendedLimitInformation,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+            },
+            Threading::GetCurrentProcess,
+        };
+
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("absent-installer.exe");
         let error = super::launch_nsis_installer(missing.as_os_str(), std::ffi::OsStr::new("/P /UPDATE /R /ARGS"))
             .expect_err("a failed installer launch must return instead of exiting the app");
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        // A host can reject the explicit breakaway before opening the missing
+        // image. Admit that outcome only with the current test process's own
+        // Job limits as evidence, never by accepting an arbitrary launch Err.
+        let mut in_job = 0;
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        let in_job_ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
+        let query_ok = if in_job_ok != 0 && in_job != 0 {
+            unsafe { QueryInformationJobObject(std::ptr::null_mut(), JobObjectExtendedLimitInformation,
+                &mut limits as *mut _ as _, std::mem::size_of_val(&limits) as u32, std::ptr::null_mut()) }
+        } else { 0 };
+        let flags = limits.BasicLimitInformation.LimitFlags;
+        println!("NSIS missing-file native error={error:?}; inJobOk={in_job_ok}; inJob={in_job}; jobQueryOk={query_ok}; jobFlags={flags:#x}");
+        match error.raw_os_error() {
+            Some(2 | 3) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+            Some(5) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(in_job_ok != 0 && in_job != 0 && query_ok != 0,
+                    "access denied requires observed current Job limits");
+                assert_eq!(flags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK), 0,
+                    "unexplained access denial is not an expected negative result");
+            }
+            other => panic!("unexpected native launch error: {other:?}: {error}"),
+        }
     }
 
     const CURRENT: &str = "timestamp:1700000000\tfile:app_1.2.3_x64.msi.zip\tversion:1.2.3";

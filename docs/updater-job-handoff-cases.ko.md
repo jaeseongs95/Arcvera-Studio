@@ -7,7 +7,7 @@
 | 사례 | 실제 경계·입력 | 기대·판정 | 실행 위치 |
 | --- | --- | --- | --- |
 | H01 | 동일 own Job에서 무해한 자식을 명시적 CREATE_BREAKAWAY_FROM_JOB로 생성 | 정확 Job membership=false, 부모 정상 종료 뒤 자식 marker와 정상 exit0. Win32 error·timeout은 실패로 보존 | 이 PC의 별도 fixture23, 각 사례 한 번 |
-| H02 | 업데이터 NSIS 실행 함수에 존재하지 않는 절대 EXE 전달 | Io error가 호출자에게 반환되고 시험 process가 계속 살아 있음. ShellExecute fallback·성공 exit 없음 | CI Windows Rust unit |
+| H02 | 업데이터 NSIS 실행 함수에 존재하지 않는 절대 EXE 전달 | native 파일 없음 오류가 반환되고 시험 process가 계속 살아 있음. CI 자신의 Job이 명시적 breakaway를 허용하지 않아 접근을 거부하는 경우에는 raw error와 해당 Job 제한을 직접 대조해야 한다. 설명되지 않은 접근 거부는 실패로 남긴다. ShellExecute fallback·성공 exit 없음 | CI Windows Rust unit |
 | H03 | 기존 updater2.14.1 verify/install 거부 및 NSIS/MSI 인자 escape corpus | 원서명 검증·변조 거부·signed-version·기존 quoting 사례 유지 | CI Windows, vendored crate 기존 unit |
 | H04 | 원 TEST NSIS60581·원서명·manifest·key 및 새 helper로 기존 실제 runner 실행 | 다운로드 원bytes, native verify, 1byte 변조 거부/hook0, 정상 설치·정확 설치 EXE SHA, 재시작 GUI 및 정리까지 기존 oracle 모두 통과. 60초 설치 상한과 실패 기록 보존 | 소스 동결·독립 사전 감사 후 이 PC |
 | H05 | 제품 기존 native admission·실패 후 permit release 및 frontend 회귀 | 새/진행 중 세션 보호와 기존 사례 유지. 버전만 1.6.3으로 일치 | 기존 Windows CI |
