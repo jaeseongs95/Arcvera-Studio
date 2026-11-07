@@ -408,7 +408,7 @@ pub(crate) mod actual_probe {
     }
 
     fn nsis_install_arg(root: &str) -> String {
-        format!("/D={root}/install")
+        format!("/D={}\\install", root.replace('/', "\\"))
     }
 
     pub fn run() -> Result<(), String> {

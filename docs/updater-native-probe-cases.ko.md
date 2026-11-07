@@ -56,4 +56,3 @@ NP02: helper actual14의 원 `/D=D:/codex/build/u-<32hex>/install`을 보존한�
 먼저 원 slash 동작을 보존한 formatter 추출+같은 회귀 test를 CI에서 실행해 assertion RED를 확인한다. 이후 formatter의 separator 변환만 고쳐 같은 test/argv/CI 설정으로 GREEN을 확인한다. root만 commit/push한다. localRust/실제installer/GUI/daemon/HTTPS/제품변경0. 이 pure 형식 검사로 NSIS 실제 설치나 APP_JOB 생존을 통과시키지 않는다.
 
 원14 FAIL/native7phase/shortsocket/transport회수와 원helper0b/EXEcecf44a8를 보존한다. 다음 actual에는 새helper해시/parentoracle의 nativearg 기대값 결속과 별도 fresh 영향감사가 필요하다.
-
