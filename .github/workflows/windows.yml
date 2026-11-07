@@ -167,8 +167,34 @@ jobs:
           Copy-Item src-tauri/Cargo.lock artifacts/Cargo.lock
           @{ commit = '${{ github.sha }}'; run = '${{ github.run_id }}'; platform = 'windows-x64'; signed = $false } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM artifacts/build-info.json
           Compress-Archive -Path artifacts/opendiy-desktop.exe,artifacts/LICENSE,artifacts/THIRD_PARTY_NOTICES.md,artifacts/build-info.json -DestinationPath "artifacts/opendiy-desktop-$gridVersion-windows-x64-portable.zip"
-          $probe = Start-Process -FilePath (Resolve-Path 'artifacts/opendiy-desktop.exe') -ArgumentList @('--self-test','--duration-seconds','60','--report',"$PWD/artifacts/self-test.json") -WindowStyle Hidden -Wait -PassThru
-          if ($probe.ExitCode -ne 0) { throw "Packaged PTY self-test failed: $($probe.ExitCode)" }
+          $probeExe = (Resolve-Path 'artifacts/opendiy-desktop.exe').Path
+          $probeReport = Join-Path $PWD 'artifacts/self-test.json'
+          $probeArgs = @('--self-test','--duration-seconds','60','--report',('"{0}"' -f $probeReport))
+          $probeStarted = [DateTime]::UtcNow.ToString('o')
+          $probeExit = $null
+          $probeLaunchError = $null
+          $probeExeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeExe).Hash.ToLowerInvariant()
+          try {
+            $probe = Start-Process -FilePath $probeExe -ArgumentList $probeArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$PWD/artifacts/self-test.stdout.txt" -RedirectStandardError "$PWD/artifacts/self-test.stderr.txt"
+            $probeExit = $probe.ExitCode
+          } catch {
+            $probeLaunchError = $_.Exception.Message
+            throw
+          } finally {
+            $probeEvidence = @{
+              commit = '${{ github.sha }}'; run = '${{ github.run_id }}'
+              executable = $probeExe; executableSha256 = $probeExeSha
+              arguments = $probeArgs; startedAtUtc = $probeStarted; finishedAtUtc = [DateTime]::UtcNow.ToString('o')
+              exitCode = $probeExit; launchError = $probeLaunchError
+              reportExists = Test-Path -LiteralPath $probeReport -PathType Leaf
+            }
+            if ($probeEvidence.reportExists) {
+              $probeEvidence.reportBytes = (Get-Item -LiteralPath $probeReport).Length
+              $probeEvidence.reportSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeReport).Hash.ToLowerInvariant()
+            }
+            $probeEvidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM artifacts/self-test-execution.json
+          }
+          if ($probeExit -ne 0) { throw "Packaged PTY self-test failed: $probeExit" }
           Get-ChildItem artifacts -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Set-Content -Encoding utf8NoBOM artifacts/SHA256SUMS.txt
       - name: Prepare updater assets without publishing
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.updater_package }}
@@ -178,4 +204,16 @@ jobs:
           name: opendiy-desktop-windows-x64
           path: artifacts/
           if-no-files-found: error
+          retention-days: 14
+      - name: Preserve packaged PTY self-test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-pty-self-test-evidence
+          path: |
+            artifacts/self-test.json
+            artifacts/self-test.stdout.txt
+            artifacts/self-test.stderr.txt
+            artifacts/self-test-execution.json
+          if-no-files-found: warn
           retention-days: 14

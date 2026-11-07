@@ -16,6 +16,7 @@ interface RuntimeEvent { seq: number; method: string; params: Json; requestId?: 
 interface Entry { id: string; role: string; text: string; status?: string; detail?: boolean; errorEvent?: { turnId: string; source: 'error' | 'completed'; pairable: boolean } }
 interface QuestionDraft { value: string; other?: string }
 const MAX_VISIBLE_ITEMS = 100;
+const MAX_VISIBLE_TURNS = 20; // Native conversation page limit.
 const MAX_ATTACHMENTS = 12;
 const PREVIEW_CHARACTERS = 16 * 1024;
 const string = (value: unknown) => typeof value === 'string' ? value : '';
@@ -292,6 +293,20 @@ export function createConversation(options: ConversationOptions) {
     for (const value of turnPage) option(turns, string(value.id), `${string(value.id).slice(0, 10)} · ${string(value.status) || t('상태 미확인', 'Unknown status')}`);
     turns.value = selectedTurn; button('.conversation-older').hidden = !nextTurns;
   }
+  function updateTurnSummary(turn: Json, add = false) {
+    const id = string(turn.id); if (!id) return;
+    const index = turnPage.findIndex(value => value.id === id);
+    if (index < 0 && !add) return;
+    const summary = { ...turnPage[index], id, status: string(turn.status) || string(turnPage[index]?.status) };
+    if (index < 0) turnPage.unshift(summary); else turnPage[index] = summary;
+    if (turnPage.length > MAX_VISIBLE_TURNS) {
+      const selected = turnPage.find(value => value.id === selectedTurn);
+      turnPage = turnPage.slice(0, MAX_VISIBLE_TURNS);
+      if (selected && !turnPage.some(value => value.id === selectedTurn)) turnPage[MAX_VISIBLE_TURNS - 1] = selected;
+      button('.conversation-refresh').classList.add('needs-refresh');
+    }
+    renderTurns();
+  }
   function staleHistory() {
     status('조회 중 새 실시간 변경을 받아 이전 이력 응답을 적용하지 않았습니다. 필요한 구간을 다시 조회하세요.', 'Live updates arrived during the query. The older history response was not applied. Reload the desired turn.');
     button('.conversation-refresh').classList.add('needs-refresh');
@@ -333,7 +348,7 @@ export function createConversation(options: ConversationOptions) {
         renderItems(); return;
       }
       if ('historyUnavailable' in value) throw new Error(t('이력 대기 응답 형식이 올바르지 않습니다.', 'Invalid history waiting response.'));
-      if (!Array.isArray(value.data)) throw new Error(t('대화 구간 목록 형식이 올바르지 않습니다.', 'Invalid conversation turn list.'));
+      if (!Array.isArray(value.data) || value.data.length > MAX_VISIBLE_TURNS) throw new Error(t('대화 구간 목록 형식이 올바르지 않습니다.', 'Invalid conversation turn list.'));
       const wasUnknown = historyUnavailable || !activeTurnKnown; historyUnavailable = false;
       turnPage = value.data; nextTurns = string(value.nextCursor);
       const nextTurn = string(turnPage[0]?.id);
@@ -449,6 +464,8 @@ export function createConversation(options: ConversationOptions) {
     if (lastSeq && event.seq > lastSeq + 1) { confirmedSettings(undefined, undefined); status('실시간 이벤트 순번이 누락되었습니다. 최근 대화를 다시 불러오세요.', 'Live event sequence has a gap. Reload Recent conversation.'); button('.conversation-refresh').classList.add('needs-refresh'); }
     lastSeq = event.seq;
     const value = event.params;
+    const eventThread = string(value.threadId ?? value.turn?.threadId);
+    if (eventThread && eventThread !== threadId) return;
     if (event.method === 'thread/deleted') {
       if (threadId && value.threadId === threadId) {
         deleted = true; connected = false; activeTurn = ''; activeTurnKnown = false; historyUnavailable = true; epoch++; stopPolling();
@@ -466,12 +483,26 @@ export function createConversation(options: ConversationOptions) {
     if (event.method === 'thread/settings/updated') {
       if (threadId && value.threadId === threadId && value.threadSettings && typeof value.threadSettings === 'object' && !Array.isArray(value.threadSettings)) confirmedSettings(value.threadSettings.model, value.threadSettings.effort);
     }
-    else if (event.method === 'turn/started') { liveRevision++; activityRevision++; activeTurn = string(value.turn?.id ?? value.turnId); activeTurnKnown = true; selectedTurn = activeTurn; items = []; nextItems = ''; itemsDirty = true; }
+    else if (event.method === 'turn/started') {
+      const id = string(value.turn?.id ?? value.turnId); if (!id) return;
+      liveRevision++; activityRevision++; activeTurn = id; activeTurnKnown = true;
+      if (selectedTurn !== id) { selectedTurn = id; items = []; nextItems = ''; itemsDirty = true; }
+      updateTurnSummary({ id, status: 'inProgress' }, true);
+      status('작업을 실행하고 있습니다.', 'Task is running.');
+    }
     else if (event.method === 'turn/completed') {
       const eventThread = string(value.threadId ?? value.turn?.threadId);
       if (eventThread && eventThread !== threadId) return;
-      liveRevision++; activityRevision++; if (activeTurn === string(value.turn?.id ?? value.turnId)) { activeTurn = ''; activeTurnKnown = true; }
+      const id = string(value.turn?.id ?? value.turnId); const wasActive = !!id && activeTurn === id;
+      liveRevision++; activityRevision++; if (wasActive) { activeTurn = ''; activeTurnKnown = true; }
+      updateTurnSummary({ id, status: value.turn?.status });
       if (value.turn?.error) receiveError(event, 'completed');
+      if (wasActive || (!activeTurn && id === selectedTurn)) {
+        if (value.turn?.status === 'failed') status('작업이 실패했습니다. 오류 내용을 확인해 주세요.', 'Task failed. Check the error message.');
+        else if (value.turn?.status === 'completed') status('작업을 완료했습니다.', 'Task completed.');
+        else if (value.turn?.status === 'interrupted') status('작업이 중단되었습니다.', 'Task interrupted.');
+        else status('작업이 종료되었습니다.', 'Task ended.');
+      }
     }
     else if (event.method === 'error') receiveError(event, 'error');
     else if (!value.turnId || value.turnId === selectedTurn) {
@@ -506,20 +537,24 @@ export function createConversation(options: ConversationOptions) {
     const id = string(turn?.id);
     if (!id) return false;
     // 시작 응답보다 완료 알림이 먼저 올 수 있으므로 더 최근 실행 상태를 보존한다.
-    if (!disposed && !deleted && version === epoch && activity === activityRevision) { activityRevision++; activeTurn = id; activeTurnKnown = true; }
+    if (!disposed && !deleted && version === epoch && activity === activityRevision) {
+      activityRevision++; activeTurn = id; activeTurnKnown = true;
+      updateTurnSummary({ id, status: 'inProgress' }, true);
+    }
     return true;
   }
   async function send() {
     if (button('.conversation-send').disabled || composing) return;
     if (new TextEncoder().encode(input.value).byteLength > 64 * 1024) { status('메시지는 UTF-8 기준 64 KiB까지 전송할 수 있습니다. 초안을 보존했습니다.', 'Messages are limited to 64 KiB in UTF-8. Your draft is preserved.'); return; }
-    sending = true; const version = epoch; const activity = activityRevision; const draft = input.value; const sentAttachments = [...attachments]; updateControls(); renderAttachments();
+    sending = true; const version = epoch; const activity = activityRevision; const query = historyQuery; const draft = input.value; const sentAttachments = [...attachments]; updateControls(); renderAttachments();
     try {
       const value = await rpc({ type: 'send', requestId: crypto.randomUUID(), text: draft, attachments: sentAttachments.map(({ type, path }) => ({ type, path })), ...(model.value ? { model: model.value } : {}), ...(effort.value ? { effort: effort.value } : {}) });
       if (disposed || deleted) return;
+      const current = activity === activityRevision;
       adoptStartedTurn(value.turn, version, activity);
       modelDraft = false; effortDraft = false; renderModels();
       if (input.value === draft) input.value = ''; attachments = []; for (const value of sentAttachments) stagedPaths.delete(value.path); renderAttachments();
-      if (alive(version)) status('전송했습니다.', 'Sent.');
+      if (alive(version) && current && query === historyQuery) status('전송했습니다.', 'Sent.');
     } catch {
       if (!disposed && !deleted) { uncertain = true; sendFailed = true; status('전송 결과를 확인하지 못했습니다. 자동으로 다시 보내지 않습니다. 초안을 보존했습니다. 연결과 진행 중인 요청을 확인해 주세요.', 'Send result is unknown. It will not be resent automatically. Your draft is preserved. Check the connection and any pending requests.'); }
     } finally { sending = false; if (!disposed) { renderAttachments(); updateControls(); } }
@@ -533,12 +568,13 @@ export function createConversation(options: ConversationOptions) {
   }
   async function compact(): Promise<{ status?: string }> {
     if (!visible || !attached || !connected || disposed || deleted || sending || staging || uncertain || activeTurn) return { status: 'notStarted' };
-    sending = true; const version = epoch; const activity = activityRevision; updateControls(); renderAttachments();
+    sending = true; const version = epoch; const activity = activityRevision; const query = historyQuery; updateControls(); renderAttachments();
     try {
       const value = await rpc({ type: 'compact' });
       if (!disposed && !deleted && version === epoch && value.status === 'started') {
+        const current = activity === activityRevision;
         if (!adoptStartedTurn(value.turn, version, activity)) uncertain = true;
-        status('압축을 요청했습니다. 서버의 완료 확인을 기다립니다.', 'Compaction requested. Waiting for server confirmation.');
+        else if (current && query === historyQuery) status('압축을 요청했습니다. 서버의 완료 확인을 기다립니다.', 'Compaction requested. Waiting for server confirmation.');
       }
       return value;
     } catch (error) {
