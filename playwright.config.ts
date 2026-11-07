@@ -1,8 +1,18 @@
 import { defineConfig } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
 const bundled = process.env.AGENT_GRID_BUNDLED_FRONTEND_TEST === '1';
 const sourceOnly = process.env.AGENT_GRID_SOURCE_FIXTURES_ONLY === '1';
 if (bundled && sourceOnly) throw new Error('Choose bundled UI or source fixtures, not both.');
+
+// Each Playwright worker reloads this config and owns one browser fixture.
+// Keep diagnostics outside test-results, which Playwright clears at startup.
+const netLog = sourceOnly && process.env.AGENT_GRID_NETLOG === '1'
+  ? resolve('frontend-netlog/source', `worker-${process.env.TEST_WORKER_INDEX ?? 'config'}-${process.pid}-${randomUUID()}.json`)
+  : undefined;
+if (netLog) mkdirSync(dirname(netLog), { recursive: true });
 
 // These fixtures import source modules or intercept Vite module responses.
 // Keep mixed files together so their fault-injection paths remain available.
@@ -20,7 +30,13 @@ export default defineConfig({
   testIgnore: bundled ? sourceFixtures : undefined,
   workers: 1,
   outputDir: process.env.AGENT_GRID_TEST_OUTPUT ?? 'test-results',
-  use: { baseURL: 'http://127.0.0.1:1420', viewport: { width: 1440, height: 1000 }, channel: process.env.PLAYWRIGHT_CHANNEL, trace: 'retain-on-failure' },
+  use: {
+    baseURL: 'http://127.0.0.1:1420', viewport: { width: 1440, height: 1000 }, channel: process.env.PLAYWRIGHT_CHANNEL, trace: 'retain-on-failure',
+    // Chromium defaults to stripping private information; never enable raw/sensitive capture.
+    ...(netLog ? { launchOptions: { args: [
+      `--log-net-log=${netLog}`, '--net-log-max-size-mb=16', '--net-log-duration=3600',
+    ] } } : {}),
+  },
   webServer: {
     command: bundled ? 'npm run preview -- --host 127.0.0.1 --port 1420 --strictPort' : 'npm run dev',
     url: 'http://127.0.0.1:1420', reuseExistingServer: !process.env.CI,

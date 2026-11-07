@@ -37,6 +37,7 @@ jobs:
         run: npm run test:e2e
         env:
           AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
+          AGENT_GRID_NETLOG: '1'
       - name: Packaged application regressions
         run: npm run test:e2e
         env:
@@ -56,6 +57,7 @@ jobs:
           path: |
             test-results/
             test-results-bundled/
+            frontend-netlog/
           if-no-files-found: warn
           retention-days: 14
   native:
