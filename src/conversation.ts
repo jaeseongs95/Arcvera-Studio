@@ -13,12 +13,15 @@ export interface ConversationOptions {
 }
 interface Attachment { type: 'localImage' | 'file'; path: string; name?: string }
 interface RuntimeEvent { seq: number; method: string; params: Json; requestId?: string; responded?: boolean }
-interface Entry { id: string; role: string; text: string; status?: string; detail?: boolean }
+interface Entry { id: string; role: string; text: string; status?: string; detail?: boolean; errorEvent?: { turnId: string; source: 'error' | 'completed'; pairable: boolean } }
 interface QuestionDraft { value: string; other?: string }
 const MAX_VISIBLE_ITEMS = 100;
 const MAX_ATTACHMENTS = 12;
 const PREVIEW_CHARACTERS = 16 * 1024;
 const string = (value: unknown) => typeof value === 'string' ? value : '';
+// Explicit server messages are distinct from unexpected RPC exceptions. These
+// narrow path/credential signals preserve the existing private-error fallback.
+const sensitiveError = (message: string) => /(?:^|[^A-Za-z0-9_])[A-Za-z]:[\\/]|\\\\[^\s\\]+\\|\/(?:home|Users|root|private)\/|~[\\/]|\b(?:token|password|secret|api[-_ ]?key)\s*[:=]\s*\S+|\bAuthorization\s*[:=]\s*\S+|\bBearer\s+\S+/i.test(message);
 
 /** One controller owns one session's draft, bounded visible page and GUI input lease. */
 export function createConversation(options: ConversationOptions) {
@@ -211,7 +214,7 @@ export function createConversation(options: ConversationOptions) {
       const title = document.createElement('strong');
       const labels: Record<string, [string, string]> = { user: ['나', 'You'], assistant: ['도우미', 'Assistant'], tool: ['도구 실행', 'Tool execution'], error: ['오류', 'Error'], system: ['상태', 'Status'] };
       const label = labels[entry.role] ?? labels.system; bindText(title, ...label); row.append(title);
-      if (entry.status || entry.detail) { const stamp = document.createElement('small'); stamp.textContent = [entry.status, entry.detail ? t('미리보기 · 원문 조회 가능', 'Preview · full content available') : ''].filter(Boolean).join(' · '); row.append(stamp); }
+      if (entry.status || entry.detail) { const stamp = document.createElement('small'); stamp.textContent = [entry.status === 'retrying' ? t('재시도 예정', 'Retry scheduled') : entry.status, entry.detail ? entry.errorEvent ? t('미리보기 · 오류 메시지 크기 제한', 'Preview · error message size limit') : t('미리보기 · 원문 조회 가능', 'Preview · full content available') : ''].filter(Boolean).join(' · '); row.append(stamp); }
       const body = document.createElement('div'); body.className = 'conversation-content';
       if (entry.role === 'tool') {
         const detail = document.createElement('details'); const summary = document.createElement('summary'); bindText(summary, '실행 내용 펼치기', 'Show execution details');
@@ -221,7 +224,7 @@ export function createConversation(options: ConversationOptions) {
       const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'quiet-button conversation-copy-message';
       bindText(copy, '메시지 복사', 'Copy message'); bindAttribute(copy, 'title', '현재 표시된 본문만 복사합니다.', 'Copy only the currently displayed content.');
       copy.onclick = () => void copyText(displayedText(body)); row.append(copy);
-      if (entry.detail) { const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'quiet-button'; bindText(detail, '전체 내용 보기', 'Read full content'); detail.onclick = () => void loadDetail(entry, body, detail, 0); row.append(detail); }
+      if (entry.detail && !entry.errorEvent) { const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'quiet-button'; bindText(detail, '전체 내용 보기', 'Read full content'); detail.onclick = () => void loadDetail(entry, body, detail, 0); row.append(detail); }
       if (previous) previous.row.replaceWith(row); else messages.append(row);
       renderedItems.set(entry.id, { signature, row });
     }
@@ -420,6 +423,26 @@ export function createConversation(options: ConversationOptions) {
     catch (error) { if (alive(version)) { failure(error); requestSignature = ''; renderRequests(); } }
     finally { responding.delete(requestId); }
   }
+  function receiveError(event: RuntimeEvent, source: 'error' | 'completed') {
+    const value = event.params;
+    const eventThread = string(value.threadId ?? value.turn?.threadId);
+    const errorTurn = string(source === 'completed' ? value.turn?.id ?? value.turnId : value.turnId);
+    if ((eventThread && eventThread !== threadId) || (errorTurn && errorTurn !== selectedTurn)) return;
+    const retrying = source === 'error' && value.willRetry === true;
+    const message = string(source === 'completed' ? value.turn?.error?.message : value.error?.message);
+    const publicMessage = !!message.trim() && !sensitiveError(message);
+    const terminal = source === 'completed' ? value.turn?.status === 'failed' : value.willRetry === false;
+    // A retry starts a different attempt even when the turn and message repeat.
+    if (retrying && errorTurn) for (const entry of items) if (entry.errorEvent?.turnId === errorTurn) entry.errorEvent.pairable = false;
+    // Reuse only the bounded visible entries. Long previews cannot prove full
+    // message equality, so they deliberately remain separate rather than collide.
+    const pairable = terminal && publicMessage && !!errorTurn && message.length <= PREVIEW_CHARACTERS;
+    if (pairable) {
+      const previous = [...items].reverse().find(entry => entry.role === 'error' && entry.errorEvent?.pairable && entry.errorEvent.turnId === errorTurn && entry.errorEvent.source !== source && entry.text === message);
+      if (previous) { previous.errorEvent!.pairable = false; return; }
+    }
+    upsert({ id: `error-${event.seq}`, role: retrying ? 'system' : 'error', text: publicMessage ? message : t('작업을 완료하지 못했습니다. 연결과 진행 중인 요청을 확인해 주세요.', 'The task could not finish. Check the connection and any pending requests.'), status: retrying ? 'retrying' : undefined, errorEvent: { turnId: errorTurn, source, pairable } });
+  }
   function receive(event: RuntimeEvent) {
     if (deleted) return;
     if (event.seq <= lastSeq) return;
@@ -444,8 +467,13 @@ export function createConversation(options: ConversationOptions) {
       if (threadId && value.threadId === threadId && value.threadSettings && typeof value.threadSettings === 'object' && !Array.isArray(value.threadSettings)) confirmedSettings(value.threadSettings.model, value.threadSettings.effort);
     }
     else if (event.method === 'turn/started') { liveRevision++; activityRevision++; activeTurn = string(value.turn?.id ?? value.turnId); activeTurnKnown = true; selectedTurn = activeTurn; items = []; nextItems = ''; itemsDirty = true; }
-    else if (event.method === 'turn/completed') { liveRevision++; activityRevision++; if (activeTurn === string(value.turn?.id ?? value.turnId)) { activeTurn = ''; activeTurnKnown = true; } if (value.turn?.error) upsert({ id: `error-${event.seq}`, role: 'error', text: t('작업을 완료하지 못했습니다. 연결과 진행 중인 요청을 확인해 주세요.', 'The task could not finish. Check the connection and any pending requests.') }); }
-    else if (event.method === 'error') upsert({ id: `error-${event.seq}`, role: 'error', text: t('작업을 완료하지 못했습니다. 연결과 진행 중인 요청을 확인해 주세요.', 'The task could not finish. Check the connection and any pending requests.') });
+    else if (event.method === 'turn/completed') {
+      const eventThread = string(value.threadId ?? value.turn?.threadId);
+      if (eventThread && eventThread !== threadId) return;
+      liveRevision++; activityRevision++; if (activeTurn === string(value.turn?.id ?? value.turnId)) { activeTurn = ''; activeTurnKnown = true; }
+      if (value.turn?.error) receiveError(event, 'completed');
+    }
+    else if (event.method === 'error') receiveError(event, 'error');
     else if (!value.turnId || value.turnId === selectedTurn) {
       if (event.method === 'item/started' || event.method === 'item/completed') { if (value.item) upsert(itemEntry(value.item)); }
       else if (event.method === 'item/agentMessage/delta') upsert({ id: string(value.itemId), role: 'assistant', text: string(value.delta), detail: value.delta?.__detail === true }, true);
