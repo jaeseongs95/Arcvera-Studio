@@ -1,5 +1,7 @@
 # Updater native probe — 실행 전 사례
 
+SP02 / 짧은 actual TEST 경로(2026-11-08): 원 helper12939fb/EXE9e5b04d4 및 tamper-only503 원자료를 보존한다. root가 고정 R39 dev-small CLI의 own 긴 HOME에서 `app-server daemon version`을 실행했을 때 control socket122바이트 때문에 exit1/`path must be shorter than SUN_LEN`을 직접 관측했다. CLI 담당의 c439 소스 조사와 transport/mod.rs의 실제 경로 조합도 대조했다. 별도 socket override를 추측해 넣지 않는다. 새 helper의 feature-gated exact fixture root만 `D:/codex/build/u-<32hex>`로 줄여 같은 home/codex suffix의 control path103바이트를 기대한다. 기존 identity test에서 이 길이와 short root 허용·old prefix 거부를 검사하고 기존 5개 pure validator를 그대로 CI에서 실행한다. nonce/marker/TEST id/pin/reparse/argc1/signature 경계는 유지한다. 제품 활성 소스·CLI·동결 실행본 변경0. 실제 short HOME의 상태 조회·설치/자동재시작·GUI준비·own서버회수는 새 helper/builder/controller와 사전 감사가 갖춰진 뒤 별도 실제 시험으로 확인하며 pure validator 통과로 대신하지 않는다.
+
 대상은 동결 제품 source `4f2a33cf8adcc731048b06804c56aca805e29584`, updater crate `2.14.1`, 최종 CI `42331873361`의 artifact `13558466303`이다. 이것은 helper-only 시험 후보이며 제품·릴리스 후보가 아니다. 제품 src/버전/기존 windows.yml/Cargo.lock/최종 asset 변경0, signing secret/private key 사용0, GUI/설치/재시작0이다.
 
 입력 ZIP SHA256 `59887ad85ed2f3c93a6dce0758d6fca85768ef6b4d9dd330d1c04590c8335525`를 먼저 확인한다. ZIP 내부 실제 updater `latest.json`과 installer/.sig 원본을 읽기만 한다. manifest/endpoint/comparator를 가짜 offer로 바꾸지 않는다. `restore_update`는 저장된 실제 metadata를 native plugin에 복원하는 공개 API다. `check/download/install`은 호출하지 않는다.

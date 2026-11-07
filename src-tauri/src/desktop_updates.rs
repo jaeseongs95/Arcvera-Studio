@@ -334,7 +334,9 @@ pub(crate) mod actual_probe {
     fn validate_identity(input: &Inputs) -> Result<(), String> {
         require(input.schema_version == 1 && matches!(input.mode.as_str(), "tamper-only" | "install"), "schema/mode refused")?;
         require(input.nonce.len() == 32 && input.nonce.bytes().all(|b| b.is_ascii_hexdigit()), "nonce must be 32 hex bytes")?;
-        require(input.fixture_root == format!("D:/codex/build/od161-updater-actual-{}", input.nonce) && safe_path(&input.fixture_root), "own fixture path refused")?;
+        // The real CLI control socket is 103 bytes with this exact TEST root;
+        // the previous prefix produced a 122-byte socket and exceeded SUN_LEN.
+        require(input.fixture_root == format!("D:/codex/build/u-{}", input.nonce) && safe_path(&input.fixture_root), "own fixture path refused")?;
         require(input.identifier == "io.agentgrid.desktop.test" && input.product_name.ends_with(" TEST")
             && input.product_name.len() <= 80 && input.product_name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_')), "TEST identity required")?;
         require(!input.main_binary.is_empty() && input.main_binary.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
@@ -484,7 +486,7 @@ pub(crate) mod actual_probe {
         use super::*;
         #[test]
         fn probe_paths_reject_aliases_and_nsis_delimiters() {
-            assert!(safe_path("D:/codex/build/od161-updater-actual-abc/install"));
+            assert!(safe_path("D:/codex/build/u-abc/install"));
             for bad in ["C:/Users/Someone", "D:/codex/build/../production", "D:/codex/build/a b", "D:/codex/build/a/", "D:/codex/build/a\\b", "D:/codex/build/a:stream", "D:/codex/build/a\"/R"] { assert!(!safe_path(bad), "{bad}"); }
         }
         #[test]
@@ -496,13 +498,18 @@ pub(crate) mod actual_probe {
         fn probe_identity_refuses_production_and_forged_current_version() {
             let pin = serde_json::json!({"name":"pending","sha256":"ab".repeat(32)});
             let mut input: Inputs = serde_json::from_value(serde_json::json!({
-                "schemaVersion":1,"nonce":"a".repeat(32),"fixtureRoot":format!("D:/codex/build/od161-updater-actual-{}","a".repeat(32)),
+                "schemaVersion":1,"nonce":"a".repeat(32),"fixtureRoot":format!("D:/codex/build/u-{}","a".repeat(32)),
                 "transportUrl":"https://artifact.example.invalid/parser-only.exe",
                 "mode":"tamper-only","version":"1.6.2","productName":"OpenDIY Desktop TEST","identifier":"io.agentgrid.desktop.test",
                 "mainBinary":"opendiy-desktop","installedExeSha256":"ab".repeat(32),"installer":pin,"signature":pin,"manifest":pin,
                 "publicKey":pin,"mergedConfig":pin,"packageReceipt":pin
             })).unwrap();
+            assert_eq!(format!("{}/home/codex/app-server-control/app-server-control.sock", input.fixture_root).len(), 103);
             assert!(validate_identity(&input).is_ok());
+            let short_root = input.fixture_root.clone();
+            input.fixture_root = format!("D:/codex/build/od161-updater-actual-{}", input.nonce);
+            assert!(validate_identity(&input).is_err());
+            input.fixture_root = short_root;
             input.identifier = "io.agentgrid.desktop".into();
             assert!(validate_identity(&input).is_err());
             input.identifier = "io.agentgrid.desktop.test".into();
