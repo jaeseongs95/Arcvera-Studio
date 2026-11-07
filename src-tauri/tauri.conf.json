@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenDIY Desktop",
+  "productName": "OpenDIY Desktop TEST",
   "version": "1.6.2",
-  "identifier": "io.agentgrid.desktop",
+  "identifier": "io.agentgrid.desktop.test",
   "plugins": {
     "updater": {
       "pubkey": ""
@@ -18,7 +18,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "OpenDIY Desktop",
+        "title": "OpenDIY Desktop TEST",
         "dragDropEnabled": false,
         "width": 1400,
         "height": 900,
