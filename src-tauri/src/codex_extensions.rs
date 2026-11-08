@@ -189,10 +189,11 @@ pub(super) struct CliCommandOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
-// Only the confirmed, fixed non-forcing transition can launch a replacement
+// Only an explicit transition can launch a replacement
 // managed daemon outside its short-lived launcher job. Queries never use this.
-pub(super) fn transition_daemon_output_until(exe: &OsString, cwd: &Path, deadline: Instant, cancelled: &Arc<AtomicBool>) -> Result<CliCommandOutput, String> {
-    command_output_with_job(exe, cwd, &super::runtime_transition::command_args(), deadline, Some(cancelled), true)
+pub(super) fn transition_daemon_output_until(exe: &OsString, cwd: &Path, deadline: Instant, cancelled: &Arc<AtomicBool>, replace_existing: bool) -> Result<CliCommandOutput, String> {
+    let args = if replace_existing { super::runtime_transition::replacement_command_args() } else { super::runtime_transition::command_args() };
+    command_output_with_job(exe, cwd, &args, deadline, Some(cancelled), true)
 }
 fn command_stdout_with_job(exe: &OsString, cwd: &Path, args: &[String], deadline: Instant, cancelled: Option<&Arc<AtomicBool>>, daemon_launcher: bool) -> Result<Vec<u8>, String> {
     let output = command_output_with_job(exe, cwd, args, deadline, cancelled, daemon_launcher)?;

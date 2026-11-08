@@ -6,7 +6,7 @@ const savedSessions = [
   { title: '이전 둘째 작업', cwd: 'D:\\startup-test', threadId: 'saved-b', resumeOnStartup: true },
 ];
 
-async function workspace(page: Page, options: { hold?: boolean; fail?: number; holdRetry?: boolean; saved?: boolean; holdSelected?: boolean; holdMutation?: boolean; failSelected?: number; failExit?: boolean; selectionResult?: 'cancel' | 'reject' } = {}) {
+async function workspace(page: Page, options: { hold?: boolean; fail?: number; holdRetry?: boolean; saved?: boolean; holdSelected?: boolean; holdMutation?: boolean; holdReplacement?: boolean; replacementFailure?: 'unknown' | 'reject'; failSelected?: number; failExit?: boolean; selectionResult?: 'cancel' | 'reject' } = {}) {
   await page.addInitScript(({ options, savedSessions }) => {
     const state = window as any; state.isTauri = true;
     let callback = 0;
@@ -17,7 +17,7 @@ async function workspace(page: Page, options: { hold?: boolean; fail?: number; h
       calls: [] as { command: string; args: any }[], live: [] as any[], preparations: 0, preparing: 0, maxPreparing: 0,
       failures: options.fail ?? 0, release: () => {},
       selected: 'A', prepared: [] as string[], startedWith: [] as string[], usageWith: [] as string[], completed: [] as string[],
-      selectedFailures: options.failSelected ?? 0, releaseMutation: () => {},
+      selectedFailures: options.failSelected ?? 0, releaseMutation: () => {}, releasePreview: () => {},
       failExit: options.failExit ?? false, exitPreparing: [] as number[],
       releaseFor(executable: string) { releases.get(executable)?.(); },
       visibility(visible: boolean) { listeners.get('application-visibility')?.({ event: 'application-visibility', id: 1, payload: visible }); },
@@ -32,12 +32,21 @@ async function workspace(page: Page, options: { hold?: boolean; fail?: number; h
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
         if (command === 'get_codex_settings') return settings();
-        if (command === 'choose_codex_executable' || command === 'set_codex_executable') {
+        if (['choose_codex_executable', 'set_codex_executable', 'choose_app_server_executable'].includes(command)) {
           if (!options.selectionResult) fixture.selected = 'B';
           if (options.holdMutation) await new Promise<void>(resolve => { fixture.releaseMutation = resolve; });
           if (options.selectionResult === 'cancel') return null;
           if (options.selectionResult === 'reject') throw '선택 저장 시험 오류';
           return settings();
+        }
+        if (command === 'runtime_transition_preview') {
+          if (options.holdReplacement) await new Promise<void>(resolve => { fixture.releasePreview = resolve; });
+          return { canApply: true, fingerprint: 'replacement-B', reason: null };
+        }
+        if (command === 'apply_runtime_transition') {
+          if (options.replacementFailure === 'reject') throw '교체 명령 시험 오류';
+          if (options.replacementFailure === 'unknown') return { status: 'shutdownOutcomeUnknown', success: false, outcome: 'unknown', message: '교체 명령 시험 불명' };
+          return { status: 'updated', success: true, outcome: 'updated', message: null };
         }
         if (command === 'list_projects') return [];
         if (command === 'list_sessions') return fixture.live;
@@ -86,6 +95,72 @@ async function workspace(page: Page, options: { hold?: boolean; fail?: number; h
 
 const calls = (page: Page, command: string) => page.evaluate(command => (window as any).startupFixture.calls.filter((item: any) => item.command === command), command);
 const persisted = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem('startup-layout') || 'null'));
+
+test('이전 준비 지연 완료는 서버 선택과 교체 사이에 새 준비를 시작하지 않는다', async ({ page }) => {
+  await workspace(page, { hold: true, holdReplacement: true, saved: false });
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(1);
+  await page.locator('#settings-open').click(); await page.locator('#codex-settings-open').click();
+  await page.locator('#app-server-executable-choose').click();
+  await expect.poll(async () => (await calls(page, 'runtime_transition_preview')).length).toBe(1);
+  await page.evaluate(() => (window as any).startupFixture.releaseFor('A'));
+  await expect.poll(() => page.evaluate(() => (window as any).startupFixture.completed)).toEqual(['A']);
+  await expect(page.locator('#runtime-banner')).toContainText('서버 전환 결과를 먼저 확인');
+  expect(await calls(page, 'prepare_runtime')).toHaveLength(1);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(0);
+  await page.evaluate(() => (window as any).startupFixture.releasePreview());
+  await expect(page.locator('#codex-settings-status')).toContainText('서버 교체');
+  await expect.poll(() => page.evaluate(() => (window as any).startupFixture.prepared)).toEqual(['A', 'B']);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+});
+
+test('서버 선택 취소는 전환 없이 준비 잠금을 해제한다', async ({ page }) => {
+  await workspace(page, { hold: true, saved: false, selectionResult: 'cancel' });
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(1);
+  await page.locator('#settings-open').click(); await page.locator('#codex-settings-open').click();
+  await page.locator('#app-server-executable-choose').click();
+  await expect(page.locator('#codex-settings-status')).toContainText('취소');
+  await page.evaluate(() => (window as any).startupFixture.releaseFor('A'));
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(2);
+  expect(await calls(page, 'runtime_transition_preview')).toHaveLength(0);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(0);
+});
+
+test('서버 선택 교체 중 설정을 닫아도 재시도가 교체를 앞서 준비하지 않는다', async ({ page }) => {
+  await workspace(page, { hold: true, holdReplacement: true, saved: false });
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(1);
+  await page.locator('#settings-open').click(); await page.locator('#codex-settings-open').click();
+  await page.locator('#app-server-executable-choose').click();
+  await expect.poll(async () => (await calls(page, 'runtime_transition_preview')).length).toBe(1);
+  await page.evaluate(() => (window as any).startupFixture.releaseFor('A'));
+  await expect(page.locator('#runtime-banner')).toContainText('서버 전환 결과를 먼저 확인');
+  await closeSettings(page);
+  await expect(page.locator('#runtime-retry')).toBeDisabled();
+  await page.locator('#runtime-retry').evaluate(button => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  expect(await calls(page, 'prepare_runtime')).toHaveLength(1);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(0);
+  await page.evaluate(() => (window as any).startupFixture.releasePreview());
+  await expect.poll(() => page.evaluate(() => (window as any).startupFixture.prepared)).toEqual(['A', 'B']);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+});
+
+for (const replacementFailure of ['unknown', 'reject'] as const) test(`교체 ${replacementFailure} 정산 후에는 자동 반복 없이 명시 재시도 잠금을 해제한다`, async ({ page }) => {
+  await workspace(page, { hold: true, holdReplacement: true, saved: false, replacementFailure });
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(1);
+  await page.locator('#settings-open').click(); await page.locator('#codex-settings-open').click();
+  await page.locator('#app-server-executable-choose').click();
+  await expect.poll(async () => (await calls(page, 'runtime_transition_preview')).length).toBe(1);
+  await page.evaluate(() => (window as any).startupFixture.releaseFor('A'));
+  await expect(page.locator('#runtime-retry')).toBeDisabled();
+  await page.evaluate(() => (window as any).startupFixture.releasePreview());
+  await expect(page.locator('#codex-settings-error')).toContainText('교체 명령 시험');
+  expect(await calls(page, 'prepare_runtime')).toHaveLength(1);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+  await closeSettings(page);
+  await expect(page.locator('#runtime-retry')).toBeEnabled();
+  await page.locator('#runtime-retry').click();
+  await expect.poll(async () => (await calls(page, 'prepare_runtime')).length).toBe(2);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+});
 
 async function selectExecutable(page: Page, reset = false) {
   await page.locator('#settings-open').click(); await page.locator('#codex-settings-open').click();

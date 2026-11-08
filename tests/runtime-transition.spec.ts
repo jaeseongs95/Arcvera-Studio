@@ -31,6 +31,7 @@ async function settings(page: Page, options: { holdPreview?: boolean; holdApply?
         }
         if (command === 'runtime_transition_preview') {
           const reply = structuredClone(fixture.preview);
+          if (args.replaceExisting) reply.fingerprint += '-replace';
           if (options.holdPreview) await new Promise<void>(resolve => { fixture.releasePreview = resolve; });
           return reply;
         }
@@ -141,7 +142,15 @@ for (const selector of controls.slice(0, 4)) {
     await page.locator(selector).click();
     await expect(page.locator('.transition-confirmation')).toBeHidden();
     await expect(page.locator('.transition-details')).toBeHidden();
-    expect(await calls(page, 'runtime_transition_preview')).toHaveLength(1);
+    const replacing = selector.startsWith('#app-server-');
+    expect(await calls(page, 'runtime_transition_preview')).toHaveLength(replacing ? 2 : 1);
+    if (replacing) {
+      await expect(page.locator('#codex-settings-status')).toContainText('서버 교체');
+      expect(await calls(page, 'apply_runtime_transition')).toEqual([{ command: 'apply_runtime_transition', args: { confirmed: true, fingerprint: 'candidate-A-new-replace', replaceExisting: true } }]);
+      await page.locator('.transition-preview').click();
+      await expect(page.locator('.transition-align')).toBeHidden();
+      return;
+    }
     expect(await calls(page, 'apply_runtime_transition')).toHaveLength(0);
     await confirm(page);
     await expect.poll(async () => (await calls(page, 'apply_runtime_transition')).length).toBe(1);

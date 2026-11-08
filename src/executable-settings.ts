@@ -1,5 +1,5 @@
 import { createRuntimeCompatibility } from './runtime-compatibility';
-import { createRuntimeTransition } from './runtime-transition';
+import { createRuntimeTransition, runtimeTransitionSucceeded } from './runtime-transition';
 import { onLanguageChange, t } from './i18n';
 
 interface CodexSettings {
@@ -16,7 +16,7 @@ interface CodexSettings {
   };
 }
 
-export function createExecutableSettings(call: <T>(command: string, args?: Record<string, unknown>) => Promise<T>) {
+export function createExecutableSettings(call: <T>(command: string, args?: Record<string, unknown>) => Promise<T>, onServerSelectionPending: (pending: boolean) => void = () => {}) {
   const dialog = document.createElement('dialog');
   dialog.id = 'codex-settings-dialog';
   dialog.setAttribute('aria-labelledby', 'codex-settings-title');
@@ -62,7 +62,7 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
   for (const [selector, ko, en] of [
     ['.eyebrow', '실행 파일', 'EXECUTABLE'],
     ['#codex-settings-title', '실행 파일 설정', 'Executable settings'],
-    ['#codex-settings-description', 'Codex CLI와 앱 서버를 선택하세요. 설정은 바로 저장되며 실행 중인 서버는 바뀌지 않습니다.', 'Choose the Codex CLI and app server. Settings are saved immediately; running servers remain unchanged.'],
+    ['#codex-settings-description', 'Codex CLI와 앱 서버를 선택하세요. 새 앱 서버를 선택하면 기존 공유 서버를 종료하고 선택한 서버로 교체합니다.', 'Choose the Codex CLI and app server. Selecting a new app server stops the existing shared server and replaces it with your selection.'],
     ['#codex-cli-heading', 'Codex CLI', 'Codex CLI'],
     ['#app-server-heading', '앱 서버', 'App server'],
     ['label[for="app-server-executable-path"]', '직접 지정한 서버 파일', 'Selected server file'],
@@ -75,7 +75,7 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
     ['label[for="codex-executable-path"]', '직접 지정한 파일', 'Selected file'],
     ['#codex-executable-resolved-label', '선택된 CLI 경로', 'Selected CLI path'],
     ['#codex-executable-source-label', '찾은 위치', 'Source'],
-    ['#codex-settings-scope', '선택한 서버는 버전 확인과 패키지 전환에 사용합니다. 선택만 바꿔서는 열린 세션이나 공유 서버를 교체하지 않습니다. 실제 실행 버전은 아래 서버 버전 확인에서 확인하세요.', 'The server candidate is used for version checks and package transitions. Changing the selection alone does not replace open sessions or the shared server. Check the actual running version below.'],
+    ['#codex-settings-scope', '새 서버를 선택하면 기존 공유 서버를 종료하고 선택한 서버 패키지로 시작합니다. 관리 서버는 패키지의 CLI를 통해 실행됩니다. 실행 중인 작업과 다른 창의 연결이 중단될 수 있습니다. 전체 패키지를 사용하며, 실행 파일만 선택한 경우에는 파일 3개가 모두 동일한 설치 패키지가 있을 때만 재사용합니다.', 'Selecting a new server stops the existing shared server and starts the selected server package. The managed server runs through the package CLI. Running work and connections in other windows may be interrupted. A complete package is required; a runtime-only selection reuses an installed package only when all three executable files are identical.'],
     ['#codex-settings-discovery', '자동 찾기는 환경변수, PATH 순서로 실행 파일을 찾습니다.', 'Automatic discovery checks the environment variable, then PATH.'],
     ['#codex-executable-reset', '자동 찾기로 변경', 'Use automatic discovery'],
     ['#codex-executable-choose', '실행 파일 선택…', 'Choose executable…'],
@@ -126,14 +126,37 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
     const token = version;
     error.hidden = true;
     const choosing = command.startsWith('choose_');
+    const serverSelection = ['choose_app_server_executable', 'set_app_server_executable'].includes(command);
+    if (serverSelection) onServerSelectionPending(true);
     setBusy(true, choosing ? '파일 선택을 기다리는 중…' : '자동 찾기로 변경 중…', choosing ? 'Waiting for file selection…' : 'Switching to automatic discovery…');
-    const operation = call<CodexSettings | null>(command, args);
+    let replaced = false;
+    const operation = (async () => {
+      const settings = await call<CodexSettings | null>(command, args);
+      if (settings && serverSelection) {
+        if (current(token)) {
+          show(settings);
+          text(status, '기존 서버를 종료하고 선택한 서버로 교체하는 중…', 'Stopping the existing server and switching to the selected server…');
+        }
+        // Finish the selected operation even if the settings dialog closes.
+        // A lost response is an unknown outcome, never an automatic retry.
+        const preview = await call<{ canApply: boolean; fingerprint: string; reason: string | null }>('runtime_transition_preview', { replaceExisting: true });
+        if (preview?.canApply !== true || typeof preview.fingerprint !== 'string' || !preview.fingerprint.trim() || preview.fingerprint.length > 8192
+          || preview.reason !== null && typeof preview.reason !== 'string') {
+          throw new Error(preview?.reason || t('선택한 서버로 교체할 수 없습니다.', 'Cannot switch to the selected server.'));
+        }
+        if (current(token) && preview.reason) text(status, preview.reason);
+        const result = await call<{ message?: string }>('apply_runtime_transition', { confirmed: true, fingerprint: preview.fingerprint, replaceExisting: true });
+        if (!runtimeTransitionSucceeded(result)) throw new Error(result?.message || t('서버 교체 결과를 확인하지 못했습니다. 자동으로 재시도하지 않습니다.', 'The server replacement outcome is unknown. It will not be retried automatically.'));
+        replaced = true;
+      }
+      return settings;
+    })();
     mutation = operation;
     try {
       const settings = await operation;
-      if (current(token)) { if (settings) show(settings); text(status, settings ? '설정이 저장되었습니다.' : '파일 선택을 취소했습니다.', settings ? 'Settings saved.' : 'File selection canceled.'); }
+      if (current(token)) { if (settings) show(settings); text(status, replaced ? '서버 교체와 새 서버 연결 확인이 완료되었습니다.' : settings ? '설정이 저장되었습니다.' : '파일 선택을 취소했습니다.', replaced ? 'Server replacement and the new server connection check are complete.' : settings ? 'Settings saved.' : 'File selection canceled.'); }
     } catch (cause) { if (current(token)) { text(status, ''); showError(cause); } }
-    finally { if (mutation === operation) mutation = undefined; if (current(token)) setBusy(false); }
+    finally { if (mutation === operation) mutation = undefined; if (serverSelection) onServerSelectionPending(false); if (current(token)) setBusy(false); }
   }
   choose.onclick = () => void change('choose_codex_executable');
   reset.onclick = () => void change('set_codex_executable', { path: null });

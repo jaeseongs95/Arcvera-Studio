@@ -322,45 +322,82 @@ fn ordinary_spawn_remains_unsuspended_and_invalid_job_never_falls_back() {
 #[test]
 fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
     let harness = Harness::new();
-    let suspended = harness
-        .pair
-        .as_ref()
-        .unwrap()
-        .slave
-        .spawn_command_in_job_suspended(harness.command(), harness.job())
-        .unwrap();
-    let (mut child, token) = suspended.into_parts();
-    harness.assert_in_job(child.as_ref());
-    drop(token);
-    assert_eq!(
-        unsafe { WaitForSingleObject(child.as_raw_handle().unwrap() as _, 10_000) },
-        0
-    );
-    assert!(!child.wait().unwrap().success());
-    assert!(!harness.directory.join("entered").exists());
-    let suspended = harness
-        .pair
-        .as_ref()
-        .unwrap()
-        .slave
-        .spawn_command_in_job_suspended(harness.command(), harness.job())
-        .unwrap();
-    drop(suspended);
-    let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-    assert_ne!(
-        unsafe {
-            QueryInformationJobObject(
-                harness.job.as_raw_handle() as _,
-                JobObjectBasicAccountingInformation,
-                &mut info as *mut _ as _,
-                std::mem::size_of_val(&info) as u32,
-                std::ptr::null_mut(),
-            )
-        },
-        0
-    );
-    assert_eq!(info.ActiveProcesses, 0, "uncommitted target remained");
-    assert!(!harness.directory.join("entered").exists());
+    for whole_launch in [false, true] {
+        for iteration in 0..8 {
+            let suspended = harness
+                .pair
+                .as_ref()
+                .unwrap()
+                .slave
+                .spawn_command_in_job_suspended(harness.command(), harness.job())
+                .unwrap();
+            let (child, token) = suspended.into_parts();
+            harness.assert_in_job(child.as_ref());
+            let observer = unsafe { BorrowedHandle::borrow_raw(child.as_raw_handle().unwrap()) }
+                .try_clone_to_owned()
+                .unwrap();
+            let child = if whole_launch {
+                // Reassemble the same launch so its complete Drop path is tested
+                // while an independent handle still identifies the exact target.
+                drop(super::SuspendedPtyChild::new(child, token));
+                None
+            } else {
+                drop(token);
+                Some(child)
+            };
+            assert_eq!(
+                unsafe { WaitForSingleObject(observer.as_raw_handle() as _, 10_000) },
+                0,
+                "target did not terminate: whole_launch={whole_launch}, iteration={iteration}"
+            );
+            let mut exit_code = 0;
+            assert_ne!(
+                unsafe {
+                    winapi::um::processthreadsapi::GetExitCodeProcess(
+                        observer.as_raw_handle() as _,
+                        &mut exit_code,
+                    )
+                },
+                0
+            );
+            assert_ne!(exit_code, 0, "a cancelled launch must not succeed");
+            if let Some(mut child) = child {
+                assert!(!child.wait().unwrap().success());
+                drop(child);
+            }
+            assert!(!harness.directory.join("entered").exists());
+            // ActiveProcesses includes terminated processes until all process
+            // references are released. Do not let our observation handle keep
+            // the target in the accounting we are about to check.
+            drop(observer);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
+                    unsafe { std::mem::zeroed() };
+                assert_ne!(
+                    unsafe {
+                        QueryInformationJobObject(
+                            harness.job.as_raw_handle() as _,
+                            JobObjectBasicAccountingInformation,
+                            &mut info as *mut _ as _,
+                            std::mem::size_of_val(&info) as u32,
+                            std::ptr::null_mut(),
+                        )
+                    },
+                    0
+                );
+                if info.ActiveProcesses == 0 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "uncommitted target remained: active={}, whole_launch={whole_launch}, iteration={iteration}",
+                    info.ActiveProcesses
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 #[test]

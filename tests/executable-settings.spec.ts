@@ -5,13 +5,14 @@ const automaticPath = 'C:\\tools\\codex.exe';
 const automaticServerPath = 'C:\\tools\\codex-app-server.exe';
 const chosenServerPath = 'D:\\도구\\Codex CLI\\codex-app-server.exe';
 const manualServerPath = 'D:\\서버\\custom-server.exe';
-async function mockSettings(page: Page, options: { holdChoose?: boolean; holdServerChoose?: boolean; unavailable?: boolean; getFailure?: boolean } = {}) {
+async function mockSettings(page: Page, options: { holdChoose?: boolean; holdServerChoose?: boolean; holdReplacement?: boolean; unavailable?: boolean; getFailure?: boolean } = {}) {
   await page.addInitScript(({ chosenPath, automaticPath, automaticServerPath, chosenServerPath, manualServerPath, options }) => {
     const state = window as any;
     state.isTauri = true;
     let callback = 0;
     state.settingsFixture = {
       calls: [], choices: 0, serverChoices: 0, releaseChoose: () => {}, releaseServerChoose: () => {}, serverOutcome: 'save', getFailure: options.getFailure,
+      replacementOutcome: 'updated', replacementSupported: true, releaseReplacement: () => {},
       settings: options.unavailable ? { savedPath: null, resolvedPath: null, source: 'unavailable', error: 'Codex 실행 파일을 찾을 수 없습니다' }
         : { savedPath: null, resolvedPath: automaticPath, source: 'environment', error: null },
     };
@@ -59,6 +60,14 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
           if (args.path !== null) throw new Error('expected automatic server reset');
           fixture.settings = { ...fixture.settings, appServer: automaticServer() };
           return fixture.settings;
+        }
+        if (command === 'runtime_transition_preview') return {
+          pair: { cliVersion: '0.167.0', selectedServerExecutable: fixture.settings.appServer.resolvedPath, selectedServerVersion: '0.167.0', managedCliExecutable: automaticPath, managedVersion: '0.166.0', runningVersion: '0.166.0', socketPath: 'D:\\fixture.sock', state: 'mismatch', message: null },
+          canApply: fixture.replacementSupported, fingerprint: 'selected-server', reason: fixture.replacementSupported ? null : '전체 패키지가 필요합니다. 기존 서버는 종료하지 않았습니다.', packageRoot: 'D:\\fixture',
+        };
+        if (command === 'apply_runtime_transition') {
+          if (options.holdReplacement) await new Promise<void>(resolve => { fixture.releaseReplacement = resolve; });
+          return { status: fixture.replacementOutcome, success: fixture.replacementOutcome === 'updated', outcome: fixture.replacementOutcome === 'updated' ? 'updated' : 'unknown', message: fixture.replacementOutcome === 'updated' ? null : '서버 종료 결과 미확인' };
         }
         return null;
       },
@@ -159,7 +168,7 @@ test('앱 서버 자동짝 선택과 수동 선택·취소·저장 실패·자�
   await page.locator('#app-server-executable-reset').click();
   await expect(page.locator('#app-server-executable-path')).toHaveValue('');
   await expect(page.locator('#app-server-executable-resolved')).toHaveText(automaticServerPath);
-  await expect(page.locator('#codex-settings-scope')).toContainText('선택만 바꿔서는 열린 세션이나 공유 서버를 교체하지 않습니다');
+  await expect(page.locator('#codex-settings-scope')).toContainText('기존 공유 서버를 종료');
   await page.screenshot({ path: testInfo.outputPath('runtime-pair-settings-ko.png'), fullPage: true });
   await page.setViewportSize({ width: 800, height: 540 });
   await page.locator('#app-server-executable-choose').scrollIntoViewIfNeeded();
@@ -170,6 +179,59 @@ test('앱 서버 자동짝 선택과 수동 선택·취소·저장 실패·자�
   const calls = await page.evaluate(() => (window as any).settingsFixture.calls);
   expect(calls.filter((call: any) => call.command === 'set_app_server_executable')).toEqual([{ command: 'set_app_server_executable', args: { path: null } }]);
   expect(calls.filter((call: any) => ['start_session', 'session_stop', 'complete_exit'].includes(call.command))).toEqual([]);
+});
+
+test('새 서버 선택은 별도 버전 맞추기 없이 교체하며 같은 경로의 명시 재선택도 적용한다', async ({ page }) => {
+  await mockSettings(page);
+  await page.locator('#app-server-executable-choose').click();
+  await expect(page.locator('#codex-settings-status')).toContainText('서버 교체');
+  let calls = await page.evaluate(() => (window as any).settingsFixture.calls);
+  expect(calls.filter((item: any) => item.command === 'runtime_transition_preview')).toEqual([{ command: 'runtime_transition_preview', args: { replaceExisting: true } }]);
+  expect(calls.filter((item: any) => item.command === 'apply_runtime_transition')).toEqual([{ command: 'apply_runtime_transition', args: { confirmed: true, fingerprint: 'selected-server', replaceExisting: true } }]);
+  await page.locator('#app-server-executable-choose').click();
+  calls = await page.evaluate(() => (window as any).settingsFixture.calls);
+  expect(calls.filter((item: any) => item.command === 'apply_runtime_transition')).toHaveLength(2);
+});
+
+test('서버 교체 결과 불명은 저장 성공으로 표시하거나 자동 재시도하지 않는다', async ({ page }) => {
+  await mockSettings(page);
+  await page.evaluate(() => { (window as any).settingsFixture.replacementOutcome = 'shutdownOutcomeUnknown'; });
+  await page.locator('#app-server-executable-choose').click();
+  await expect(page.locator('#codex-settings-error')).toContainText('서버 종료 결과 미확인');
+  await expect(page.locator('#codex-settings-status')).not.toContainText('저장되었습니다');
+  expect(await page.evaluate(() => (window as any).settingsFixture.calls.filter((item: any) => item.command === 'apply_runtime_transition').length)).toBe(1);
+});
+
+test('서버 선택 취소는 교체 명령을 실행하지 않는다', async ({ page }) => {
+  await mockSettings(page);
+  await page.evaluate(() => { (window as any).settingsFixture.serverOutcome = 'cancel'; });
+  await page.locator('#app-server-executable-choose').click();
+  await expect(page.locator('#codex-settings-status')).toContainText('취소');
+  expect(await page.evaluate(() => (window as any).settingsFixture.calls.filter((item: any) => item.command === 'apply_runtime_transition').length)).toBe(0);
+});
+
+test('교체 진행 중 닫기·재열기와 중복 클릭은 서버 교체를 다시 실행하지 않는다', async ({ page }) => {
+  await mockSettings(page, { holdReplacement: true });
+  await page.locator('#app-server-executable-choose').click();
+  await expect.poll(() => page.evaluate(() => (window as any).settingsFixture.calls.filter((item: any) => item.command === 'apply_runtime_transition').length)).toBe(1);
+  await expect(page.locator('#app-server-executable-choose')).toBeDisabled();
+  await page.locator('#app-server-executable-choose').evaluate(button => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await page.locator('#codex-settings-close').click();
+  await page.locator('#codex-settings-open').click();
+  await expect(page.locator('#app-server-executable-choose')).toBeDisabled();
+  await page.evaluate(() => (window as any).settingsFixture.releaseReplacement());
+  await expect(page.locator('#app-server-executable-choose')).toBeEnabled();
+  await expect(page.locator('#app-server-executable-path')).toHaveValue(manualServerPath);
+  expect(await page.evaluate(() => (window as any).settingsFixture.calls.filter((item: any) => item.command === 'apply_runtime_transition').length)).toBe(1);
+});
+
+test('전체 패키지를 확인하지 못하면 종료 요청 없이 선택한 경로와 원인을 표시한다', async ({ page }) => {
+  await mockSettings(page);
+  await page.evaluate(() => { (window as any).settingsFixture.replacementSupported = false; });
+  await page.locator('#app-server-executable-choose').click();
+  await expect(page.locator('#app-server-executable-path')).toHaveValue(manualServerPath);
+  await expect(page.locator('#codex-settings-error')).toContainText('기존 서버는 종료하지 않았습니다');
+  expect(await page.evaluate(() => (window as any).settingsFixture.calls.filter((item: any) => item.command === 'apply_runtime_transition').length)).toBe(0);
 });
 
 test('CLI를 바꾸면 자동 서버 경로도 갱신하고 CLI fallback과 서버 오류를 표시한다', async ({ page }) => {
