@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "remote-170-actual-native-ui",
+  "contractDigest": "sha256:8ccb770a27aeba088a292c2fe5fe83f90bcec70976a37636b0fe2bf6d00cd78c",
+  "requirements": [
+    "AC-01",
+    "AC-02",
+    "AC-03",
+    "AC-05"
+  ],
+  "scopeFiles": [
+    "src-tauri/src/relay.rs",
+    "src-tauri/src/relay_dispatch.rs",
+    "src/relay-control.ts",
+    "native-ui.mjs"
+  ],
+  "runner": "Existing Playwright CDP + Node assertions, installed dependencies only",
+  "environment": "Fresh Windows CI runner; frozen release artifact; own app data/loopback, no production app or CLI",
+  "cases": [
+    {
+      "id": "native-ui-relay",
+      "requirementIds": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-05"
+      ],
+      "scenario": "Native settings connection, relay roundtrip against same Engine, directory contract, denied exit,401, explicit disconnect and normal app exit",
+      "entryPoint": "Packaged actual Tauri window settings → Remote",
+      "level": "e2e",
+      "expectedBehavior": "Actual registered required; secret clears; remote project visible locally; list_directory currentPath; denial never success; releaseConfirmed; native process exit0",
+      "oracle": "Pinned protocol1.0.0 and independent local Engine list comparison; exact artifact hash",
+      "testFiles": [
+        "native-ui.mjs"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Adds actual platform/IPC boundary absent from mocked UI cases; no artificial product mutation. Local first attempt exited through singleton, preserved as NOT_RUN native boundary.",
+      "argv": [
+        "node",
+        "verification/remote-integration/native-ui.mjs"
+      ]
+    }
+  ],
+  "exclusions": [
+    "Physical phone",
+    "Production TLS/relay",
+    "CLI/TUI/model runtime",
+    "Other sessions data"
+  ]
+}

@@ -9,10 +9,15 @@ on:
         description: 'Create updater-signed NSIS assets (requires existing signing configuration; never publishes)'
         type: boolean
         default: false
+      remote_ui_only:
+        description: 'Test the frozen 29cf53f artifact in an isolated native window (test branch only)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   frontend:
+    if: ${{ !inputs.remote_ui_only }}
     runs-on: windows-latest
     timeout-minutes: 60
     # Isolate cumulative Vite/Chromium loopback traffic on fresh runners.
@@ -73,6 +78,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   native:
+    if: ${{ !inputs.remote_ui_only }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -154,7 +160,7 @@ jobs:
           retention-days: 14
   windows:
     needs: [frontend, native]
-    if: ${{ always() }}
+    if: ${{ always() && !inputs.remote_ui_only }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -292,4 +298,36 @@ jobs:
             artifacts/self-test.stderr.txt
             artifacts/self-test-execution.json
           if-no-files-found: warn
+          retention-days: 14
+  remote-native-ui:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.remote_ui_only }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Download the frozen product artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 42480861393 --repo jaeseongs95/opendiy-desktop --name opendiy-desktop-windows-x64 --dir verification/remote-integration/package-29cf53f
+      - name: Actual native UI and relay boundary
+        run: node verification/remote-integration/native-ui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: remote-native-ui-29cf53f
+          path: |
+            verification/remote-integration/native-*/result.json
+            verification/remote-integration/native-*/*.png
+            verification/remote-integration/native-*/app.*.txt
+            verification/remote-integration/native-ui-last.json
+          if-no-files-found: error
           retention-days: 14
