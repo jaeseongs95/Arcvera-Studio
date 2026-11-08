@@ -1,0 +1,36 @@
+{
+  "schema": "desktop-test-identity-preparation-v1",
+  "preparedAt": "2026-11-08T16:59:41.054Z",
+  "productCandidate": "63b4863c2c2fe0c9c9ab6e0e6f7fd38103d6fc1b",
+  "overlaySource": "90f0b4eb3871a7a3167a9bd0c9ab5ecb0d0fc31e",
+  "identity": {
+    "productName": "OpenDIY Desktop TEST",
+    "identifier": "io.agentgrid.desktop.test",
+    "title": "OpenDIY Desktop TEST"
+  },
+  "cases": [
+    {
+      "id": "IDENTITY",
+      "expected": "Only productName,identifier,app.windows[0].title differ in effective config; no product source change."
+    },
+    {
+      "id": "CI-PACKAGE",
+      "expected": "All5 jobs pass; package11SHA/source/run/ZIPEXE and PE TEST strings verified."
+    },
+    {
+      "id": "BOUNDARY",
+      "expected": "Ownartifact only; old634/90f kept; no installation/GUI success claim."
+    }
+  ],
+  "execution": "Existing windows.yml workflow_dispatch; updater_package false",
+  "notRun": [
+    "Actual GUI T65/T66/T69/T74",
+    "Installation",
+    "Release"
+  ],
+  "constraints": [
+    "No localCargo/native test runner",
+    "Preserve installed1.6.4 and existingGUI",
+    "New product does not inherit old GUI results"
+  ]
+}
