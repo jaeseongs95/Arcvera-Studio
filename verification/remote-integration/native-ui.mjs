@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 
-const base = path.resolve('verification/remote-integration');
+process.chdir(path.resolve(import.meta.dirname, '../..'));
+const base = import.meta.dirname;
 const root = path.join(base, 'native-' + randomUUID());
 const exe = path.join(base, 'package-29cf53f/opendiy-desktop.exe');
 const report = { candidate: '29cf53f7ac658fa5c3fe18ddc6755b9961126ab6', merge: '40d0253de47b25a6ff32912c9f29bf0de40dd92c', started: new Date().toISOString(), root, cases: [], scope: 'Actual packaged Tauri UI + pinned relay + same Engine, no CLI/TUI/model/physical mobile/production connection' };
@@ -23,6 +24,11 @@ async function until(fn, label, timeout = 15000) {
 let app, browser, instance, page, exit;
 const stdout = [], stderr = [];
 try {
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const groups = execFileSync('whoami.exe', ['/groups', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+    report.mediumIntegrity = groups.includes('S-1-16-8192');
+    assert.equal(report.mediumIntegrity, true, 'Actual UI must run at medium integrity: elevated WebView2 ignores debugging env');
+  }
   assert.equal(sha(await fs.readFile(exe)), '4643876993028c7bc66808b267d2a2dbf6e05d984b0c08ec709ff7bdd600de66');
   check('exact-packaged-executable');
   const source = await fetch('https://raw.githubusercontent.com/jaeseongs95/opendiy-remote/56c1968cbdc1626005993f1dc32f64d936c10f00/server/remote-server.mjs', { signal: AbortSignal.timeout(20000) });

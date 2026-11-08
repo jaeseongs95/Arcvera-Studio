@@ -319,7 +319,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh run download 42480861393 --repo jaeseongs95/opendiy-desktop --name opendiy-desktop-windows-x64 --dir verification/remote-integration/package-29cf53f
       - name: Actual native UI and relay boundary
-        run: node verification/remote-integration/native-ui.mjs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $nodeExe=(Get-Command node.exe).Source
+          $script=(Resolve-Path 'verification/remote-integration/native-ui.mjs').Path
+          if ($nodeExe -match '\s' -or $script -match '\s') { throw 'This CI launcher requires whitespace-free paths' }
+          $result=Join-Path $PWD 'verification/remote-integration/native-ui-last.json'
+          if(Test-Path -LiteralPath $result){throw 'Unexpected previous result'}
+          # Same CI user with reduced privileges; no UAC/registry/security-policy changes.
+          & runas.exe /trustlevel:0x20000 "$nodeExe $script"
+          if($LASTEXITCODE -ne 0){throw 'Restricted UI runner did not launch'}
+          $deadline=[DateTime]::UtcNow.AddMinutes(2)
+          while(!(Test-Path -LiteralPath $result)){
+            if([DateTime]::UtcNow -ge $deadline){throw 'Restricted UI runner result deadline'}
+            Start-Sleep -Milliseconds 250
+          }
+          $actual=Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+          $actual | ConvertTo-Json -Depth 6
+          if(!$actual.pass){throw 'Actual native UI regression failed'}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
