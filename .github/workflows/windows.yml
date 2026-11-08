@@ -32,6 +32,15 @@
           }
         },
         {
+          "run": "npm ci"
+        },
+        {
+          "run": "node scripts/notices.mjs"
+        },
+        {
+          "run": "npm run build"
+        },
+        {
           "name": "Compile only the native library test executable",
           "shell": "pwsh",
           "run": "$ErrorActionPreference = 'Stop'\n$PSNativeCommandUseErrorActionPreference = $false\n$out = Join-Path $env:RUNNER_TEMP 'update-network-probe'\nNew-Item -ItemType Directory -Path $out | Out-Null\ncargo test --locked --manifest-path src-tauri/Cargo.toml --no-run --lib --message-format=json 1> \"$out/build.jsonl\" 2> \"$out/build.stderr.txt\"\nif ($LASTEXITCODE -ne 0) { Get-Content -LiteralPath \"$out/build.stderr.txt\"; throw 'Native test EXE compilation failed' }\n$artifacts = @(Get-Content -LiteralPath \"$out/build.jsonl\" | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop } | Where-Object {\n  $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'agent_grid_lib' -and\n  $_.profile.test -eq $true -and $_.executable -and $_.executable.EndsWith('.exe')\n})\nif ($artifacts.Count -ne 1) { throw 'Exactly one agent_grid_lib test executable required' }\nCopy-Item -LiteralPath $artifacts[0].executable -Destination \"$out/updater-network-probe.exe\"\n@{commit=$env:GITHUB_SHA;run=$env:GITHUB_RUN_ID;sourceSHA256=(Get-FileHash -LiteralPath 'src-tauri/src/desktop_updates.rs' -Algorithm SHA256).Hash.ToLowerInvariant();testEXESHA256=(Get-FileHash -LiteralPath \"$out/updater-network-probe.exe\" -Algorithm SHA256).Hash.ToLowerInvariant();compiledOnly=$true;testExecuted=$false;productBuild=$false} | ConvertTo-Json -Compress"
