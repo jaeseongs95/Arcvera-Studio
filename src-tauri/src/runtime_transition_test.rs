@@ -8,6 +8,10 @@ const MARKER: &str = "opendiy-runtime-test-v1\n";
 const CONFIRMATION_ERROR: &str = "서버 전환은 앱에서 작업 종료와 연결 변경을 확인한 뒤에만 실행할 수 있습니다.";
 const STALE_ERROR: &str = "서버 또는 선택한 패키지가 바뀌었습니다. 버전을 다시 확인한 뒤 전환하세요.";
 
+#[cfg(all(test, windows))]
+#[path = "../../verification/runtime-transition-171/socket_guard_tests.rs"]
+mod socket_guard_tests;
+
 struct Options { root: PathBuf, cli: PathBuf, server: PathBuf, report: PathBuf, action: String, fingerprint: Option<String>, replace_existing: bool }
 
 fn options(args: &[String]) -> Result<Options, String> {

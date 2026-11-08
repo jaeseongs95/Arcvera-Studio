@@ -1,0 +1,25 @@
+{
+  "schema": "socket-guard-fix-plan-v1",
+  "writtenAt": "2026-11-08T16:40:02.354Z",
+  "task": "task-8350e40f-0bf6-4080-a26d-6cc13cccaffd",
+  "failure": "A631-01",
+  "observed": "bf7 own running preview exit1/false/os1920; own AF_UNIX socket realpath fails1920 and reparseTag0x80000023 while parent resolves.",
+  "requirements": [
+    "Keep exact own root/environment/report and redirected path rejection.",
+    "Permit Windows AF_UNIX endpoint leaf by verifying its exact nonredirecting reparse tag with no-follow handle, then canonicalize its parent; never swallow arbitrary1920 or metadata errors.",
+    "No product GUI or CLI auth/ACL/runtime selection changes."
+  ],
+  "testCases": [
+    {
+      "id": "SOCKET-LIVE",
+      "oracle": "Actual bound Windows AF_UNIX socket canonicalize reports1920 while observed_path accepts it inside canonical own root."
+    },
+    {
+      "id": "SOCKET-ESCAPE",
+      "oracle": "Absolute outside endpoint, parent traversal, and socket under own junction targeting outside are rejected."
+    }
+  ],
+  "testSequence": "Add exact native regression to Windows CI before fix; preserve assertion RED. Apply only narrow source fix, same test bytes then Windows CI GREEN. No local Rust. Revalidate real R40 running preview/unchanged daemon and original8boundaries on new packaged EXE.",
+  "limits": "CI2cargo jobs,1local runtime at a time; no operating process/data/log/installation; original failures preserved.",
+  "status": "PLANNED"
+}

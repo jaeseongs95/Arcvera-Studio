@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "desktop-171-runtime-transition-socket-guard",
+  "contractDigest": "sha256:1de0e7a95116ad4cd1903289c33f5e3b4b1a0053fb4e4e83b4ef58a26a7ba92a",
+  "requirements": [
+    "INV-ISOLATION",
+    "INV-RESULT"
+  ],
+  "scopeFiles": [
+    "src-tauri/src/runtime_transition_test.rs",
+    "verification/runtime-transition-171/socket_guard_tests.rs"
+  ],
+  "runner": "Existing Windows native CI, actual WinSock AF_UNIX bind; no local Cargo.",
+  "environment": "Windows GitHub Actions, own temp fixture with canonical allowed parent and own junction to a sibling outside allowed parent; no product GUI/daemon/model.",
+  "cases": [
+    {
+      "id": "SOCKET-GUARD",
+      "requirementIds": [
+        "INV-ISOLATION",
+        "INV-RESULT"
+      ],
+      "scenario": "Real AF_UNIX leaf raises1920; allowed parent succeeds, foreign junction/absolute/traversal denied and missing endpoint remains supported.",
+      "entryPoint": "observed_path called by actual headless preview_paths",
+      "level": "integration",
+      "expectedBehavior": "Allow exact nonredirecting AF_UNIX tag only under canonical own parent; reject redirected/outside paths and preserve all I/O failures.",
+      "oracle": "Named actual_windows_socket_leaf_is_accepted_inside_owned_parent and actual_windows_socket_under_foreign_junction_is_rejected native assertions plus actual packaged running R40 preview.",
+      "testFiles": [
+        "verification/runtime-transition-171/socket_guard_tests.rs"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Actual assertion RED/updated same test GREEN are collected in existing Windows CI; CI raw logs and real EXE integration are reviewed directly. Local engineering-run receipts are not fabricated from CI.",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "--",
+        "--nocapture"
+      ]
+    }
+  ],
+  "exclusions": [
+    "Initial custom socket-guard-fix-plan.json predates test implementation. This standardized form is created after test code but before first execution; it is not evidence of pre-implementation schema validation.",
+    "No GUI reconnect or whole T74 acceptance by this regression."
+  ]
+}
