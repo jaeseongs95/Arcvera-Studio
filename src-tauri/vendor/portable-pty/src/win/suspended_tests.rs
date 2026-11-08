@@ -1,5 +1,6 @@
 //! Isolated Windows process fixtures. No user configuration or external services.
 use crate::{native_pty_system, CommandBuilder, PtySize};
+use shared_library::shared_library;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
@@ -23,10 +24,9 @@ const FIXTURE: &str = "win::suspended_tests::fixture_child";
 // https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/shared/winerror.h
 const ERROR_NOT_SAME_OBJECT: u32 = 1656;
 // Test-only object identity query; never close or reclaim a captured raw handle.
-#[link(name = "kernelbase")]
-extern "system" {
-    fn CompareObjectHandles(first: *mut std::ffi::c_void, second: *mut std::ffi::c_void) -> i32;
-}
+shared_library!(HandleIdentity,
+    fn CompareObjectHandles(first: HANDLE, second: HANDLE) -> i32,
+);
 const ARGUMENT: &str = "한글 공백 \\\"quoted\\\" tail\\";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -329,6 +329,9 @@ fn ordinary_spawn_remains_unsuspended_and_invalid_job_never_falls_back() {
 
 #[test]
 fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
+    // Reuse the crate's existing DLL loader; some Windows SDKs omit kernelbase.lib.
+    let identity = HandleIdentity::open(std::path::Path::new("kernelbase.dll"))
+        .expect("Windows kernel object identity query is required for this test");
     let harness = Harness::new();
     for whole_launch in [false, true] {
         for iteration in 0..8 {
@@ -346,7 +349,7 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
                 .unwrap();
             let token_handle = token.pending_process_handle();
             assert_ne!(
-                unsafe { CompareObjectHandles(token_handle, observer.as_raw_handle()) },
+                unsafe { (identity.CompareObjectHandles)(token_handle as _, observer.as_raw_handle() as _) },
                 0,
                 "token handle must identify the observed target before cancellation"
             );
@@ -384,7 +387,7 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
             // handle (the retained-handle mutation previously passed it). The
             // anchor identifies the kernel object even if the raw slot is reused.
             let same_object = unsafe {
-                CompareObjectHandles(token_handle, observer.as_raw_handle())
+                (identity.CompareObjectHandles)(token_handle as _, observer.as_raw_handle() as _)
             };
             let query_error = std::io::Error::last_os_error().raw_os_error().map(|v| v as u32);
             assert_eq!(
@@ -394,7 +397,7 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
             assert!(
                 matches!(query_error, Some(winapi::shared::winerror::ERROR_INVALID_HANDLE)
                     | Some(ERROR_NOT_SAME_OBJECT)),
-                "unexpected handle identity query error: {query_error:?}"
+                "unexpected handle identity query error: {:?}", query_error
             );
             // Release our independent observer before bounded job accounting.
             drop(observer);
