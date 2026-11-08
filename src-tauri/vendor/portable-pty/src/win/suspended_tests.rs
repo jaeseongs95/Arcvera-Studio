@@ -331,25 +331,40 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
                 .slave
                 .spawn_command_in_job_suspended(harness.command(), harness.job())
                 .unwrap();
-            let (mut child, token) = suspended.into_parts();
+            let (child, token) = suspended.into_parts();
             harness.assert_in_job(child.as_ref());
             let observer = unsafe { BorrowedHandle::borrow_raw(child.as_raw_handle().unwrap()) }
                 .try_clone_to_owned()
                 .unwrap();
-            if whole_launch {
+            let child = if whole_launch {
                 // Reassemble the same launch so its complete Drop path is tested
                 // while an independent handle still identifies the exact target.
                 drop(super::SuspendedPtyChild::new(child, token));
+                None
             } else {
                 drop(token);
-                assert!(!child.wait().unwrap().success());
-                drop(child);
-            }
+                Some(child)
+            };
             assert_eq!(
                 unsafe { WaitForSingleObject(observer.as_raw_handle() as _, 10_000) },
                 0,
                 "target did not terminate: whole_launch={whole_launch}, iteration={iteration}"
             );
+            let mut exit_code = 0;
+            assert_ne!(
+                unsafe {
+                    winapi::um::processthreadsapi::GetExitCodeProcess(
+                        observer.as_raw_handle() as _,
+                        &mut exit_code,
+                    )
+                },
+                0
+            );
+            assert_ne!(exit_code, 0, "a cancelled launch must not succeed");
+            if let Some(mut child) = child {
+                assert!(!child.wait().unwrap().success());
+                drop(child);
+            }
             assert!(!harness.directory.join("entered").exists());
             // ActiveProcesses includes terminated processes until all process
             // references are released. Do not let our observation handle keep
