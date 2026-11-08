@@ -2,7 +2,7 @@
   "schemaVersion": "1.0.0",
   "kind": "engineering-test-plan",
   "taskId": "remote-170-actual-native-ui",
-  "contractDigest": "sha256:8ccb770a27aeba088a292c2fe5fe83f90bcec70976a37636b0fe2bf6d00cd78c",
+  "contractDigest": "sha256:fbcaa8f921132a65bac47d05e78095885ee94237fc47ed607241466340452670",
   "requirements": [
     "AC-01",
     "AC-02",
@@ -16,7 +16,7 @@
     "native-ui.mjs"
   ],
   "runner": "Existing Playwright CDP + Node assertions, installed dependencies only",
-  "environment": "Fresh Windows CI runner; frozen release artifact; own app data/loopback, no production app or CLI",
+  "environment": "Fresh Windows CI runner; frozen release artifact; own app data/loopback, no production app or CLI; runas /trustlevel:0x20000, actual medium-integrity SID is mandatory",
   "cases": [
     {
       "id": "native-ui-relay",
