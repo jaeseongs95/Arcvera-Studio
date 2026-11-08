@@ -60,6 +60,7 @@ let runtimePreparation: Promise<void> | undefined;
 let runtimeRestoration: Promise<void> | undefined;
 let runtimeReady = !native;
 let runtimeTransitionBlocked = false;
+let serverSelectionPending = false;
 let runtimeGeneration = 0;
 let runtimeCommand: Promise<void> | undefined;
 let runtimeCommandGeneration = 0;
@@ -348,7 +349,7 @@ function showRuntimeFailure(error: unknown) {
   $('#runtime-banner').hidden = false;
   bindText($('#runtime-status'), `공유서버 준비 실패: ${message(error, 'ko')}`, `Could not prepare the shared server: ${message(error, 'en')}`);
   const retry = $<HTMLButtonElement>('#runtime-retry');
-  bindText(retry, '다시 시도', 'Retry'); retry.hidden = false; retry.disabled = false;
+  bindText(retry, '다시 시도', 'Retry'); retry.hidden = false; retry.disabled = serverSelectionPending;
   bindText($('#runtime-settings'), '서버 확인·복구', 'Check/recover server'); $('#runtime-settings').hidden = false;
 }
 function prepareRuntime(): Promise<void> {
@@ -410,7 +411,7 @@ function resumeWorkspace(): Promise<void> {
   return operation;
 }
 $('#runtime-retry').onclick = () => {
-  if (exitInProgress || runtimeRestoration) return;
+  if (exitInProgress || runtimeRestoration || serverSelectionPending) return;
   runtimeTransitionBlocked = false;
   runtimePreparation = undefined;
   weeklyUsage.refresh();
@@ -1012,6 +1013,10 @@ const executableSettings = createExecutableSettings(async <T>(command: string, a
       if (shouldPrepare && workspaceReady && !exitInProgress) void prepareRuntime().then(() => resumeWorkspace()).catch(error => notifyError('공유서버 준비 실패', 'Could not prepare the shared server', error));
     }
   }
+}, pending => {
+  serverSelectionPending = pending;
+  const retry = $<HTMLButtonElement>('#runtime-retry');
+  if (pending || !retry.hidden) retry.disabled = pending;
 });
 $('#codex-settings-open').onclick = () => void executableSettings.open();
 $('#runtime-settings').onclick = () => void executableSettings.open({ checkServer: true });

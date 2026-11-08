@@ -16,7 +16,7 @@ interface CodexSettings {
   };
 }
 
-export function createExecutableSettings(call: <T>(command: string, args?: Record<string, unknown>) => Promise<T>) {
+export function createExecutableSettings(call: <T>(command: string, args?: Record<string, unknown>) => Promise<T>, onServerSelectionPending: (pending: boolean) => void = () => {}) {
   const dialog = document.createElement('dialog');
   dialog.id = 'codex-settings-dialog';
   dialog.setAttribute('aria-labelledby', 'codex-settings-title');
@@ -126,11 +126,13 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
     const token = version;
     error.hidden = true;
     const choosing = command.startsWith('choose_');
+    const serverSelection = ['choose_app_server_executable', 'set_app_server_executable'].includes(command);
+    if (serverSelection) onServerSelectionPending(true);
     setBusy(true, choosing ? '파일 선택을 기다리는 중…' : '자동 찾기로 변경 중…', choosing ? 'Waiting for file selection…' : 'Switching to automatic discovery…');
     let replaced = false;
     const operation = (async () => {
       const settings = await call<CodexSettings | null>(command, args);
-      if (settings && ['choose_app_server_executable', 'set_app_server_executable'].includes(command)) {
+      if (settings && serverSelection) {
         if (current(token)) {
           show(settings);
           text(status, '기존 서버를 종료하고 선택한 서버로 교체하는 중…', 'Stopping the existing server and switching to the selected server…');
@@ -154,7 +156,7 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
       const settings = await operation;
       if (current(token)) { if (settings) show(settings); text(status, replaced ? '서버 교체와 새 서버 연결 확인이 완료되었습니다.' : settings ? '설정이 저장되었습니다.' : '파일 선택을 취소했습니다.', replaced ? 'Server replacement and the new server connection check are complete.' : settings ? 'Settings saved.' : 'File selection canceled.'); }
     } catch (cause) { if (current(token)) { text(status, ''); showError(cause); } }
-    finally { if (mutation === operation) mutation = undefined; if (current(token)) setBusy(false); }
+    finally { if (mutation === operation) mutation = undefined; if (serverSelection) onServerSelectionPending(false); if (current(token)) setBusy(false); }
   }
   choose.onclick = () => void change('choose_codex_executable');
   reset.onclick = () => void change('set_codex_executable', { path: null });
