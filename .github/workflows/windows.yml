@@ -15,6 +15,18 @@ jobs:
   frontend:
     runs-on: windows-latest
     timeout-minutes: 60
+    # Isolate cumulative Vite/Chromium loopback traffic on fresh runners.
+    # Keep every source fixture and bundled regression, with no retries.
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - suite: source-1
+            shard: 1/2
+          - suite: source-2
+            shard: 2/2
+          - suite: bundled
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,10 +46,12 @@ jobs:
           try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
           $sample | ConvertTo-Json -Depth 4 -Compress
       - name: Source module fixtures
-        run: npm run test:e2e
+        if: ${{ matrix.suite != 'bundled' }}
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}
         env:
           AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
       - name: Packaged application regressions
+        if: ${{ matrix.suite == 'bundled' }}
         run: npm run test:e2e
         env:
           AGENT_GRID_BUNDLED_FRONTEND_TEST: '1'
@@ -52,7 +66,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: frontend-validation-evidence
+          name: frontend-validation-evidence-${{ matrix.suite }}
           path: |
             test-results/
             test-results-bundled/

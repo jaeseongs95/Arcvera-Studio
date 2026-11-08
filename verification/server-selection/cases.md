@@ -20,3 +20,5 @@ CS 불변조건: runtime.changing 동안 선택과 새 시작을 거부한다. �
 내장 서버 패키지 경계: sibling 서버 EXE가 없는 유효한 전체 패키지의 kind=cli도 유지한다. 후검사에서는 관리 CLI 자체를 선택 증거와 대조하며 존재하지 않는 standalone EXE를 요구하지 않는다. 동일 CLI 바이트는 통과하고 같은 버전의 다른 CLI 바이트는 실패한다.
 
 CI 포장 복구: 제품 컴파일 뒤 공식 NSIS 파일 HTTP504가 반복됐다. GitHub CLI로 동일 버전 원본을 받는 경로는 직접 성공했고 Tauri 2.12.4 원본의 두 SHA1 및 추가 SHA256과 일치했다. CI에서 같은 파일을 먼저 받고 해시 검증 뒤 Tauri 기본 도구 캐시에 배치한다. 버전·해시 불일치는 빌드 전에 실패하고, 기존 검증/포장/실행 파일 자체시험을 유지한다. 로컬 제품 빌드는 하지 않는다.
+
+CI UI 자원 경계: 두 실행의 실패 trace에서 필수 Vite 모듈 GET의 ERR_NO_BUFFER_SPACE 뒤 앱 초기화가 진행되지 않았다. OS 내부 자원 원인까지 확정하지 않는다. 기존 source 시험을 Playwright의 1/2·2/2 shard로 나눠 새 Windows runner에서 실행하고 bundled 시험도 별도 runner로 분리한다. 두 shard의 시험 ID 합집합이 기존 전체와 같고 교집합이 비었는지 확인한다. 기대값·skip·retry는 바꾸지 않으며, 모든 matrix 항목과 native 성공이 있어야 포장한다. 원 실패는 보존한다.
