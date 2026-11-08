@@ -133,6 +133,7 @@ struct Connection {
 }
 impl Connection {
     fn status(&self,state:&'static str,error:Option<String>) {
+        if state!="error" && self.stopped.load(Ordering::Acquire) {return;}
         if let Ok(mut status)=self.status.lock() {
             if status.generation!=self.epoch {return;}
             status.revision+=1;status.state=state;status.error=error;
@@ -141,7 +142,9 @@ impl Connection {
         }
     }
     fn fatal(&self,error:String) {
-        self.connected.store(false,Ordering::Release);self.stopped.store(true,Ordering::Release);
+        // A late POST failure must not overwrite explicit disconnection.
+        if self.stopped.swap(true,Ordering::AcqRel) {return;}
+        self.connected.store(false,Ordering::Release);
         self.status("error",Some(error));
         if let Ok(tasks)=self.network_abort.lock() {for task in tasks.iter() {task.abort();}}
     }
@@ -247,6 +250,12 @@ impl RelayState {
         if active.is_some() {return Err("기존 연결을 해제한 뒤 다시 연결하세요.".into());}
         let host_id=uuid::Uuid::new_v4().to_string();
         let mut headers=HeaderMap::new();headers.insert("X-OpenDIY-Host-Secret",header);headers.insert("X-OpenDIY-Host-Id",HeaderValue::from_str(&host_id).unwrap());
+        // reqwest uses rustls-no-provider via the updater's dependency graph.
+        // First relay use must also work before any updater request. Preserve
+        // a provider another caller already installed (including a race).
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _=rustls::crypto::ring::default_provider().install_default();
+        }
         let client=Client::builder().default_headers(headers).redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10)).read_timeout(Duration::from_secs(45)).build().map_err(|_| "원격 연결 클라이언트 준비 실패")?;
         let epoch=self.generation.fetch_add(1,Ordering::AcqRel)+1;
