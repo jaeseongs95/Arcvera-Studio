@@ -1,16 +1,39 @@
 {
-  "schema": "desktop171-gui-experiment-build-v1",
-  "productSource": "63b4863c2c2fe0c9c9ab6e0e6f7fd38103d6fc1b",
-  "testSource": "3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2",
-  "purpose": "Build the actual pinned TEST EXE for isolated GUI experiments while preserving the unresolved regular frontend transport failures.",
+  "schema": "desktop171-gui-experiment-build-v2",
+  "productSource": "db767f19f966a24d93586178e9f7b128eaf13c6a",
+  "testSource": "0ed0ed2967d366c3a60cda9fb992f08698fdbfa0",
+  "purpose": "Build exact TEST candidate containing confirmed xterm mouseup lifetime fix; preserve original regular CI failures and old b74 artifacts. Native link acceptance remains required.",
   "cases": [
-    { "id": "SOURCE", "oracle": "Product/originaltests/normal windows.yml identical to pinned3a; exact TEST identity." },
-    { "id": "BUILD", "oracle": "Windows CI actual Tauri release EXE, no installer, source/run/SHA recorded." },
-    { "id": "PTY", "oracle": "Actual built EXE self-test exit0 with raw report, stdout/stderr and execution receipt." },
-    { "id": "BOUNDARY", "oracle": "Own TEST artifact only. Existing failed CI remains failed; not release eligible, no installation/publication." }
+    {
+      "id": "SOURCE",
+      "oracle": "Product/originaltests/normal windows.yml identical to pinned0ed0ed2; exact TEST identity. Only TEST identity differs from product db767f1."
+    },
+    {
+      "id": "BUILD",
+      "oracle": "Windows CI actual Tauri release EXE, no installer, source/run/SHA recorded."
+    },
+    {
+      "id": "PTY",
+      "oracle": "Actual built EXE self-test exit0 with raw report, stdout/stderr and execution receipt."
+    },
+    {
+      "id": "BOUNDARY",
+      "oracle": "Own TEST artifact only. Existing failed CI remains failed; not release eligible, no installation/publication."
+    }
   ],
-  "knownFailures": ["42502762255 attempts1/2 frontend source1 ERR_NO_BUFFER_SPACE; root cause unconfirmed"],
-  "diagnostics": ["42505237268 targeted20 per browser passed; fullshard42506026332 pending at plan time"],
-  "notRun": ["actual GUI", "release validation", "installation"],
-  "independentAudit": "Fresh complete preparation audit after build and direct artifact verification."
+  "knownFailures": [
+    "42502762255 attempts1/2 frontend source1 ERR_NO_BUFFER_SPACE; root cause unconfirmed"
+  ],
+  "diagnostics": [
+    "42530451346 product db767f1 regular Windows validation pending",
+    "42506026332 Chromium169PASS; Edge timeout at test158 of169 remains unresolved"
+  ],
+  "notRun": [
+    "actual GUI",
+    "release validation",
+    "installation"
+  ],
+  "independentAudit": "Fresh complete preparation audit after build and direct artifact verification.",
+  "previousProductSource": "63b4863c2c2fe0c9c9ab6e0e6f7fd38103d6fc1b",
+  "previousTestSource": "3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2"
 }
