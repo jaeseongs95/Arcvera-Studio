@@ -36,6 +36,11 @@ pub struct ResumeToken {
 }
 
 impl ResumeToken {
+    #[cfg(test)]
+    pub(super) fn pending_process_handle(&self) -> std::os::windows::io::RawHandle {
+        self.pending.as_ref().expect("uncommitted process").as_raw_handle()
+    }
+
     pub(crate) fn new(thread: OwnedHandle, process: OwnedHandle) -> Self {
         Self {
             thread: Some(thread),

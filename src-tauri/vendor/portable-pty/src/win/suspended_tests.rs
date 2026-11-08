@@ -19,6 +19,11 @@ use winapi::um::{
 };
 
 const FIXTURE: &str = "win::suspended_tests::fixture_child";
+// Test-only object identity query; never close or reclaim a captured raw handle.
+#[link(name = "kernelbase")]
+extern "system" {
+    fn CompareObjectHandles(first: *mut std::ffi::c_void, second: *mut std::ffi::c_void) -> i32;
+}
 const ARGUMENT: &str = "한글 공백 \\\"quoted\\\" tail\\";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -336,6 +341,12 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
             let observer = unsafe { BorrowedHandle::borrow_raw(child.as_raw_handle().unwrap()) }
                 .try_clone_to_owned()
                 .unwrap();
+            let token_handle = token.pending_process_handle();
+            assert_ne!(
+                unsafe { CompareObjectHandles(token_handle, observer.as_raw_handle()) },
+                0,
+                "token handle must identify the observed target before cancellation"
+            );
             let child = if whole_launch {
                 // Reassemble the same launch so its complete Drop path is tested
                 // while an independent handle still identifies the exact target.
@@ -366,9 +377,23 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
                 drop(child);
             }
             assert!(!harness.directory.join("entered").exists());
-            // ActiveProcesses includes terminated processes until all process
-            // references are released. Do not let our observation handle keep
-            // the target in the accounting we are about to check.
+            // Job accounting is not an oracle for closing this specific owner
+            // handle (the retained-handle mutation previously passed it). The
+            // anchor identifies the kernel object even if the raw slot is reused.
+            let same_object = unsafe {
+                CompareObjectHandles(token_handle, observer.as_raw_handle())
+            };
+            let query_error = std::io::Error::last_os_error().raw_os_error().map(|v| v as u32);
+            assert_eq!(
+                same_object, 0,
+                "cancelled token retained its process handle: whole_launch={whole_launch}, iteration={iteration}"
+            );
+            assert!(
+                matches!(query_error, Some(winapi::shared::winerror::ERROR_INVALID_HANDLE)
+                    | Some(winapi::shared::winerror::ERROR_NOT_SAME_OBJECT)),
+                "unexpected handle identity query error: {query_error:?}"
+            );
+            // Release our independent observer before bounded job accounting.
             drop(observer);
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {

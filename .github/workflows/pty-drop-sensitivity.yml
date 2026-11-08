@@ -1,0 +1,34 @@
+name: PTY exact handle release sensitivity
+on:
+  push:
+    branches: [fix/desktop171-pty-handle-evidence]
+  pull_request:
+    paths:
+      - '.github/workflows/pty-drop-sensitivity.yml'
+      - 'scripts/pty-drop-sensitivity*'
+      - 'src-tauri/vendor/portable-pty/**'
+      - 'verification/drop-sensitivity-171/test-plan.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  drop-sensitivity:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate mutation construction and result classification
+        run: node --test scripts/pty-drop-sensitivity.test.mjs
+      - name: Run identical native test against two faults then unmodified control
+        run: node scripts/pty-drop-sensitivity.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pty-drop-sensitivity-${{ github.sha }}
+          path: verification/drop-sensitivity-171/
+          if-no-files-found: error
+          retention-days: 14
