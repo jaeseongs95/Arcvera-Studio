@@ -13,6 +13,7 @@ pub struct RuntimeTransitionPreview {
     pub reason: Option<String>,
     pub fingerprint: String,
     pub package_root: Option<String>,
+    pub management_executable: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +27,10 @@ pub struct RuntimeTransitionReply {
 
 pub(crate) fn command_args() -> Vec<String> {
     ["app-server", "daemon", "update", "--from-cli", "--no-force", "-y"].map(str::to_owned).to_vec()
+}
+
+pub(crate) fn replacement_command_args() -> Vec<String> {
+    ["app-server", "daemon", "update", "--from-cli", "-y"].map(str::to_owned).to_vec()
 }
 
 fn checkpoint(cancelled: &Arc<AtomicBool>, deadline: Instant) -> Result<(), String> {
@@ -70,6 +75,7 @@ fn file_hash(path: &Path, cancelled: &Arc<AtomicBool>, deadline: Instant) -> Res
 struct PackageEvidence {
     root: PathBuf, cli: PathBuf, server: PathBuf,
     manifest: Vec<u8>, cli_hash: Vec<u8>, server_hash: Vec<u8>,
+    runtime_helper_hash: Option<Vec<u8>>,
 }
 
 fn manifest_matches(bytes: &[u8], version: &str) -> Result<(), String> {
@@ -99,7 +105,7 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
         "cli" => server != cli,
         _ => true,
     } {
-        return Err("자동 전환은 같은 패키지의 bin/codex.exe와 bin/codex-app-server.exe 조합만 지원합니다. 개별 실행 파일 선택은 유지됩니다.".into());
+        return Err("공유 서버를 교체하려면 전체 ZIP을 푼 폴더의 bin/codex.exe를 CLI로, 같은 bin/codex-app-server.exe를 서버로 선택하세요. 실행 파일만 있는 배포본은 CLI의 공유 서버 교체 명령으로 적용할 수 없습니다. 기존 공유 서버는 종료하지 않았습니다.".into());
     }
     let root = bin.parent().ok_or("CLI 패키지 폴더가 없습니다.")?.to_path_buf();
     if root.join("bin/codex.exe").canonicalize().map_err(|_| "패키지 CLI 경로를 확인할 수 없습니다.")? != cli {
@@ -119,10 +125,44 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
     let cli_hash = file_hash(&cli, cancelled, deadline)?;
     let server_hash = if server == cli { cli_hash.clone() } else { file_hash(&server, cancelled, deadline)? };
     checkpoint(cancelled, deadline)?;
-    Ok(PackageEvidence { root, cli, server, manifest, cli_hash, server_hash })
+    Ok(PackageEvidence { root, cli, server, manifest, cli_hash, server_hash, runtime_helper_hash: None })
 }
 
-fn supports_safe_update(help: &[u8]) -> Result<bool, String> {
+// A runtime-only ZIP can reuse the already installed complete package only
+// when every supplied executable is byte-identical. This is not a version-
+// based fallback and never assembles a package from missing/fabricated helpers.
+fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str,
+    managed_cli: Option<&str>, cancelled: &Arc<AtomicBool>, deadline: Instant,
+) -> Result<PackageEvidence, String> {
+    match package_evidence(exe, server, kind, version, cancelled, deadline) {
+        Ok(evidence) => Ok(evidence),
+        Err(original) => {
+            let Some(managed_cli) = managed_cli else { return Err(original); };
+            let selected_cli = Path::new(exe).canonicalize().map_err(|_| original.clone())?;
+            let selected_server = Path::new(server).canonicalize().map_err(|_| original.clone())?;
+            let Some(selected_bin) = selected_cli.parent() else { return Err(original); };
+            if kind != "standalone" || selected_server != selected_bin.join("codex-app-server.exe")
+                || selected_cli != selected_bin.join("codex.exe")
+                || selected_bin.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+                || selected_bin.join("codex-package.json").try_exists().map_err(|_| original.clone())? { return Err(original); }
+            let installed_cli = Path::new(managed_cli).canonicalize().map_err(|_| original.clone())?;
+            let Some(installed_bin) = installed_cli.parent() else { return Err(original); };
+            let installed_server = installed_bin.join("codex-app-server.exe");
+            let mut evidence = package_evidence(&installed_cli.as_os_str().to_owned(), &installed_server.as_os_str().to_owned(), kind, version, cancelled, deadline)
+                .map_err(|_| original.clone())?;
+            for name in ["codex.exe", "codex-app-server.exe", "codex-code-mode-host.exe"] {
+                let selected_hash = file_hash(&selected_bin.join(name), cancelled, deadline)?;
+                if selected_hash != file_hash(&installed_bin.join(name), cancelled, deadline)? {
+                    return Err("선택한 실행 파일과 설치된 전체 패키지의 파일이 다릅니다. 해당 버전의 전체 ZIP에서 CLI와 서버를 선택하세요. 기존 서버는 종료하지 않았습니다.".into());
+                }
+                if name == "codex-code-mode-host.exe" { evidence.runtime_helper_hash = Some(selected_hash); }
+            }
+            Ok(evidence)
+        }
+    }
+}
+
+fn supports_update(help: &[u8], replace_existing: bool) -> Result<bool, String> {
     let from_cli = help_supports_option(help, "--from-cli")?;
     let no_force = help_supports_option(help, "--no-force")?;
     let text = std::str::from_utf8(help).map_err(|_| "전환 도움말이 올바른 UTF-8이 아닙니다.")?;
@@ -133,24 +173,35 @@ fn supports_safe_update(help: &[u8]) -> Result<bool, String> {
     let short_yes = options.clone().any(|line| Some(line.len() - line.trim_start().len()) == short_column
         && matches!(line.split_ascii_whitespace().next(), Some("-y" | "-y,")));
     // 실제 실행 인자가 -y로 고정되어 있으므로 --yes만 선언한 CLI는 통과시키지 않는다.
-    Ok(from_cli && no_force && short_yes)
+    Ok(from_cli && (replace_existing || no_force) && short_yes)
 }
+
+fn supports_safe_update(help: &[u8]) -> Result<bool, String> { supports_update(help, false) }
 
 // 현재 UI가 사용하는 preview 경계의 주입점이다. 시험은 실제 daemon/실행 파일을
 // 호출하지 않고 동일 명령·deadline과 패키지 증거의 결속을 검증한다.
 fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: RuntimePairStatus,
     cancelled: &Arc<AtomicBool>, deadline: Instant,
     package: impl FnOnce() -> Result<PackageEvidence, String>,
+    query: impl FnMut(&[&str], Instant) -> Result<Vec<u8>, String>,
+) -> Result<RuntimeTransitionPreview, String> {
+    preview_commands_mode(exe, server, kind, pair, cancelled, deadline, false, package, query)
+}
+
+fn preview_commands_mode(exe: &OsString, server: &OsString, kind: &str, pair: RuntimePairStatus,
+    cancelled: &Arc<AtomicBool>, deadline: Instant, replace_existing: bool,
+    package: impl FnOnce() -> Result<PackageEvidence, String>,
     mut query: impl FnMut(&[&str], Instant) -> Result<Vec<u8>, String>,
 ) -> Result<RuntimeTransitionPreview, String> {
     checkpoint(cancelled, deadline)?;
     let mut hash = Sha256::new();
     bind(&mut hash, b"opendiy-runtime-transition-v1");
+    bind(&mut hash, &[u8::from(replace_existing)]);
     bind(&mut hash, exe.to_string_lossy().as_bytes());
     bind(&mut hash, server.to_string_lossy().as_bytes());
     bind(&mut hash, kind.as_bytes());
     bind(&mut hash, &serde_json::to_vec(&pair).map_err(|_| "전환 버전 상태를 결속할 수 없습니다.")?);
-    let mut report = RuntimeTransitionPreview { pair, can_apply: false, reason: None, fingerprint: String::new(), package_root: None };
+    let mut report = RuntimeTransitionPreview { pair, can_apply: false, reason: None, fingerprint: String::new(), package_root: None, management_executable: None };
     let candidate = (|| -> Result<(), String> {
         if report.pair.cli_version != report.pair.selected_server_version {
             return Err("선택한 CLI와 앱서버의 전체 버전을 먼저 맞추세요.".into());
@@ -158,7 +209,7 @@ fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: Runtime
         if report.pair.state == "embedded" {
             return Err("이 CLI는 내장된 개별 서버를 사용하므로 공유 서버를 전환할 필요가 없습니다.".into());
         }
-        if report.pair.state == "matched" {
+        if report.pair.state == "matched" && !replace_existing {
             return Err("선택한 CLI와 관리·실행 서버의 버전이 이미 같습니다. 전환하지 않았습니다.".into());
         }
         if report.pair.state == "stopped" && report.pair.managed_version.is_none()
@@ -166,9 +217,9 @@ fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: Runtime
             && report.pair.socket_path.is_some() {
             return Err("공유 서버 패키지가 미설치 상태입니다. 현재 CLI의 안전한 서버 전환 명령은 첫 설치를 지원하지 않으므로 선택한 패키지의 별도 준비가 필요합니다.".into());
         }
-        if !matches!(report.pair.state.as_str(), "mismatch" | "stopped")
+        if !(matches!(report.pair.state.as_str(), "mismatch" | "stopped") || replace_existing && report.pair.state == "matched")
             || report.pair.managed_cli_executable.is_none() || report.pair.managed_version.is_none()
-            || (report.pair.state == "mismatch" && report.pair.running_version.is_none())
+            || (matches!(report.pair.state.as_str(), "mismatch" | "matched") && report.pair.running_version.is_none())
             || (report.pair.state == "stopped" && report.pair.running_version.is_some()) || report.pair.socket_path.is_none() {
             return Err("현재 관리·실행 서버의 상태를 확인하지 못해 전환을 준비할 수 없습니다.".into());
         }
@@ -177,7 +228,7 @@ fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: Runtime
         let help = query(&["app-server", "daemon", "update", "--help"], deadline)?;
         checkpoint(cancelled, deadline)?;
         bind(&mut hash, &help);
-        if !supports_safe_update(&help)? {
+        if !supports_update(&help, replace_existing)? {
             return Err("선택한 CLI는 작업을 강제로 종료하지 않는 서버 전환을 지원하지 않습니다. 새 전체 패키지를 선택하세요.".into());
         }
         let evidence = package()?;
@@ -188,10 +239,16 @@ fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: Runtime
         bind(&mut hash, &evidence.manifest);
         bind(&mut hash, &evidence.cli_hash);
         bind(&mut hash, &evidence.server_hash);
+        if let Some(helper) = &evidence.runtime_helper_hash { bind(&mut hash, helper); }
         report.package_root = Some(evidence.root.to_str().ok_or("패키지 폴더가 올바른 문자열이 아닙니다.")?.to_owned());
+        report.management_executable = Some(evidence.cli.to_str().ok_or("관리 CLI 경로가 올바른 문자열이 아닙니다.")?.to_owned());
         report.can_apply = true;
         // 이 preview는 전체 패키지 무결성을 인증하지 않는다. 트리 검증은 CLI 책임이다.
-        report.reason = Some("확인 후 작업을 강제로 종료하지 않고 서버를 전환합니다. 종료 요청 후에는 취소할 수 없으며 응답이 끊겨도 서버가 나중에 종료될 수 있습니다.".into());
+        report.reason = Some(if replace_existing {
+            "선택한 패키지로 기존 공유 서버를 교체합니다. 종료 유예 후 남은 서버 프로세스는 CLI가 종료하며 기존 연결은 끊어집니다."
+        } else {
+            "확인 후 작업을 강제로 종료하지 않고 서버를 전환합니다. 종료 요청 후에는 취소할 수 없으며 응답이 끊겨도 서버가 나중에 종료될 수 있습니다."
+        }.into());
         Ok(())
     })();
     if let Err(reason) = candidate { report.reason = Some(reason); }
@@ -201,13 +258,23 @@ fn preview_commands(exe: &OsString, server: &OsString, kind: &str, pair: Runtime
 }
 
 pub(crate) fn preview(exe: &OsString, server: &OsString, kind: &str, cancelled: &Arc<AtomicBool>) -> Result<RuntimeTransitionPreview, String> {
+    preview_mode(exe, server, kind, cancelled, false)
+}
+
+pub(crate) fn preview_replacement(exe: &OsString, server: &OsString, kind: &str, cancelled: &Arc<AtomicBool>) -> Result<RuntimeTransitionPreview, String> {
+    preview_mode(exe, server, kind, cancelled, true)
+}
+
+fn preview_mode(exe: &OsString, server: &OsString, kind: &str, cancelled: &Arc<AtomicBool>, replace_existing: bool) -> Result<RuntimeTransitionPreview, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     let pair = runtime_pair::inspect_until(exe, server, kind, cancelled, deadline)?;
     checkpoint(cancelled, deadline)?;
     let version = pair.cli_version.clone();
+    let managed_cli = pair.managed_cli_executable.clone();
     let cwd = env::current_dir().map_err(|error| format!("전환 확인 폴더 조회 실패: {error}"))?;
-    preview_commands(exe, server, kind, pair, cancelled, deadline,
-        || package_evidence(exe, server, kind, &version, cancelled, deadline),
+    preview_commands_mode(exe, server, kind, pair, cancelled, deadline, replace_existing,
+        || if replace_existing { replacement_package_evidence(exe, server, kind, &version, managed_cli.as_deref(), cancelled, deadline) }
+            else { package_evidence(exe, server, kind, &version, cancelled, deadline) },
         |args, deadline| extensions::command_stdout_until(exe, &cwd,
             &args.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>(), deadline, Some(cancelled)))
 }
@@ -255,7 +322,7 @@ mod tests {
     }
     fn evidence() -> PackageEvidence {
         PackageEvidence { root: PathBuf::from("package"), cli: PathBuf::from("package/bin/codex.exe"),
-            server: PathBuf::from("package/bin/codex-app-server.exe"), manifest: b"manifest-bytes".to_vec(), cli_hash: vec![1;32], server_hash: vec![2;32] }
+            server: PathBuf::from("package/bin/codex-app-server.exe"), manifest: b"manifest-bytes".to_vec(), cli_hash: vec![1;32], server_hash: vec![2;32], runtime_helper_hash: None }
     }
     fn fixture(pair: RuntimePairStatus, evidence: PackageEvidence, help: Vec<u8>) -> RuntimeTransitionPreview {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -278,6 +345,94 @@ mod tests {
         assert!(report.can_apply);
         assert_eq!(report.fingerprint.len(), 64);
         assert!(report.reason.unwrap().contains("나중에 종료"));
+    }
+
+    #[test]
+    fn replacement_uses_cli_owned_shutdown_without_the_no_force_policy() {
+        assert_eq!(replacement_command_args(), ["app-server", "daemon", "update", "--from-cli", "-y"]);
+        assert!(supports_update(&help_without("      --no-force\n"), true).unwrap());
+        assert!(!supports_update(&help_without("      --from-cli\n"), true).unwrap());
+        assert!(!supports_update(&help_without("  -y, --yes\n"), true).unwrap());
+    }
+
+    #[test]
+    fn selecting_a_different_package_of_the_same_version_still_replaces_the_server() {
+        let mut matched = pair(); matched.state = "matched".into();
+        matched.managed_version = Some(VERSION.into()); matched.running_version = Some(VERSION.into());
+        let report = preview_commands_mode(&OsString::from("cli"), &OsString::from("server"), "standalone", matched,
+            &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20), true,
+            || Ok(evidence()), |_, _| Ok(help())).unwrap();
+        assert!(report.can_apply);
+        assert!(report.reason.unwrap().contains("기존 공유 서버를 교체"));
+    }
+
+    #[test]
+    fn replacement_fingerprint_cannot_authorize_a_non_forcing_transition() {
+        let replacement = preview_commands_mode(&OsString::from("cli.exe"), &OsString::from("server.exe"), "standalone", pair(),
+            &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20), true,
+            || Ok(evidence()), |_, _| Ok(help())).unwrap();
+        let ordinary = fixture(pair(), evidence(), help());
+        assert!(replacement.can_apply && ordinary.can_apply);
+        assert_ne!(replacement.fingerprint, ordinary.fingerprint);
+    }
+
+    #[test]
+    fn bare_server_replacement_is_refused_before_a_shutdown_can_be_requested() {
+        let report = preview_commands_mode(&OsString::from("cli"), &OsString::from("server"), "standalone", pair(),
+            &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20), true,
+            || Err("전체 ZIP의 bin 폴더에서 서버를 선택하세요".into()),
+            |args, _| { assert_eq!(args, ["app-server", "daemon", "update", "--help"]); Ok(help()) }).unwrap();
+        assert!(!report.can_apply);
+        assert_eq!(report.reason.as_deref(), Some("전체 ZIP의 bin 폴더에서 서버를 선택하세요"));
+    }
+
+    fn runtime_only_fixture() -> (PathBuf, OsString, OsString, String) {
+        let root = env::temp_dir().join(format!("desktop-replacement-{}", uuid::Uuid::new_v4()));
+        let raw = root.join("raw"); let installed = root.join("installed");
+        fs::create_dir_all(&raw).unwrap(); fs::create_dir_all(installed.join("bin")).unwrap();
+        let target = format!("{}-pc-windows-msvc", env::consts::ARCH);
+        fs::write(installed.join("codex-package.json"), serde_json::to_vec(&json!({
+            "layoutVersion": 1, "entrypoint": "bin/codex.exe", "version": VERSION, "target": target,
+        })).unwrap()).unwrap();
+        for name in ["codex.exe", "codex-app-server.exe", "codex-code-mode-host.exe"] {
+            fs::write(raw.join(name), name).unwrap(); fs::write(installed.join("bin").join(name), name).unwrap();
+        }
+        let cli = raw.join("codex.exe").into_os_string();
+        let server = raw.join("codex-app-server.exe").into_os_string();
+        let manager = installed.join("bin/codex.exe").to_str().unwrap().to_owned();
+        (root, cli, server, manager)
+    }
+
+    #[test]
+    fn runtime_only_selection_reuses_only_an_identical_installed_complete_package() {
+        let (root, cli, server, manager) = runtime_only_fixture();
+        let evidence = replacement_package_evidence(&cli, &server, "standalone", VERSION, Some(&manager),
+            &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20)).unwrap();
+        assert_eq!(evidence.cli, Path::new(&manager).canonicalize().unwrap());
+        assert_eq!(evidence.server, Path::new(&manager).with_file_name("codex-app-server.exe").canonicalize().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn same_version_different_runtime_bytes_never_selects_the_installed_package() {
+        let (root, cli, server, manager) = runtime_only_fixture();
+        for name in ["codex.exe", "codex-app-server.exe", "codex-code-mode-host.exe"] {
+            fs::write(root.join("raw").join(name), b"different build with the same version").unwrap();
+            let error = replacement_package_evidence(&cli, &server, "standalone", VERSION, Some(&manager),
+                &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20)).err().expect("different bytes must fail");
+            assert!(error.contains("파일이 다릅니다"));
+            fs::write(root.join("raw").join(name), name).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_runtime_helper_is_an_error_not_an_installed_package_fallback() {
+        let (root, cli, server, manager) = runtime_only_fixture();
+        fs::remove_file(root.join("raw/codex-code-mode-host.exe")).unwrap();
+        assert!(replacement_package_evidence(&cli, &server, "standalone", VERSION, Some(&manager),
+            &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20)).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

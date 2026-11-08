@@ -984,8 +984,11 @@ const attachmentStorage = createAttachmentStorage(call, id => sessions.get(id)?.
 $('#attachment-storage-open').onclick = () => attachmentStorage.open();
 const executableSettings = createExecutableSettings(async <T>(command: string, args?: Record<string, unknown>) => {
   if (!['choose_codex_executable', 'set_codex_executable', 'choose_app_server_executable', 'set_app_server_executable', 'apply_runtime_transition'].includes(command)) return call<T>(command, args);
+  const serverSelection = ['choose_app_server_executable', 'set_app_server_executable'].includes(command);
   const transitioning = command === 'apply_runtime_transition';
-  let shouldPrepare = !transitioning;
+  // Server selection is followed by its explicit replacement request. Do not
+  // race that request by reconnecting to the old shared daemon after saving.
+  let shouldPrepare = !transitioning && !serverSelection;
   runtimeTransitionBlocked = transitioning;
   runtimeGeneration++; runtimePreparation = undefined; runtimeReady = false;
   weeklyUsage.setVisible(false); weeklyUsage.refresh();

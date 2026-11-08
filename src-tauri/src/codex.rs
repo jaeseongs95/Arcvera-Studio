@@ -78,10 +78,20 @@ pub(crate) use runtime_pair::inspect as inspect_runtime_pair;
 mod runtime_transition;
 pub use runtime_transition::{RuntimeTransitionPreview, RuntimeTransitionReply};
 pub(crate) use runtime_transition::preview as preview_runtime_transition;
+pub(crate) use runtime_transition::preview_replacement as preview_runtime_replacement;
 
 pub(crate) fn apply_runtime_transition(exe: &OsString, cancelled: &Arc<AtomicBool>) -> Result<RuntimeTransitionReply, String> {
+    apply_runtime_transition_mode(exe, cancelled, false)
+}
+
+pub(crate) fn apply_runtime_replacement(exe: &OsString, cancelled: &Arc<AtomicBool>) -> Result<RuntimeTransitionReply, String> {
+    apply_runtime_transition_mode(exe, cancelled, true)
+}
+
+fn apply_runtime_transition_mode(exe: &OsString, cancelled: &Arc<AtomicBool>, replace_existing: bool) -> Result<RuntimeTransitionReply, String> {
     let cwd = env::current_dir().map_err(|e| format!("서버 전환 폴더를 확인할 수 없습니다: {e}"))?;
-    let output = extensions::transition_daemon_output_until(exe, &cwd, Instant::now() + Duration::from_secs(300), cancelled);
+    let timeout = if replace_existing { 360 } else { 300 };
+    let output = extensions::transition_daemon_output_until(exe, &cwd, Instant::now() + Duration::from_secs(timeout), cancelled, replace_existing);
     let unknown = || RuntimeTransitionReply { status: "operationOutcomeUnknown".into(), success: false, outcome: "unknown".into(), message: Some("서버 전환 결과를 확인하지 못했습니다. 종료 요청이 나중에 완료될 수 있습니다. 자동으로 다시 시도하지 말고 현재 버전을 확인하세요.".into()) };
     let output = match output { Ok(output) => output, Err(_) => return Ok(unknown()) };
     let reply = match runtime_transition::parse_update_output(&output.stdout) { Ok(reply) => reply, Err(_) => return Ok(unknown()) };

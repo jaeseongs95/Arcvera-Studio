@@ -126,14 +126,14 @@ async fn runtime_pair_status(engine: State<'_, Engine>) -> Result<codex::Runtime
     native_worker(move || engine.runtime_pair_status()).await.map_err(|e| format!("Runtime pair query worker: {e}"))?
 }
 #[tauri::command]
-async fn runtime_transition_preview(engine: State<'_, Engine>) -> Result<codex::RuntimeTransitionPreview, String> {
+async fn runtime_transition_preview(engine: State<'_, Engine>, replace_existing: Option<bool>) -> Result<codex::RuntimeTransitionPreview, String> {
     let engine = engine.inner().clone();
-    native_worker(move || engine.runtime_transition_preview()).await.map_err(|e| format!("Runtime transition preview worker: {e}"))?
+    native_worker(move || engine.runtime_transition_preview_mode(replace_existing.unwrap_or(false))).await.map_err(|e| format!("Runtime transition preview worker: {e}"))?
 }
 #[tauri::command]
-async fn apply_runtime_transition(engine: State<'_, Engine>, confirmed: bool, fingerprint: String) -> Result<codex::RuntimeTransitionReply, String> {
+async fn apply_runtime_transition(engine: State<'_, Engine>, confirmed: bool, fingerprint: String, replace_existing: Option<bool>) -> Result<codex::RuntimeTransitionReply, String> {
     let engine = engine.inner().clone();
-    native_worker(move || engine.apply_runtime_transition(confirmed, &fingerprint)).await.map_err(|e| format!("Runtime transition worker: {e}"))?
+    native_worker(move || engine.apply_runtime_transition_mode(confirmed, &fingerprint, replace_existing.unwrap_or(false))).await.map_err(|e| format!("Runtime transition worker: {e}"))?
 }
 
 #[tauri::command]

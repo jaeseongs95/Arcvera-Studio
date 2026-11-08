@@ -966,18 +966,28 @@ impl Engine {
     }
 
     pub fn runtime_transition_preview(&self) -> Result<codex::RuntimeTransitionPreview, String> {
+        self.runtime_transition_preview_mode(false)
+    }
+
+    pub fn runtime_transition_preview_mode(&self, replace_existing: bool) -> Result<codex::RuntimeTransitionPreview, String> {
         let selected = self.runtime_snapshot()?;
-        let report = codex::preview_runtime_transition(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
+        let preview = if replace_existing { codex::preview_runtime_replacement } else { codex::preview_runtime_transition };
+        let report = preview(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
         let runtime = self.inner.runtime.lock().map_err(|_| "실행파일 선택 잠금이 손상되었습니다.")?;
         self.verify_runtime_selection(&selected, &runtime, &self.inner.exiting)?;
         Ok(report)
     }
 
     pub fn apply_runtime_transition(&self, confirmed: bool, fingerprint: &str) -> Result<codex::RuntimeTransitionReply, String> {
+        self.apply_runtime_transition_mode(confirmed, fingerprint, false)
+    }
+
+    pub fn apply_runtime_transition_mode(&self, confirmed: bool, fingerprint: &str, replace_existing: bool) -> Result<codex::RuntimeTransitionReply, String> {
         if !confirmed { return Err("서버 전환은 앱에서 작업 종료와 연결 변경을 확인한 뒤에만 실행할 수 있습니다.".into()); }
         let _extensions = codex::extension_admission()?;
         let selected = self.runtime_snapshot()?;
-        let preview = codex::preview_runtime_transition(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
+        let inspect = if replace_existing { codex::preview_runtime_replacement } else { codex::preview_runtime_transition };
+        let preview = inspect(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
         if !preview.can_apply { return Err(preview.reason.unwrap_or_else(|| "이 실행 파일은 안전한 서버 전환을 지원하지 않습니다.".into())); }
         if preview.fingerprint != fingerprint { return Err("서버 또는 선택한 패키지가 바뀌었습니다. 버전을 다시 확인한 뒤 전환하세요.".into()); }
         {
@@ -988,14 +998,16 @@ impl Engine {
             runtime.changing = true; runtime.ready = false;
         }
         let _transition = RuntimeTransitionPermit(self.inner.clone());
-        if self.inner.sessions.lock().map_err(|_| "세션 목록 잠금 실패")?.values().any(|session| session.phase.load(Ordering::Acquire) < 3) {
+        if !replace_existing && self.inner.sessions.lock().map_err(|_| "세션 목록 잠금 실패")?.values().any(|session| session.phase.load(Ordering::Acquire) < 3) {
             return Err("앱에 열린 세션이 있습니다. 작업을 마치고 세션을 정리한 뒤 서버를 전환하세요. 서버를 변경하지 않았습니다.".into());
         }
         // No user operation can start after changing=true. Recheck external
         // package/daemon observations without holding the runtime/store lock.
-        let current = codex::preview_runtime_transition(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
+        let current = inspect(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)?;
         if !current.can_apply || current.fingerprint != fingerprint { return Err("확인 중 서버 또는 패키지가 바뀌었습니다. 전환하지 않았습니다. 다시 조회하세요.".into()); }
-        let reply = codex::apply_runtime_transition(&selected.executable, &self.inner.exiting)?;
+        let management_executable = current.management_executable.as_ref().map(std::ffi::OsString::from).ok_or("공유 서버 교체에 사용할 CLI 경로를 확인하지 못했습니다.")?;
+        let reply = if replace_existing { codex::apply_runtime_replacement(&management_executable, &self.inner.exiting) }
+            else { codex::apply_runtime_transition(&selected.executable, &self.inner.exiting) }?;
         Ok(Self::finish_runtime_transition_with(reply,
             || codex::inspect_runtime_pair(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting),
             || codex::prepare_runtime_with_executable(&selected.executable, &self.inner.exiting)))
