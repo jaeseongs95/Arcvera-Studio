@@ -26,6 +26,7 @@ const stdout = [], stderr = [];
 try {
   if (process.env.GITHUB_ACTIONS === 'true') {
     const groups = execFileSync('whoami.exe', ['/groups', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+    report.integritySids = groups.match(/S-1-16-\d+/g);
     report.mediumIntegrity = groups.includes('S-1-16-8192');
     assert.equal(report.mediumIntegrity, true, 'Actual UI must run at medium integrity: elevated WebView2 ignores debugging env');
   }

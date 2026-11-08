@@ -323,12 +323,13 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $nodeExe=(Get-Command node.exe).Source
-          $script=(Resolve-Path 'verification/remote-integration/native-ui.mjs').Path
+          $script=(Resolve-Path 'verification/remote-integration/medium-ci.ps1').Path
           if ($nodeExe -match '\s' -or $script -match '\s') { throw 'This CI launcher requires whitespace-free paths' }
           $result=Join-Path $PWD 'verification/remote-integration/native-ui-last.json'
           if(Test-Path -LiteralPath $result){throw 'Unexpected previous result'}
           # Same CI user with reduced privileges; no UAC/registry/security-policy changes.
-          & runas.exe /trustlevel:0x20000 "$nodeExe $script"
+          $powershellExe=Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          & runas.exe /trustlevel:0x20000 "$powershellExe -NoProfile -File $script"
           if($LASTEXITCODE -ne 0){throw 'Restricted UI runner did not launch'}
           $deadline=[DateTime]::UtcNow.AddMinutes(2)
           while(!(Test-Path -LiteralPath $result)){
