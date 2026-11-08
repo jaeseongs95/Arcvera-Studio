@@ -1,0 +1,47 @@
+{
+  "schema": "desktop171-test-identity-preparation-v1",
+  "productCommit": "3025bdb1388530ee36072b0adb958a71803768c8",
+  "purpose": "Separate TEST artifact for own remaining GUI checks. No operating process or installation changes.",
+  "reusedOverlay": "Existing 1.6.1 TEST identity pattern, current base windows/resources preserved.",
+  "allowedMergedLeafChanges": [
+    "app.windows.0.title",
+    "identifier",
+    "productName"
+  ],
+  "observedMergedLeafChanges": [
+    {
+      "path": "productName",
+      "before": "OpenDIY Desktop",
+      "after": "OpenDIY Desktop TEST"
+    },
+    {
+      "path": "identifier",
+      "before": "io.agentgrid.desktop",
+      "after": "io.agentgrid.desktop.test"
+    },
+    {
+      "path": "app.windows.0.title",
+      "before": "OpenDIY Desktop",
+      "after": "OpenDIY Desktop TEST"
+    }
+  ],
+  "checks": [
+    {
+      "id": "CFG-ONLY",
+      "oracle": "exactly productName, identifier, main window title differ after merging overlay",
+      "status": "PASS"
+    },
+    {
+      "id": "CI-PACKAGE",
+      "oracle": "Windows CI success with matching head/run and all package checksum entries",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "EXE-IDENTITY",
+      "oracle": "PE product name TEST and exact source overlay pin; actual GUI execution remains separate",
+      "status": "NOT_RUN"
+    }
+  ],
+  "runtimeGUI": "NOT_RUN",
+  "install": "NOT_RUN"
+}

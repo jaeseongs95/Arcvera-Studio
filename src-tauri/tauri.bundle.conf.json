@@ -5,5 +5,20 @@
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../LICENSE": "LICENSE"
     }
+  },
+  "productName": "OpenDIY Desktop TEST",
+  "identifier": "io.agentgrid.desktop.test",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "OpenDIY Desktop TEST",
+        "dragDropEnabled": false,
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 540
+      }
+    ]
   }
 }
