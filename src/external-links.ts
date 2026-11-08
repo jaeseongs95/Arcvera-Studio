@@ -78,7 +78,9 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
     // A selection left over from a previous gesture must not block a new click.
     const selecting = terminal.hasSelection() && mouseDown && (event.clientX !== mouseDown.x || event.clientY !== mouseDown.y);
     if (event.button !== 0 || event.shiftKey || selecting) return;
-    event.preventDefault(); event.stopPropagation();
+    // xterm's document mouseup listener releases selection tracking and its
+    // drag timer. Let this mouseup reach it after opening the link.
+    event.preventDefault();
     if (!disposed) void openExternalUrl(url).catch(onError);
   };
   const hover = (_event: MouseEvent, url: string) => { if (!disposed) terminal.element?.setAttribute('title', url); };
