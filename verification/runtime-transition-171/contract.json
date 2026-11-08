@@ -1,0 +1,7 @@
+{
+  "base": "52b93d919ae4b54dc13921a362ec3752d986df72",
+  "entry": "--runtime-transition-test",
+  "scope": "One explicit preview/cancel/stale/apply operation; no session/model turn/GUI/installation. Caller owns test daemon cleanup.",
+  "fixture": "All HOME/CODEX_HOME/USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP and selected binaries/report inside canonical marked root. Report create_new before executable invocation.",
+  "notRun": "R40 live fixture, TUI reconnect and IT02–05 remain NOT_RUN until actually executed."
+}

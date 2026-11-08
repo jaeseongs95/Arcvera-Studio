@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "desktop-171-runtime-transition",
+  "contractDigest": "sha256:8dfa887a82594fb431bbd48f009f394e456f622133a5e296c4c465988dfe86b3",
+  "requirements": [
+    "INV-ISOLATION",
+    "INV-RESULT"
+  ],
+  "scopeFiles": [
+    "src-tauri/src/main.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/runtime_transition_test.rs"
+  ],
+  "runner": "Existing Windows native Cargo CI and exact packaged executable for owned live fixture",
+  "environment": "No local Rust. R40 fixture only after CLI publishes exact same-source 3EXE manifest/SHA; no production daemon, auth or user logs.",
+  "cases": [
+    {
+      "id": "RT-GUARD",
+      "requirementIds": [
+        "INV-ISOLATION"
+      ],
+      "scenario": "Malformed arguments/missing marker/external path or env/existing report",
+      "entryPoint": "main --runtime-transition-test -> :memory: Engine runtime APIs",
+      "level": "unit",
+      "expectedBehavior": "Reject before selected executable invocation",
+      "oracle": "Reject before selected executable invocation",
+      "testFiles": [
+        "src-tauri/src/runtime_transition_test.rs"
+      ],
+      "required": true,
+      "sensitivity": "not-applicable",
+      "sensitivityReason": "New test entry point: direct rejection tests, not a historical product red/green.",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "--",
+        "--nocapture"
+      ]
+    },
+    {
+      "id": "RT-REAL",
+      "requirementIds": [
+        "INV-RESULT"
+      ],
+      "scenario": "Preview then cancel/stale/apply against same owned R40 HOME",
+      "entryPoint": "main --runtime-transition-test -> :memory: Engine runtime APIs",
+      "level": "integration",
+      "expectedBehavior": "Actual Engine checks and CLI owned PID/image/SHA agree; exactly one apply, unknown/error remains failure",
+      "oracle": "Actual Engine checks and CLI owned PID/image/SHA agree; exactly one apply, unknown/error remains failure",
+      "testFiles": [
+        "src-tauri/src/runtime_transition_test.rs"
+      ],
+      "required": true,
+      "sensitivity": "not-applicable",
+      "sensitivityReason": "New live integration entry point. No fake lifecycle response counts as actual R40 behavior.",
+      "argv": [
+        "opendiy-desktop.exe",
+        "--runtime-transition-test",
+        "--root",
+        "<owned-root>",
+        "--cli",
+        "<owned-cli>",
+        "--server",
+        "<owned-server>",
+        "--action",
+        "<preview|cancel|stale|apply>",
+        "--report",
+        "<new-owned-report>"
+      ]
+    }
+  ],
+  "exclusions": [
+    "Full TUI/model/publication IT02–05 are not implied by this entry point.",
+    "Actual installation and operating production runtime remain separately approved."
+  ]
+}

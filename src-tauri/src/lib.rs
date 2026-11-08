@@ -16,6 +16,7 @@ pub mod process_job;
 mod owned_tui_control;
 mod session;
 pub mod self_test;
+pub mod runtime_transition_test;
 mod storage;
 mod ui_language;
 mod relay;
