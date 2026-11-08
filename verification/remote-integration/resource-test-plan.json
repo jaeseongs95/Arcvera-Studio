@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "remote-170-resource-boundaries",
+  "contractDigest": "sha256:200cfa82e1dbafc741896ab2d0e33a042f39390235253b139e8e01ff24e92204",
+  "requirements": [
+    "AC-04"
+  ],
+  "scopeFiles": [
+    "src-tauri/src/relay_tests.rs",
+    "verification/remote-integration/relay-fixture.mjs"
+  ],
+  "runner": "Existing cargo test relay::tests on Windows CI only",
+  "environment": "Windows CI, pinned actual Node relay with own loopback/data; controlled stalled event POST and delayed native dispatch, no CLI or operating data",
+  "cases": [
+    {
+      "id": "cache-byte-cap",
+      "requirementIds": [
+        "AC-04"
+      ],
+      "scenario": "Few large replies force eviction by bytes before 256-entry cap",
+      "entryPoint": "Calls admit/finish component contract",
+      "level": "unit",
+      "expectedBehavior": "Old large key is evicted, latest remains replayable and bytes <=16MiB",
+      "oracle": "Contract16MiB and independently sized 3MiB entries",
+      "testFiles": [
+        "src-tauri/src/relay_tests.rs"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Direct byte-cap boundary; removing byte-cap condition permits five 3MiB replies and sixth exceeds16MiB",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "relay::tests::"
+      ]
+    },
+    {
+      "id": "event-byte-and-channel-cap",
+      "requirementIds": [
+        "AC-04"
+      ],
+      "scenario": "Actual registered relay with first event POST stalled by owned fixture; subsequent native forwards reach 4MiB or32 queue cap",
+      "entryPoint": "RelayState forward → actual native event worker and bounded channel",
+      "level": "integration",
+      "expectedBehavior": "Explicit error and aborted network, queue never above bytes cap; stop/reconnect succeeds",
+      "oracle": "Contract4MiB/32 messages; independently bounded sends, actual server records blocked POST",
+      "testFiles": [
+        "src-tauri/src/relay_tests.rs"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Tests real queue not a fixed counter; stall is declared fault injection rather than fake successful transport",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "relay::tests::"
+      ]
+    },
+    {
+      "id": "stop-accepted-global-permit",
+      "requirementIds": [
+        "AC-04"
+      ],
+      "scenario": "Four actual relay invokes wait before same owned Engine effect; explicit stop and reconnect; fifth denied until accepted commands finish",
+      "entryPoint": "Real browser /api/invoke → native relay dispatch → same Engine",
+      "level": "integration",
+      "expectedBehavior": "Disconnect releases network but pending4 survive; new connection cannot bypass global4; four original effects complete once and old failure cannot change new status",
+      "oracle": "Independent owned Engine project count0 then4, response rejection and status generation",
+      "testFiles": [
+        "src-tauri/src/relay_tests.rs"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Actual async dispatch lifetime under controlled gate; tests Engine effects, not just task or permit count",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "relay::tests::"
+      ]
+    }
+  ],
+  "exclusions": [
+    "Physical phone",
+    "Production TLS/relay",
+    "CLI/TUI/model",
+    "Process-wide memory load claim"
+  ]
+}

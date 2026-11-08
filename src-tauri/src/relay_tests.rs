@@ -129,3 +129,110 @@ fn pinned_actual_remote_relay_roundtrip_shares_owned_engine_and_disconnects() {
     });
     drop(engine);
 }
+
+#[test]
+fn cache_byte_ceiling_evicts_large_replies_before_the_entry_ceiling() {
+    let mut calls=Calls::default();
+    for index in 0..6 {
+        let id=index.to_string();
+        assert!(matches!(calls.admit(&id,b"large",1),Admission::New));
+        calls.finish(id,json!({"result":"x".repeat(3*1024*1024)}));
+        assert!(calls.bytes<=16*1024*1024);
+    }
+    assert_eq!(calls.completed.len(),5,"six independently sized 3MiB replies exceed16MiB");
+    assert!(matches!(calls.admit("0",b"large",1),Admission::New),"oldest large reply must be evicted");
+    assert!(matches!(calls.admit("5",b"large",1),Admission::Replay(_)),"newest reply must remain replayable");
+}
+
+fn owned_relay_server(fixture:&mut Fixture)->String {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),"CI-only native integration");
+    let script=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../verification/remote-integration/relay-fixture.mjs");
+    let mut child=Command::new("node").arg(script).arg(&fixture.directory).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let mut line=String::new();BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let address:Value=serde_json::from_str(line.trim()).expect("actual relay address");
+    fixture.child=Some(child);address["address"].as_str().unwrap().to_owned()
+}
+
+async fn wait_owned_file(path:&std::path::Path) {
+    let deadline=Instant::now()+Duration::from_secs(5);
+    while !path.is_file() {
+        assert!(Instant::now()<deadline,"owned fixture did not reach {}",path.display());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[test]
+fn actual_event_transport_backpressure_enforces_byte_and_channel_caps() {
+    // Each scenario owns its relay, processes and files. Only event POST is
+    // deliberately stalled; registration/disconnection use the actual server.
+    for bytes_cap in [true,false] {
+        let mut fixture=Fixture::new();let address=owned_relay_server(&mut fixture);
+        fixture.child.as_mut().unwrap().stdin.as_mut().unwrap().write_all(b"pause-owned-events\n").unwrap();
+        let relay=RelayState::default();
+        tauri::async_runtime::block_on(async {
+            wait_owned_file(&fixture.directory.join("event-pause-ready")).await;
+            relay.start(&address,"relay-host-test-only".into(),Arc::new(|_,_|Box::pin(async{Err("no native command expected".into())})),Arc::new(|_|{})).unwrap();
+            wait_state(&relay,"connected").await;
+            relay.forward("session-changed",json!({"probe":"first"}));
+            wait_owned_file(&fixture.directory.join("event-post-blocked")).await;
+            let data=if bytes_cap {"x".repeat(900*1024)} else {"small".to_owned()};
+            for _ in 0..40 {
+                relay.forward("session-changed",json!({"probe":data}));
+                let active=relay.active.lock().unwrap();let connection=&active.as_ref().unwrap().connection;
+                assert!(connection.queued.load(Ordering::Acquire)<=4*1024*1024);
+                if connection.stopped.load(Ordering::Acquire) {break;}
+            }
+            let status=relay.snapshot().unwrap();assert_eq!(status.state,"error");
+            assert!(status.error.unwrap().contains(if bytes_cap {"출력 대기 상한"} else {"대기열이 가득"}));
+            assert_eq!(relay.stop().await.unwrap().release_confirmed,Some(true));
+            assert!(relay.active.lock().unwrap().is_none());
+            relay.start(&address,"relay-host-test-only".into(),Arc::new(|_,_|Box::pin(async{Ok(Value::Null)})),Arc::new(|_|{})).unwrap();
+            wait_state(&relay,"connected").await;
+            assert_eq!(relay.stop().await.unwrap().release_confirmed,Some(true));
+        });
+    }
+}
+
+#[test]
+fn accepted_commands_survive_stop_without_bypassing_global_limit_on_reconnect() {
+    let mut fixture=Fixture::new();let address=owned_relay_server(&mut fixture);
+    let engine=super::super::session::Engine::new(&fixture.directory.join("desktop.sqlite3"),Arc::new(|_|Ok(()))).unwrap();
+    let gate=Arc::new(Semaphore::new(0));let started=Arc::new(AtomicUsize::new(0));
+    let dispatch_engine=engine.clone();let dispatch_gate=gate.clone();let dispatch_started=started.clone();
+    let dispatch:Dispatch=Arc::new(move |_,args| {
+        let engine=dispatch_engine.clone();let gate=dispatch_gate.clone();let started=dispatch_started.clone();
+        Box::pin(async move {
+            started.fetch_add(1,Ordering::AcqRel);
+            gate.acquire().await.unwrap().forget();
+            serde_json::to_value(engine.create_project(args["name"].as_str().unwrap(),None)?).map_err(|e|e.to_string())
+        })
+    });
+    let relay=RelayState::default();
+    tauri::async_runtime::block_on(async {
+        relay.start(&address,"relay-host-test-only".into(),dispatch.clone(),Arc::new(|_|{})).unwrap();wait_state(&relay,"connected").await;
+        let client=Client::builder().timeout(Duration::from_secs(10)).build().unwrap();
+        let mut browsers=Vec::new();
+        for index in 0..4 {
+            let request=client.post(format!("{address}/api/invoke")).header("Authorization","Bearer relay-browser-test-only").header("Content-Type","application/json").body(json!({"command":"create_project","args":{"name":format!("accepted-{index}")}}).to_string());
+            browsers.push(tauri::async_runtime::spawn(async move {request.send().await.unwrap()}));
+        }
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while started.load(Ordering::Acquire)!=4 {assert!(Instant::now()<deadline,"four commands not accepted");tokio::time::sleep(Duration::from_millis(10)).await;}
+        assert_eq!(engine.list_projects().unwrap().len(),0);
+        let old=relay.active.lock().unwrap().as_ref().unwrap().connection.clone();
+        let stopped=relay.stop().await.unwrap();assert_eq!(stopped.release_confirmed,Some(true));assert_eq!(stopped.pending_commands,4);
+        for browser in browsers {assert!(!browser.await.unwrap().status().is_success(),"disconnect must report unknown/failure to waiting browser");}
+        relay.start(&address,"relay-host-test-only".into(),dispatch,Arc::new(|_|{})).unwrap();wait_state(&relay,"connected").await;
+        let response=client.post(format!("{address}/api/invoke")).header("Authorization","Bearer relay-browser-test-only").header("Content-Type","application/json").body(json!({"command":"create_project","args":{"name":"must-not-run"}}).to_string()).send().await.unwrap();
+        let denied:Value=serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(denied["ok"],false);assert_eq!(started.load(Ordering::Acquire),4);assert_eq!(engine.list_projects().unwrap().len(),0);
+        gate.add_permits(4);
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while relay.snapshot().unwrap().pending_commands!=0 {assert!(Instant::now()<deadline,"accepted work did not finish");tokio::time::sleep(Duration::from_millis(10)).await;}
+        assert_eq!(engine.list_projects().unwrap().len(),4,"all accepted Engine effects must complete exactly once");
+        assert_eq!(old.calls.lock().unwrap().completed.len(),4);
+        old.fatal("late accepted completion".into());assert_eq!(relay.snapshot().unwrap().state,"connected");
+        assert_eq!(relay.stop().await.unwrap().release_confirmed,Some(true));
+    });
+    drop(engine);
+}
