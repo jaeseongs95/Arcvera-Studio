@@ -23,6 +23,97 @@ fn run(control: &ConversationConnection,state: &mut State,rpc: &mut Rpc<TcpStrea
     exchange(&control.0,state,rpc,"original",request,&Arc::new(AtomicBool::new(false)),Instant::now()+Duration::from_secs(2))
 }
 
+fn permission_ack() -> Value {
+    json!({"settingsApplied":true,"threadSettings":{
+        "approvalPolicy":"on-request","approvalsReviewer":"user",
+        "sandboxPolicy":{"type":"workspaceWrite","networkAccess":false,"writableRoots":["D:/fixture"],"excludeTmpdirEnvVar":true,"excludeSlashTmp":false},
+        "activePermissionProfile":{"id":":workspace","extends":null},"secret":"PRIVATE_SETTING_NEVER_RETURN"
+    }})
+}
+
+#[test]
+fn permission_query_reads_only_loaded_thread_and_preserves_input_and_pending_mutation() {
+    let (control,mut rpc,listener)=fixture();
+    let server=start(listener,|socket| {
+        let read=request(socket);assert_eq!(read["method"],SETTINGS);assert_eq!(read["params"],json!({"threadId":"original"}));reply(socket,&read,permission_ack());
+        assert!(socket.read().is_err(),"permission query must never attach, resume, write or retry");
+    });
+    let mut state=State{thread:Some("original".into()),pending:Some(Some(1000))};
+    let value=run(&control,&mut state,&mut rpc,ConversationRequest::PermissionStatus).unwrap();
+    assert_eq!(value["status"],"known");assert_eq!(value["permissions"]["approvalPolicy"],"on-request");
+    assert_eq!(state.pending,Some(Some(1000)));assert!(!value.to_string().contains("PRIVATE_SETTING_NEVER_RETURN"));
+    assert!(!*control.0.input.lock().unwrap());assert!(!control.0.owned.load(Ordering::Acquire));assert!(control.0.worker.lock().unwrap().is_none());
+    drop(rpc);server.join().unwrap();
+}
+
+#[test]
+fn permission_query_distinguishes_method_unsupported_from_server_error_without_retry() {
+    for code in [-32601,-32600,-32603] {
+        let (control,mut rpc,listener)=fixture();
+        let server=start(listener,move |socket| {
+            let read=request(socket);assert_eq!(read["params"],json!({"threadId":"original"}));
+            socket.send(Message::Text(json!({"id":read["id"],"error":{"code":code,"message":"fixture server error"}}).to_string().into())).unwrap();
+            assert!(socket.read().is_err(),"permission query must not retry or fall back");
+        });
+        let result=run(&control,&mut State::default(),&mut rpc,ConversationRequest::PermissionStatus);
+        if code==-32601 {let value=result.unwrap();assert_eq!(value["supported"],false);assert_eq!(value["reason"],"methodUnsupported");}
+        else {assert!(result.unwrap_err().contains(&code.to_string()));}
+        drop(rpc);server.join().unwrap();
+    }
+}
+
+#[test]
+fn permission_empty_ack_and_malformed_fields_are_different_and_never_guess_values() {
+    for value in [json!({}),json!({"settingsApplied":false}),json!({"settingsApplied":"true"})] {
+        let output=permission_view(&value);assert_eq!(output["supported"],false);assert_eq!(output["reason"],"noAuthoritativeSettings");assert!(output.get("permissions").is_none());
+    }
+    for field in ["approvalPolicy","approvalsReviewer","sandboxPolicy","activePermissionProfile"] {
+        let mut value=permission_ack();value["threadSettings"].as_object_mut().unwrap().remove(field);
+        let output=permission_view(&value);assert_eq!(output["supported"],true);assert_eq!(output["reason"],"invalidPermissionFields");assert!(output.get("permissions").is_none());
+    }
+    for (field,bad) in [("approvalPolicy",json!("future")),("approvalPolicy",json!({"granular":{"rules":false}})),("approvalsReviewer",json!(false)),("sandboxPolicy",json!({"type":"readOnly","networkAccess":"false"})),("activePermissionProfile",json!({"id":3}))] {
+        let mut value=permission_ack();value["threadSettings"][field]=bad;
+        assert_eq!(permission_view(&value)["status"],"unknown");
+    }
+}
+
+#[test]
+fn permission_sandbox_variants_and_granular_policy_preserve_only_supported_fields() {
+    for sandbox in [json!({"type":"dangerFullAccess"}),json!({"type":"readOnly","networkAccess":false}),json!({"type":"externalSandbox","networkAccess":"restricted"}),permission_ack()["threadSettings"]["sandboxPolicy"].clone()] {
+        let mut value=permission_ack();value["threadSettings"]["sandboxPolicy"]=sandbox.clone();value["threadSettings"]["sandboxPolicy"]["secret"]=json!("PRIVATE_NESTED");
+        value["threadSettings"]["approvalPolicy"]=json!({"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true,"skill_approval":false,"request_permissions":true,"secret":"PRIVATE_NESTED"}});
+        value["threadSettings"]["activePermissionProfile"]=Value::Null;
+        let output=permission_view(&value);assert_eq!(output["status"],"known");assert_eq!(output["permissions"]["sandboxPolicy"],sandbox);assert!(output["permissions"]["activePermissionProfile"].is_null());
+        assert!(!output.to_string().contains("PRIVATE_"));assert_eq!(output["permissions"]["approvalPolicy"]["granular"]["request_permissions"],true);
+    }
+}
+
+#[test]
+fn permission_pending_metadata_excludes_question_and_command_bodies_and_keeps_unknown() {
+    let requests=vec![
+        json!({"requestId":"1","method":"item/commandExecution/requestApproval","metadataAvailable":true,"params":{"command":"PRIVATE_COMMAND_BODY"}}),
+        json!({"requestId":"2","method":"item/permissions/requestApproval","metadataAvailable":false,"params":{"reason":"PRIVATE_REASON"}}),
+        json!({"requestId":"3","method":"item/tool/requestUserInput","metadataAvailable":true,"params":{"question":"PRIVATE_QUESTION"}}),
+    ];
+    let output=approval_metadata(requests,false);assert_eq!(output["status"],"unknown");assert_eq!(output["requests"].as_array().unwrap().len(),2);assert!(!output.to_string().contains("PRIVATE_"));
+    assert_eq!(output["requests"][1]["metadataAvailable"],false);
+    assert_eq!(approval_metadata(vec![],false)["status"],"unknown");assert_eq!(approval_metadata(vec![],true)["status"],"known");
+    assert_eq!(approval_metadata(vec![json!({"method":"future/requestApproval"})],true)["status"],"unknown");
+    assert_eq!(approval_metadata(vec![json!({"method":"item/fileChange/requestApproval","requestId":"4","metadataAvailable":false})],true)["status"],"unknown");
+}
+
+#[test]
+fn permission_transport_failure_is_error_and_expired_query_does_not_send() {
+    let (control,mut rpc,listener)=fixture();
+    let server=start(listener,|socket| {let read=request(socket);assert_eq!(read["params"],json!({"threadId":"original"}));});
+    let result=run(&control,&mut State::default(),&mut rpc,ConversationRequest::PermissionStatus);
+    assert!(result.is_err());assert!(!control.0.unknown.load(Ordering::Acquire));assert!(!control.0.owned.load(Ordering::Acquire));
+    drop(rpc);server.join().unwrap();
+    let (control,mut rpc,_listener)=fixture();
+    assert!(read_permissions(&control.0,&mut rpc,"original",&AtomicBool::new(false),Instant::now()-Duration::from_millis(1)).unwrap_err().contains("전송하지 않았습니다"));
+    assert_eq!(rpc.next_id,0);
+}
+
 #[test]
 fn fresh_context_connection_negotiates_experimental_api_before_settings_query() {
     let (control,mut rpc,listener)=fixture();

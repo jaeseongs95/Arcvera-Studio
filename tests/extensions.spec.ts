@@ -253,11 +253,16 @@ for (const handlerType of ['mcpTool', 'prompt', 'agent']) test(`incomplete ${han
   await expect(page.locator('#extensions-hook-trust')).toHaveCount(0);
 });
 
-test('all four extension tabs remain keyboard reachable without catalog discovery', async ({ page }) => {
+test('all five extension tabs remain keyboard reachable without catalog discovery', async ({ page }) => {
   await fixture(page); await open(page); const before = await extensionCalls(page, 'extensions_list');
-  await page.locator('#extensions-tab-plugins').focus(); await page.keyboard.press('ArrowRight'); await page.keyboard.press('ArrowRight');
-  await expect(page.locator('#extensions-tab-hooks')).toBeFocused();
-  await page.keyboard.press('End'); await expect(page.locator('#extensions-tab-marketplaces')).toBeFocused();
+  await page.locator('#extensions-tab-plugins').focus();
+  for (const tab of ['skills', 'hooks', 'marketplaces', 'mcpServers', 'plugins']) {
+    await page.keyboard.press('ArrowRight'); await expect(page.locator(`#extensions-tab-${tab}`)).toBeFocused();
+  }
+  await page.keyboard.press('End'); await expect(page.locator('#extensions-tab-mcpServers')).toBeFocused();
+  await page.keyboard.press('ArrowLeft'); await expect(page.locator('#extensions-tab-marketplaces')).toBeFocused();
+  await page.keyboard.press('Home'); await expect(page.locator('#extensions-tab-plugins')).toBeFocused();
+  await page.keyboard.press('ArrowLeft'); await expect(page.locator('#extensions-tab-mcpServers')).toBeFocused();
   await page.keyboard.press('ArrowRight'); await expect(page.locator('#extensions-tab-plugins')).toBeFocused();
   expect(await extensionCalls(page, 'extensions_list')).toEqual(before);
 });
@@ -335,7 +340,7 @@ test('설정에서 언어를 바꾸고 확장 창을 다시 열어도 초안과 
   await page.locator('#extensions-review-confirm').click();
   await expect(page.locator('#extensions-dialog')).toHaveAttribute('aria-busy', 'true');
   await language(page, 'en');
-  await expect(page.locator('#extensions-title')).toHaveText('Plugins, skills & hooks');
+  await expect(page.locator('#extensions-title')).toHaveText('Plugins, skills, hooks & MCP');
   await expect(page.locator('#extensions-search')).toHaveValue('review-kit');
   await expect(page.locator('#extensions-marketplace-source')).toHaveValue('https://example.test/사용자/market.git');
   await expect(page.locator('#extensions-marketplace-ref')).toHaveValue('draft-branch');

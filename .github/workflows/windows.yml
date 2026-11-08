@@ -4,6 +4,11 @@ on:
     branches: [main, 'feat/**', 'fix/**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      updater_package:
+        description: 'Create updater-signed NSIS assets (requires existing signing configuration; never publishes)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -17,6 +22,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - name: Updater manifest packaging regressions
+        run: node --test scripts/updater-manifest.test.mjs scripts/notices.test.mjs
       - run: npm test
       - run: npm run build
       - run: npx playwright install chromium
@@ -83,6 +90,38 @@ jobs:
       - run: cargo test --locked --manifest-path src-tauri/vendor/portable-pty/Cargo.toml --lib -- --nocapture
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Updater native signature and launch regressions
+        run: cargo test --locked --manifest-path src-tauri/vendor/tauri-plugin-updater/Cargo.toml --lib -- --nocapture
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      - name: Compile default-off actual updater helper and check its validators
+        shell: pwsh
+        env:
+          OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'updater-handoff-helper'
+          New-Item -ItemType Directory -Path $out | Out-Null
+          $key=[Text.Encoding]::UTF8.GetBytes($env:OPENDIY_UPDATER_PUBLIC_KEY)
+          $keySha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($key)).ToLowerInvariant()
+          if($key.Length -ne 152 -or $keySha -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact existing public key required'}
+          cargo build --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --bin updater_actual_probe --message-format=json 1> "$out/build.jsonl" 2> "$out/build.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$out/build.stderr.txt";throw 'Actual helper compilation failed'}
+          $messages=@(Get-Content -LiteralPath "$out/build.jsonl"|ForEach-Object {$_|ConvertFrom-Json})
+          $helpers=@($messages|Where-Object {$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_actual_probe' -and $_.executable})
+          if($helpers.Count -ne 1){throw 'Exactly one helper artifact required'}
+          Copy-Item -LiteralPath $helpers[0].executable -Destination "$out/updater_actual_probe.exe"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --lib desktop_updates::actual_probe::tests:: -- --nocapture --test-threads=1 1> "$out/unit.stdout.txt" 2> "$out/unit.stderr.txt"
+          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$out/unit.stdout.txt";Get-Content -LiteralPath "$out/unit.stderr.txt";throw 'Actual helper validators failed'}
+          if((Get-Content -LiteralPath "$out/unit.stdout.txt" -Raw) -notmatch 'test result: ok\. 6 passed; 0 failed; 0 ignored;'){throw 'Six actual helper validator cases required'}
+          @{commit='${{ github.sha }}';profile='dev';helperSHA256=(Get-FileHash -LiteralPath "$out/updater_actual_probe.exe" -Algorithm SHA256).Hash.ToLowerInvariant();publicKeySHA256=$keySha;purePass=6;actualInstall='NOT_RUN';release='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$out/compile-result.json" -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-handoff-helper-${{ github.sha }}
+          path: ${{ runner.temp }}/updater-handoff-helper/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Resource snapshot native-after
         if: always()
         shell: pwsh
@@ -127,7 +166,27 @@ jobs:
           cache-on-failure: true
       - run: npm ci
       - run: node scripts/notices.mjs
-      - run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
+      - name: Build ordinary Windows package
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.updater_package }}
+        run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
+      - name: Build updater-signed Windows package
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.updater_package }}
+        shell: pwsh
+        env:
+          OPENDIY_UPDATER_PUBLIC_KEY: ${{ vars.OPENDIY_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:OPENDIY_UPDATER_PUBLIC_KEY)) { throw 'Set repository variable OPENDIY_UPDATER_PUBLIC_KEY before requesting updater packaging' }
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Set repository secret TAURI_SIGNING_PRIVATE_KEY before requesting updater packaging' }
+          # Only the public key is written to the temporary config; private material stays in the runner environment.
+          $updaterConfig = Join-Path $env:RUNNER_TEMP 'opendiy-updater-public.json'
+          @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:OPENDIY_UPDATER_PUBLIC_KEY.Trim() } } } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM -LiteralPath $updaterConfig
+          & npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --config $updaterConfig --bundles nsis 2>&1 | Tee-Object -Variable updaterBuildLog
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) { exit $buildExit }
+          # Tauri 2.12.4 warns on a mismatched key pair; this packaging mode must fail instead.
+          if (($updaterBuildLog -join "`n").Contains('does not match the public key')) { throw 'Updater signing key pair does not match; no updater assets will be prepared' }
       - name: Prepare portable executable and checksums
         shell: pwsh
         run: |
@@ -140,12 +199,53 @@ jobs:
           Copy-Item src-tauri/Cargo.lock artifacts/Cargo.lock
           @{ commit = '${{ github.sha }}'; run = '${{ github.run_id }}'; platform = 'windows-x64'; signed = $false } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM artifacts/build-info.json
           Compress-Archive -Path artifacts/opendiy-desktop.exe,artifacts/LICENSE,artifacts/THIRD_PARTY_NOTICES.md,artifacts/build-info.json -DestinationPath "artifacts/opendiy-desktop-$gridVersion-windows-x64-portable.zip"
-          $probe = Start-Process -FilePath (Resolve-Path 'artifacts/opendiy-desktop.exe') -ArgumentList @('--self-test','--duration-seconds','60','--report',"$PWD/artifacts/self-test.json") -WindowStyle Hidden -Wait -PassThru
-          if ($probe.ExitCode -ne 0) { throw "Packaged PTY self-test failed: $($probe.ExitCode)" }
+          $probeExe = (Resolve-Path 'artifacts/opendiy-desktop.exe').Path
+          $probeReport = Join-Path $PWD 'artifacts/self-test.json'
+          $probeArgs = @('--self-test','--duration-seconds','60','--report',('"{0}"' -f $probeReport))
+          $probeStarted = [DateTime]::UtcNow.ToString('o')
+          $probeExit = $null
+          $probeLaunchError = $null
+          $probeExeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeExe).Hash.ToLowerInvariant()
+          try {
+            $probe = Start-Process -FilePath $probeExe -ArgumentList $probeArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$PWD/artifacts/self-test.stdout.txt" -RedirectStandardError "$PWD/artifacts/self-test.stderr.txt"
+            $probeExit = $probe.ExitCode
+          } catch {
+            $probeLaunchError = $_.Exception.Message
+            throw
+          } finally {
+            $probeEvidence = @{
+              commit = '${{ github.sha }}'; run = '${{ github.run_id }}'
+              executable = $probeExe; executableSha256 = $probeExeSha
+              arguments = $probeArgs; startedAtUtc = $probeStarted; finishedAtUtc = [DateTime]::UtcNow.ToString('o')
+              exitCode = $probeExit; launchError = $probeLaunchError
+              reportExists = Test-Path -LiteralPath $probeReport -PathType Leaf
+            }
+            if ($probeEvidence.reportExists) {
+              $probeEvidence.reportBytes = (Get-Item -LiteralPath $probeReport).Length
+              $probeEvidence.reportSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $probeReport).Hash.ToLowerInvariant()
+            }
+            $probeEvidence | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8NoBOM artifacts/self-test-execution.json
+          }
+          if ($probeExit -ne 0) { throw "Packaged PTY self-test failed: $probeExit" }
           Get-ChildItem artifacts -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name } | Set-Content -Encoding utf8NoBOM artifacts/SHA256SUMS.txt
+      - name: Prepare updater assets without publishing
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.updater_package }}
+        run: node scripts/updater-manifest.mjs src-tauri/target/release/bundle/nsis artifacts/updater
       - uses: actions/upload-artifact@v4
         with:
           name: opendiy-desktop-windows-x64
           path: artifacts/
           if-no-files-found: error
+          retention-days: 14
+      - name: Preserve packaged PTY self-test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-pty-self-test-evidence
+          path: |
+            artifacts/self-test.json
+            artifacts/self-test.stdout.txt
+            artifacts/self-test.stderr.txt
+            artifacts/self-test-execution.json
+          if-no-files-found: warn
           retention-days: 14

@@ -161,3 +161,193 @@ fn stop_cancels_engine_start_during_launcher_query_and_reaps_the_original_child(
     let cleanup = remove_launcher_fixture(&root);
     assert!(result.is_ok() && cleanup.is_ok(), "F2-START-STOP: {result:?}; fixture cleanup: {cleanup:?}");
 }
+
+// RFR01-RFR08: only the existing Engine resolution/preparation boundary is used.
+// Each arrival is sent after the real function captured its generation. Release
+// channels form a deterministic barrier; no CLI, sleep or product I/O is used.
+mod first_resolution_tests {
+    use super::*;
+
+    type Pair = (std::ffi::OsString, std::ffi::OsString, String, Option<String>);
+
+    fn engine() -> Engine { Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap() }
+    fn pair() -> Pair { ("cli.exe".into(), "server.exe".into(), "standalone".into(), Some("manifest-a".into())) }
+    fn select(engine: &Engine, pair: &Pair) -> RuntimeSnapshot {
+        engine.runtime_pair_snapshot_with(|| Ok(pair.clone())).unwrap()
+    }
+    fn assert_pair(snapshot: &RuntimeSnapshot, pair: &Pair) {
+        assert_eq!((&snapshot.executable, &snapshot.server_executable, &snapshot.server_kind, &snapshot.source_manifest_sha256), (&pair.0, &pair.1, &pair.2, &pair.3));
+    }
+
+    struct PendingResolution {
+        entered: mpsc::Receiver<()>,
+        release: mpsc::Sender<()>,
+        cancelled: Arc<AtomicBool>,
+        worker: thread::JoinHandle<Result<RuntimeSnapshot, String>>,
+    }
+    impl PendingResolution {
+        fn new(engine: &Engine, pair: Pair) -> Self {
+            let engine = engine.clone();
+            let (entered_tx, entered) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let stopped = cancelled.clone();
+            let worker = thread::spawn(move || engine.runtime_pair_snapshot_with(|| {
+                assert!(engine.inner.runtime.try_lock().is_ok(), "resolution held the runtime mutex across external work");
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "resolution barrier was not released".to_string())?;
+                if stopped.load(Ordering::Acquire) { return Err("fixture resolver cancelled".into()); }
+                Ok(pair)
+            }));
+            Self { entered, release, cancelled, worker }
+        }
+        fn entered(&self) { self.entered.recv_timeout(Duration::from_secs(5)).expect("resolver did not reach the barrier"); }
+        fn finish(self) -> Result<RuntimeSnapshot, String> {
+            self.release.send(()).unwrap();
+            self.worker.join().expect("resolution worker panicked")
+        }
+    }
+
+    #[test]
+    fn concurrent_first_resolution_joins_only_the_identical_pair() {
+        let engine = engine();
+        let pair = pair();
+        let first = PendingResolution::new(&engine, pair.clone());
+        first.entered();
+        let second = PendingResolution::new(&engine, pair.clone());
+        second.entered();
+        let selected = first.finish().unwrap();
+        assert_eq!(selected.generation, 1);
+        let prepared = engine.prepare_selected_runtime_with(selected.clone(), false, &AtomicBool::new(false), |_| Ok(())).unwrap();
+        let preparation = prepared.preparation;
+        let joined = second.finish().expect("the same concurrent first resolution must join the committed pair");
+        assert_eq!(joined.generation, selected.generation);
+        assert_pair(&joined, &pair);
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+        let runtime = engine.inner.runtime.lock().unwrap();
+        assert_eq!(runtime.generation, selected.generation);
+        assert_eq!(runtime.preparation, preparation);
+        assert!(runtime.ready && !runtime.preparing);
+        drop(runtime);
+
+        // RFR08: joining cannot bypass the existing cancellation admission fence.
+        let cancelled = AtomicBool::new(true);
+        assert!(engine.prepare_start_with::<()>(joined, &cancelled,
+            |_| panic!("cancelled join prepared a runtime"),
+            |_| panic!("cancelled join opened a connection")).is_err());
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+    }
+
+    #[test]
+    fn first_resolution_rejects_a_user_selection_change_without_populating_the_memo() {
+        let engine = engine();
+        let pending = PendingResolution::new(&engine, pair());
+        pending.entered();
+        engine.change_runtime_selection_with(|| Ok(())).unwrap();
+        assert!(pending.finish().is_err(), "user selection changes cannot be joined as initial memoization");
+        let runtime = engine.inner.runtime.lock().unwrap();
+        assert_eq!(runtime.generation, 1);
+        assert!(runtime.executable.is_none() && runtime.server_executable.is_none() && runtime.server_kind.is_none() && runtime.source_manifest_sha256.is_none());
+        assert!(!runtime.ready && !runtime.preparing);
+    }
+
+    #[test]
+    fn first_resolution_rejects_same_path_user_selection_aba_and_preserves_latest_ready() {
+        let engine = engine();
+        let pair = pair();
+        let pending = PendingResolution::new(&engine, pair.clone());
+        pending.entered();
+        let original = select(&engine, &pair);
+        engine.change_runtime_selection_with(|| Ok(())).unwrap();
+        engine.change_runtime_selection_with(|| Ok(())).unwrap();
+        let latest = select(&engine, &pair);
+        assert!(latest.generation > original.generation + 1);
+        let prepared = engine.prepare_selected_runtime_with(latest.clone(), false, &AtomicBool::new(false), |_| Ok(())).unwrap();
+        assert!(pending.finish().is_err(), "an equal path after user selection ABA is a different generation");
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+        assert_eq!(engine.inner.runtime.lock().unwrap().generation, latest.generation);
+        assert_pair(&latest, &pair);
+    }
+
+    #[test]
+    fn first_resolution_rejects_each_changed_pair_field_without_overwriting_ready() {
+        let original = pair();
+        let mut cli = original.clone(); cli.0 = "other-cli.exe".into();
+        let mut server = original.clone(); server.1 = "other-server.exe".into();
+        let mut kind = original.clone(); kind.2 = "cli".into();
+        let mut manifest = original.clone(); manifest.3 = Some("manifest-b".into());
+        for changed in [cli, server, kind, manifest] {
+            let engine = engine();
+            let pending = PendingResolution::new(&engine, original.clone());
+            pending.entered();
+            let latest = select(&engine, &changed);
+            let prepared = engine.prepare_selected_runtime_with(latest.clone(), false, &AtomicBool::new(false), |_| Ok(())).unwrap();
+            assert!(pending.finish().is_err(), "a competing pair or manifest cannot overwrite the winner");
+            engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+            assert_eq!(engine.inner.runtime.lock().unwrap().generation, latest.generation);
+            assert_pair(&latest, &changed);
+        }
+    }
+
+    #[test]
+    fn an_already_resolved_snapshot_cannot_join_a_later_matching_pair() {
+        let engine = engine();
+        let original = pair();
+        select(&engine, &original);
+        let mut changed = original; changed.3 = Some("manifest-b".into());
+        let pending = PendingResolution::new(&engine, changed.clone());
+        pending.entered();
+        let latest = select(&engine, &changed);
+        let prepared = engine.prepare_selected_runtime_with(latest.clone(), false, &AtomicBool::new(false), |_| Ok(())).unwrap();
+        assert!(pending.finish().is_err(), "only an initially empty memo permits first-resolution joining");
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+        assert_eq!(engine.inner.runtime.lock().unwrap().generation, latest.generation);
+    }
+
+    #[test]
+    fn a_cancelled_resolver_preserves_the_committed_ready_pair() {
+        let engine = engine();
+        let pair = pair();
+        let pending = PendingResolution::new(&engine, pair.clone());
+        pending.entered();
+        let latest = select(&engine, &pair);
+        let prepared = engine.prepare_selected_runtime_with(latest.clone(), false, &AtomicBool::new(false), |_| Ok(())).unwrap();
+        pending.cancelled.store(true, Ordering::Release);
+        assert_eq!(pending.finish().unwrap_err(), "fixture resolver cancelled");
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+        assert_eq!(engine.inner.runtime.lock().unwrap().generation, latest.generation);
+    }
+
+    #[test]
+    fn first_resolution_join_preserves_in_progress_preparation_and_its_duplicate_rejection() {
+        let engine = engine();
+        let pair = pair();
+        let first = PendingResolution::new(&engine, pair.clone());
+        first.entered();
+        let second = PendingResolution::new(&engine, pair);
+        second.entered();
+        let selected = first.finish().unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let preparing = engine.clone();
+        let prepare = thread::spawn(move || preparing.prepare_selected_runtime_with(selected, false, &AtomicBool::new(false), |_| {
+            assert!(preparing.inner.runtime.try_lock().is_ok());
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "prepare barrier was not released".to_string())?;
+            Ok(())
+        }));
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let preparation = engine.inner.runtime.lock().unwrap().preparation;
+        let joined = second.finish().expect("first-resolution join must preserve the current preparation");
+        {
+            let runtime = engine.inner.runtime.lock().unwrap();
+            assert!(!runtime.ready && runtime.preparing);
+            assert_eq!(runtime.preparation, preparation);
+        }
+        assert!(engine.prepare_selected_runtime_with(joined, false, &AtomicBool::new(false), |_| panic!("duplicate preparation ran")).is_err());
+        release_tx.send(()).unwrap();
+        let prepared = prepare.join().unwrap().unwrap();
+        assert_eq!(prepared.preparation, preparation);
+        engine.verify_prepared_runtime(&prepared, &AtomicBool::new(false)).unwrap();
+    }
+}

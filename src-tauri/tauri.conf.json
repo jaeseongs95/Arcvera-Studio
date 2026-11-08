@@ -1,8 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenDIY Desktop",
-  "version": "1.3.2",
+  "version": "1.6.4",
   "identifier": "io.agentgrid.desktop",
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    }
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

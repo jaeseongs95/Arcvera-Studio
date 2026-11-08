@@ -39,6 +39,7 @@ pub enum ConversationRequest {
     Poll,
     ContextStatus,
     ContextSettings,
+    PermissionStatus,
     SetContextWindow { #[serde(deserialize_with="context::nullable_window")] model_context_window: Option<i64>, #[serde(deserialize_with="context::nullable_window")] expected_model_context_window: Option<i64> },
     Compact,
     Page { cursor: Option<String> },
@@ -451,7 +452,7 @@ impl ConversationConnection {
     }
     fn request_context(&self, thread_id: &str, cwd: &Path, request: ConversationRequest, send_context: Option<SendContext>) -> Result<Value, String> {
         validate_request(&request)?;
-        if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::SetContextWindow {..}) {
+        if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::PermissionStatus | ConversationRequest::SetContextWindow {..}) {
             return self.context_settings_request(thread_id, request);
         }
         if matches!(request, ConversationRequest::ContextStatus) {

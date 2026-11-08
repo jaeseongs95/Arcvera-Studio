@@ -17,7 +17,9 @@ import { createMobileControl } from './mobile-control';
 import { createWeeklyUsage } from './weekly-usage';
 import './weekly-usage.css';
 import { createConversation } from './conversation';
-import { installTerminalExternalLinks } from './external-links';
+import { installTerminalExternalLinks, openExternalUrl } from './external-links';
+import { createPermissionStatus } from './permission-status';
+import { createUpdateSettings } from './update-settings';
 import { createContextControls } from './context-controls';
 import { createCronManager } from './cron-manager';
 import { createSubagentManager } from './subagent-manager';
@@ -31,12 +33,13 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.qu
 const states: Record<string, [string, string]> = { restored: ['저장됨 · 미실행', 'Saved · not started'], notLoaded: ['상태 미확인', 'Unknown state'], starting: ['시작 중', 'Starting'], running: ['실행 중', 'Running'], idle: ['입력 가능', 'Ready'], waiting: ['응답 대기', 'Waiting for response'], stopping: ['종료 중', 'Stopping'], stopped: ['종료됨', 'Stopped'], exited: ['종료됨', 'Exited'], error: ['오류', 'Error'], unknown: ['상태 미확인', 'Unknown state'] };
 function stateLabels(state: string): [string, string] { return states[state] ?? states.unknown; }
 const sessions = new Map<string, Session>();
-interface QueuedInput { data: string; generation: number; selectionVersion: number }
+interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
 const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
+const permissionConnections = new Map<string, { generation: number; threadId?: string; connected: boolean }>();
 const pending = new Map<string, Output[]>();
 const resolving = new Set<string>();
 const unlisteners: UnlistenFn[] = [];
@@ -491,7 +494,11 @@ function setActive(id: string, focus = true) {
   active = id;
   for (const [key, view] of terminals) view.card.classList.toggle('focused', key === id);
   for (const element of document.querySelectorAll<HTMLElement>('[data-session-link]')) element.classList.toggle('active', element.dataset.sessionLink === id);
-  if (focus) { const view = terminals.get(id); if (view && !view.card.querySelector<HTMLElement>('.conversation-host')?.hidden) view.card.querySelector<HTMLTextAreaElement>('.conversation-input')?.focus(); else view?.terminal.focus(); }
+  if (focus) {
+    const view = terminals.get(id), host = view?.card.querySelector<HTMLElement>('.conversation-host');
+    if (host && !host.hidden) view?.card.querySelector<HTMLTextAreaElement>('.conversation-input')?.focus();
+    else view?.terminal.focus();
+  }
 }
 
 function canType(id: string) {
@@ -510,12 +517,13 @@ function refreshInputState(id: string) {
   if (!view.input.size) view.inputWarning = false;
 }
 function inputError(error: unknown) {
+  if (error instanceof InputQueueError && error.reason === 'encoding') return new UiError('바이너리 입력은 0x00–0xFF 바이트만 보낼 수 있습니다. 이 입력은 전송하지 않았습니다.', 'Binary input must contain only 0x00–0xFF bytes. This input was not sent.');
   return error instanceof InputQueueError ? new UiError(error.reason === 'message' ? '한 번에 64KiB 이하로 입력하세요. 이 입력은 전송하지 않았습니다.' : error.reason === 'full' ? '입력 전송 대기열이 가득 찼습니다. 이 입력은 전송하지 않았습니다. 완료 후 다시 시도하세요.' : '대기 중 프로젝트 또는 세션 상태가 변경되어 전송하지 않았습니다.', error.reason === 'message' ? 'Input must be at most 64KiB per operation. This input was not sent.' : error.reason === 'full' ? 'The input queue is full. This input was not sent. Retry after pending writes finish.' : 'Not sent because the project or session state changed while queued.') : error;
 }
-function sendInput(id: string, data: string) {
+function sendInput(id: string, data: string, binary?: true) {
   const session = sessions.get(id); const view = terminals.get(id);
   if (!session || !view || !canType(id) || conversationOwners.has(id)) return;
-  void view.input.enqueue({ data, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
+  void view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
     if (error instanceof InputQueueError && error.reason === 'cancelled') return;
     if (error instanceof InputQueueError && view.inputWarning) return;
     if (error instanceof InputQueueError) view.inputWarning = true;
@@ -577,13 +585,19 @@ function mountConversation(session: Session) {
   contextControls.set(session.id, createContextControls({
     host: card.querySelector<HTMLElement>('.context-controls')!, statusHost: card.querySelector<HTMLElement>('.session-compaction')!, sessionId: session.id, generation: session.generation, call, notify,
     capabilitiesChanged(supported) { toggle.hidden = !supported.passiveSubscription; subagentsButton.hidden = !supported.subagents; },
+    connectionChanged(connected, threadId) {
+      const current = sessions.get(session.id);
+      if (current?.generation !== session.generation) return;
+      permissionConnections.set(session.id, { generation: session.generation, threadId, connected });
+      updatePermissionButton(current);
+    },
     compact: () => conversation && !conversationHost.hidden ? conversation.compact() : call('conversation_request', { id: session.id, generation: session.generation, request: { type: 'compact' } }),
   }));
 }
 
 function createTerminal(session: Session) {
   const card = document.createElement('article'); card.className = 'terminal-card'; card.dataset.id = session.id;
-  card.innerHTML = `<header class="terminal-header"><span class="drag-handle" draggable="true" title="드래그로 순서 변경" aria-hidden="true">⠿</span><span class="terminal-title"></span><span class="session-compaction" role="status" hidden></span><span class="session-state"></span><div class="card-actions"><button class="session-id-copy icon-button" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span class="context-controls"></span><button class="subagents-open icon-button" type="button" aria-haspopup="dialog" aria-controls="subagents-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M5 16v-4h14v4"/></svg></button><button class="cron-open icon-button" type="button" aria-haspopup="dialog" aria-controls="cron-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></button><button class="conversation-toggle icon-button" type="button" aria-label="대화 보기" title="대화 / 터미널">☷</button><button class="maximize icon-button" aria-label="세션 최대화" title="세션 최대화">⛶</button><button class="session-restart icon-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button><button class="stop icon-button" aria-label="이 세션 종료" title="이 세션 종료">×</button></div></header><div class="terminal-path"></div><div class="terminal-host"></div><div class="terminal-footer"><span class="terminal-identity"></span><span class="terminal-hint">Shift+드래그 선택 · Ctrl+C 복사 · Ctrl+V 붙여넣기</span></div>`;
+  card.innerHTML = `<header class="terminal-header"><span class="drag-handle" draggable="true" title="드래그로 순서 변경" aria-hidden="true">⠿</span><span class="terminal-title"></span><span class="session-compaction" role="status" hidden></span><span class="session-state"></span><div class="window-actions"><button class="maximize icon-button" aria-label="세션 최대화" title="세션 최대화">⛶</button><button class="stop icon-button" aria-label="이 세션 종료" title="이 세션 종료">×</button></div></header><div class="terminal-path"></div><div class="terminal-host"></div><div class="terminal-footer"><div class="terminal-meta"><span class="terminal-identity"></span><span class="terminal-hint">Shift+드래그 선택 · Ctrl+C 복사 · Ctrl+V 붙여넣기</span></div><div class="card-actions"><button class="session-id-copy icon-button" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span class="context-controls"></span><button class="subagents-open icon-button" type="button" aria-haspopup="dialog" aria-controls="subagents-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M5 16v-4h14v4"/></svg></button><button class="cron-open icon-button" type="button" aria-haspopup="dialog" aria-controls="cron-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></button><button class="conversation-toggle icon-button" type="button" aria-label="대화 보기" title="대화 / 터미널">☷</button><button class="session-restart icon-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button></div></div>`;
   localizeMarkup(card);
   const terminal = new Terminal({ fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', fontSize: 12, lineHeight: 1.45, cursorBlink: true, scrollback: 10000, disableStdin: !native, allowProposedApi: false, theme: { background: '#141820', foreground: '#ced5e3', cursor: '#a5b4fc', selectionBackground: '#3b4567', black: '#212735', red: '#f78b99', green: '#91d6ad', yellow: '#eac184', blue: '#8eaafb', magenta: '#c4a4f3', cyan: '#87cfd9', white: '#e3e8f0' } });
   const fit = new FitAddon(); const search = new SearchAddon(); terminal.loadAddon(fit); terminal.loadAddon(search);
@@ -595,7 +609,7 @@ function createTerminal(session: Session) {
   const input = new TerminalInputQueue<QueuedInput>(async value => {
     const current = sessions.get(session.id);
     if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || (!canType(session.id) || conversationOwners.has(session.id))) throw new InputQueueError('cancelled');
-    await call<void>('session_write', { id: session.id, generation: value.generation, data: value.data });
+    await call<void>('session_write', { id: session.id, generation: value.generation, data: value.data, ...(value.binary ? { binary: true } : {}) });
   }, () => refreshInputState(session.id));
   const resize = new TerminalResizeQueue<QueuedResize>(async value => {
     const current = sessions.get(session.id);
@@ -606,6 +620,7 @@ function createTerminal(session: Session) {
   refreshInputState(session.id);
   mountConversation(session);
   terminal.onData(data => sendInput(session.id, data));
+  terminal.onBinary(data => sendInput(session.id, data, true));
   terminal.onResize(() => queueResize(session.id));
   terminal.attachCustomKeyEventHandler(event => {
     // Let the browser dispatch xterm's native copy/paste events, rather than
@@ -658,6 +673,10 @@ function createTerminal(session: Session) {
   bindAttribute(cronButton, 'aria-label', '예약 작업', 'Scheduled jobs'); bindAttribute(cronButton, 'title', '예약 작업', 'Scheduled jobs');
   cronButton.onclick = () => { const current = sessions.get(session.id); if (!cronButton.hidden && current && !exitInProgress) void cronManager.open(current); };
   const projectMove = document.createElement('button'); projectMove.className = 'project-move icon-button'; projectMove.textContent = '▱'; bindAttribute(projectMove, 'aria-label', '프로젝트로 이동', 'Move to project'); bindAttribute(projectMove, 'title', '프로젝트로 이동', 'Move to project'); projectMove.onclick = () => projectManager.move(sessions.get(session.id)!); card.querySelector('.card-actions')!.prepend(projectMove);
+  const permissions = document.createElement('button'); permissions.className = 'permission-status-open icon-button'; permissions.type = 'button'; permissions.hidden = true; permissions.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V6z"/><path d="M8 12l3 3 5-6"/></svg>'; permissions.setAttribute('aria-haspopup', 'dialog');
+  bindAttribute(permissions, 'title', '권한 확인', 'View permissions'); bindAttribute(permissions, 'aria-label', '권한 확인', 'View permissions');
+  permissions.onclick = () => { const current = sessions.get(session.id); if (!permissions.hidden && !permissions.disabled && current) void permissionStatus.open({ id: current.id, generation: current.generation, title: current.title }); };
+  card.querySelector('.card-actions')!.append(permissions);
   card.querySelector('.drag-handle')!.addEventListener('dragstart', event => { dragging = session.id; (event as DragEvent).dataTransfer!.effectAllowed = 'move'; (event as DragEvent).dataTransfer!.setData('text/plain', session.id); card.classList.add('dragging'); });
   card.addEventListener('dragend', () => { dragging = ''; card.classList.remove('dragging'); });
   card.addEventListener('dragover', event => { if (dragging && dragging !== session.id) event.preventDefault(); });
@@ -674,6 +693,7 @@ function recordExplicitStop(session: SessionInfo) {
   }
 }
 function removeSession(id: string, preserveRestore = false) {
+  permissionConnections.delete(id); permissionStatus.forget(id);
   const session = sessions.get(id);
   if (!preserveRestore && session) recordExplicitStop(session);
   if (!preserveRestore && session?.threadId) {
@@ -689,6 +709,7 @@ function receiveSession(info: SessionInfo, persist = true) {
   const previous = sessions.get(info.id); const session = updateSession(previous, info);
   if (session === previous) return;
   sessions.set(session.id, session);
+  if (previous && (previous.generation !== session.generation || previous.threadId !== session.threadId)) { permissionConnections.delete(session.id); permissionStatus.forget(session.id); }
   // Pending restores retain object identity while current membership advances.
   for (const request of saved) if (request.threadId && request.threadId === session.threadId && request.sessionId === session.id && typeof session.projectRevision === 'number' && session.projectRevision >= (request.projectRevision ?? 0)) {
     Object.assign(request, { projectId: session.projectId ?? null, projectAssigned: session.projectAssigned ?? false, projectRevision: session.projectRevision });
@@ -826,11 +847,23 @@ function updateConversationVisibility() {
   for (const [id, controller] of contextControls) {
     const view = terminals.get(id); const session = sessions.get(id);
     controller.setVisible(native && !!session?.active && !!view && !view.card.hidden && !document.hidden && nativeWindowVisible);
+    if (session) updatePermissionButton(session);
   }
   for (const [id, controller] of conversations) {
     const view = terminals.get(id);
     void controller.setForeground(!!view && !view.card.hidden && !document.hidden && nativeWindowVisible).catch(error => notify('대화 화면을 갱신하지 못했습니다. 해당 세션을 다시 선택하세요.', true, 'Could not refresh the conversation view. Select the session again.'));
   }
+}
+
+function updatePermissionButton(session: Session) {
+  const view = terminals.get(session.id);
+  const button = view?.card.querySelector<HTMLButtonElement>('.permission-status-open');
+  if (!view || !button) return;
+  const connection = permissionConnections.get(session.id);
+  const eligible = native && !exitInProgress && session.active && !!session.threadId && !['starting', 'stopping'].includes(session.state)
+    && !view.card.hidden && !document.hidden && nativeWindowVisible && connection?.generation === session.generation && connection.threadId === session.threadId && connection.connected;
+  button.hidden = !permissionStatus.updateAvailability(session, eligible);
+  button.disabled = !eligible;
 }
 document.addEventListener('visibilitychange', updateConversationVisibility);
 
@@ -866,6 +899,7 @@ function renderAll() {
     card.querySelector<HTMLButtonElement>('.session-restart')!.disabled = !native || !workspaceReady || restoringWorkspace || exitInProgress || restartingSessions.has(id) || !session.threadId || ['starting', 'stopping'].includes(session.state);
     card.querySelector<HTMLButtonElement>('.stop')!.disabled = restartingSessions.has(id) || exitInProgress;
     card.querySelector<HTMLButtonElement>('.cron-open')!.disabled = !native || exitInProgress;
+    updatePermissionButton(session);
     card.querySelector<HTMLButtonElement>('.subagents-open')!.disabled = !native || !session.active || !session.threadId || exitInProgress;
     card.querySelector('.terminal-title')!.textContent = session.title;
     card.querySelector('.terminal-path')!.textContent = `▱  ${session.cwd}`;
@@ -928,6 +962,17 @@ $('#project-tabs').addEventListener('keydown', event => {
   selectProject(tabs[next].dataset.projectKey ?? ''); $('#project-tabs [aria-selected="true"]').focus();
 });
 const extensionsManager = createExtensionsManager({ call, notify });
+const permissionStatus = createPermissionStatus({ call, availabilityChanged(id, generation) {
+  const current = sessions.get(id);
+  if (current?.generation === generation) updatePermissionButton(current);
+} });
+const settingsDialog = $<HTMLDialogElement>('#settings-dialog');
+const updatesHost = document.createElement('section'); settingsDialog.append(updatesHost);
+const updateSettings = createUpdateSettings({ host: updatesHost, call });
+const github = document.createElement('button'); github.id = 'github-open'; github.type = 'button'; github.className = 'side-link';
+bindText(github, 'GitHub · jaeseongs95', 'GitHub · jaeseongs95');
+github.onclick = () => void openExternalUrl('https://github.com/jaeseongs95').catch(error => notifyError('GitHub 열기 실패', 'Could not open GitHub', error));
+settingsDialog.querySelector('.settings-options')!.append(github);
 const mobileControl = createMobileControl({ call, notify, openExecutableSettings: () => void executableSettings.open() });
 const weeklyUsage = createWeeklyUsage({ call, initiallyVisible: !native });
 const questionCenter = createQuestionCenter({ call, button: $<HTMLButtonElement>('#notifications'), openSession: focusSession });
@@ -1215,7 +1260,7 @@ async function initialize() {
     void sessionBrowser.refreshProjects().catch(error => notifyError('프로젝트 목록 조회 실패', 'Could not load projects', error));
     await resumeWorkspace();
   } catch (error) { notifyError('초기화 실패', 'Could not initialize', error); }
-  finally { $('#app').setAttribute('aria-busy', 'false'); }
+  finally { $('#app').setAttribute('aria-busy', 'false'); void updateSettings.start(); }
 }
 
 function seedDemo() {
@@ -1233,3 +1278,4 @@ window.addEventListener('beforeunload', () => { exitInProgress = true; for (cons
 initialization = initialize();
 
 window.addEventListener('beforeunload', () => questionCenter.dispose());
+window.addEventListener('beforeunload', () => { permissionStatus.dispose(); updateSettings.dispose(); });

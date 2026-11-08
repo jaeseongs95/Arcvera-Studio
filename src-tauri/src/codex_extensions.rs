@@ -5,6 +5,9 @@ use std::{fs, path::PathBuf, sync::atomic::AtomicBool};
 #[path = "codex_hooks.rs"]
 mod hooks;
 pub use hooks::{ExtensionHook, ExtensionHookError, ExtensionHooks};
+#[path = "codex_mcp.rs"]
+mod mcp;
+pub use mcp::{ExtensionMcpServers, McpTransport};
 
 const MAX_ROWS: usize = 4096;
 // 실제 카탈로그는 9천 개를 넘는다. CLI 원문 8 MiB 제한도 별도로 유지한다.
@@ -48,11 +51,13 @@ pub struct ExtensionsSnapshot {
     pub plugins: Option<ExtensionPlugins>, pub marketplaces: Option<Vec<ExtensionMarketplace>>,
     pub skills: Option<Vec<ExtensionSkill>>, pub skill_destinations: SkillDestinations,
     pub hooks: Option<ExtensionHooks>,
+    pub mcp_servers: Option<ExtensionMcpServers>,
     pub errors: Vec<ExtensionError>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ExtensionMutation {
+    AddMcpServer { name: String, transport: McpTransport },
     InstallPlugin { selector: String },
     RemovePlugin { plugin_id: String },
     SetPluginEnabled { plugin_id: String, enabled: bool },
@@ -343,7 +348,7 @@ fn destination(base: &Path) -> PathBuf { base.join(".agents").join("skills") }
 fn snapshot(exe: &OsString, directory: &Path, cwd: Option<&str>, catalog_query: Option<&str>) -> ExtensionsSnapshot {
     let mut result = ExtensionsSnapshot {
         executable: exe.to_string_lossy().into_owned(), cwd: cwd.map(str::to_owned), plugins: None,
-        marketplaces: None, skills: None, hooks: None,
+        marketplaces: None, skills: None, hooks: None, mcp_servers: None,
         skill_destinations: SkillDestinations { user: None, project: cwd.map(|_| destination(directory).to_string_lossy().into_owned()) }, errors: Vec::new(),
     };
     match user_home() {
@@ -359,8 +364,13 @@ fn snapshot(exe: &OsString, directory: &Path, cwd: Option<&str>, catalog_query: 
     match with_rpc(exe, directory, |rpc| Ok((
         rpc.call("skills/list", json!({"cwds":[directory],"forceReload":true})).and_then(|value| parse_skills(&value)),
         hooks::list(directory, &mut |method, params| rpc.call(method, params)),
+        mcp::list(directory, &mut |method, params| rpc.call(method, params)),
     ))) {
-        Ok((skills, hooks)) => {
+        Ok((skills, hooks, mcp_servers)) => {
+            match mcp_servers {
+                Ok(servers) => result.mcp_servers = Some(servers),
+                Err(message) => result.errors.push(ExtensionError { section: "mcpServers", message }),
+            }
             match skills {
                 Ok((skills, errors)) => { result.skills = Some(skills); result.errors.extend(errors); },
                 Err(message) => result.errors.push(ExtensionError { section: "skills", message }),
@@ -371,6 +381,7 @@ fn snapshot(exe: &OsString, directory: &Path, cwd: Option<&str>, catalog_query: 
             }
         },
         Err(message) => {
+            result.errors.push(ExtensionError { section: "mcpServers", message: mcp::safe_error("MCP connection", &message) });
             result.errors.push(ExtensionError { section: "skills", message });
             result.errors.push(ExtensionError { section: "hooks", message: "Hook 조회용 Codex 연결에 실패했습니다. 새로고침 후 다시 시도하세요.".into() });
         },
@@ -557,8 +568,18 @@ pub(crate) fn extensions_mutate_with_executable(exe: &OsString, cwd: Option<Stri
     let mut expected_plugin: Option<(String, Option<bool>)> = None;
     let mut expected_skill: Option<(PathBuf, Option<bool>)> = None;
     let mut expected_marketplace: Option<(String, bool)> = None;
+    let mut expected_mcp: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
     match request {
+        ExtensionMutation::AddMcpServer { name, transport } => {
+            let mut connected = false;
+            let result = with_rpc(exe, &directory, |rpc| {
+                connected = true;
+                mcp::add(&directory, &name, &transport, &mut |method, params| rpc.call(method, params))
+            });
+            if connected { result?; } else { return Err(mcp::safe_error("MCP connection", &result.unwrap_err())); }
+            expected_mcp = Some(name);
+        }
         ExtensionMutation::InstallPlugin { selector } => {
             plugin_selector(&selector)?;
             expected_plugin = Some((selector.clone(), None));
@@ -623,6 +644,11 @@ pub(crate) fn extensions_mutate_with_executable(exe: &OsString, cwd: Option<Stri
         }
     }
     let result = snapshot(exe, &directory, cwd.as_deref(), None);
+    if let Some(name) = expected_mcp {
+        if !result.mcp_servers.as_ref().is_some_and(|servers| servers.items.iter().any(|server| server.name == name)) {
+            return Err("MCP 설정 저장 후 목록을 확인하지 못했습니다. 저장되었을 수 있으니 재시도 전에 새로 고침하세요.".into());
+        }
+    }
     if let Some((id, state)) = expected_plugin {
         let plugins = result.plugins.as_ref().ok_or("The CLI operation completed, but plugin verification failed; refresh before retrying")?;
         let found = plugins.installed.iter().find(|plugin| plugin.plugin_id == id);

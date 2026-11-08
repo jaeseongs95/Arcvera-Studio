@@ -34,7 +34,8 @@ impl ConversationConnection {
         let deadline=Instant::now()+RPC_TIMEOUT;
         let cancelled=Arc::new(AtomicBool::new(false)); let transport=Arc::new(Mutex::new(Transport::default()));
         let _watch=DeadlineWatch::start(Arc::new(Mutex::new(Some(deadline))),transport.clone(),cancelled.clone(),self.0.stopped.clone())?;
-        match &self.0.endpoint {
+        let permissions=matches!(request,ConversationRequest::PermissionStatus);
+        let result=match &self.0.endpoint {
             Endpoint::Shared(endpoint)=>{
                 let mut proxy=endpoint.open_until(Some(cancelled.clone()),Some(deadline))?;
                 transport.lock().map_err(|_|"컨텍스트 연결 정리 상태 오류")?.proxy=proxy.job.as_ref().map(Arc::downgrade);
@@ -50,7 +51,12 @@ impl ConversationConnection {
                 let result=exchange(&self.0,&mut state,&mut rpc,thread_id,request,&cancelled,deadline);
                 let _=rpc.ws.get_ref().shutdown(Shutdown::Both);result
             },
-        }
+        };
+        if !permissions {return result;}
+        let mut value=result?;
+        let (_,_,requests,complete)=self.question_snapshot()?;
+        value["pendingApprovals"]=approval_metadata(requests,complete);
+        Ok(value)
     }
 }
 fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,thread_id: &str,request: ConversationRequest,cancelled: &Arc<AtomicBool>,deadline: Instant) -> Result<Value,String> {
@@ -59,6 +65,11 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
     rpc.call("initialize",init)?;rpc.send(json!({"method":"initialized","params":{}}))?;
     // Omission is the actual R36 read contract. Official CLI returns {}, which
     // is deliberately insufficient proof that modelContextWindow is supported.
+    if matches!(request,ConversationRequest::PermissionStatus) {
+        let value=read_permissions(control,rpc,thread_id,cancelled,deadline)?;
+        live(control,cancelled)?;
+        return Ok(value);
+    }
     let value=rpc.call(SETTINGS,json!({"threadId":thread_id}))?;
     live(control,cancelled)?;
     let Some(current)=settings(&value) else {return Ok(json!({"supported":false}));};
@@ -78,6 +89,85 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
     if applied.requested!=model_context_window {return Ok(json!({"supported":false,"status":"unknown","reason":"mismatchedAck"}));}
     state.pending=None;
     let mut value=view(state,&applied);value["status"]=json!("applied");Ok(value)
+}
+
+fn approval_metadata(requests: Vec<Value>, complete: bool) -> Value {
+    let complete=complete && requests.iter().all(|request|match request["method"].as_str() {
+        Some("item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval")=>request["metadataAvailable"]==true,
+        Some("item/tool/requestUserInput"|"opendiy/asyncQuestion")=>true,
+        _=>false,
+    });
+    let requests=requests.into_iter().filter_map(|request| {
+        let method=request["method"].as_str()?;
+        if !matches!(method,"item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval") {return None;}
+        Some(json!({"requestId":request["requestId"],"method":method,"metadataAvailable":request["metadataAvailable"]==true}))
+    }).collect::<Vec<_>>();
+    json!({"status":if complete {"known"}else{"unknown"},"requests":requests})
+}
+
+fn read_permissions<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,thread_id: &str,cancelled: &AtomicBool,deadline: Instant) -> Result<Value,String> {
+    live(control,cancelled)?;
+    if Instant::now()>=deadline {return Err("권한 조회 기한이 지나 전송하지 않았습니다.".into());}
+    rpc.next_id+=1;let id=rpc.next_id;
+    rpc.send(json!({"id":id,"method":SETTINGS,"params":{"threadId":thread_id}}))?;
+    while Instant::now()<deadline {
+        live(control,cancelled)?;
+        if let Some(message)=rpc.read()? {if let Some(result)=response(&message,id) {
+            if message["error"]["code"].as_i64()==Some(-32601) {return Ok(json!({"supported":false,"status":"unsupported","reason":"methodUnsupported"}));}
+            return result.map(|value|permission_view(&value));
+        }}
+    }
+    Err("권한 조회 응답 기한이 지났습니다. 자동으로 다시 요청하지 않았습니다.".into())
+}
+
+// Return only permission fields; neither the complete settings nor request bodies
+// cross this boundary. Unknown structures never turn into permissive defaults.
+fn permission_view(value: &Value) -> Value {
+    if value["settingsApplied"]!=true {return json!({"supported":false,"status":"unsupported","reason":"noAuthoritativeSettings"});}
+    match permission_fields(&value["threadSettings"]) {
+        Some(fields)=>json!({"supported":true,"status":"known","permissions":fields}),
+        None=>json!({"supported":true,"status":"unknown","reason":"invalidPermissionFields"}),
+    }
+}
+fn permission_fields(value: &Value) -> Option<Value> {
+    let policy=&value["approvalPolicy"];
+    let approval=if policy.as_str().is_some_and(|v|matches!(v,"untrusted"|"on-request"|"never")) {policy.clone()} else {
+        let fields=policy.get("granular")?.as_object()?;
+        let mut output=serde_json::Map::new();
+        for key in ["sandbox_approval","rules","mcp_elicitations"] {output.insert(key.into(),json!(fields.get(key)?.as_bool()?));}
+        for key in ["skill_approval","request_permissions"] {if let Some(value)=fields.get(key) {output.insert(key.into(),json!(value.as_bool()?));}}
+        json!({"granular":output})
+    };
+    let reviewer=value["approvalsReviewer"].as_str()?;
+    if !matches!(reviewer,"user"|"auto_review"|"guardian_subagent") {return None;}
+    let source=&value["sandboxPolicy"];
+    let kind=source["type"].as_str()?;
+    let mut sandbox=json!({"type":kind});
+    match kind {
+        "dangerFullAccess"=>{},
+        "readOnly"=>sandbox["networkAccess"]=json!(source["networkAccess"].as_bool()?),
+        "externalSandbox"=>{
+            let access=source["networkAccess"].as_str()?;
+            if !matches!(access,"restricted"|"enabled") {return None;}
+            sandbox["networkAccess"]=json!(access);
+        },
+        "workspaceWrite"=>{
+            for key in ["networkAccess","excludeTmpdirEnvVar","excludeSlashTmp"] {sandbox[key]=json!(source[key].as_bool()?);}
+            let roots=source["writableRoots"].as_array()?;
+            if roots.len()>128 || roots.iter().any(|root|root.as_str().is_none_or(|v|v.len()>4096)) {return None;}
+            sandbox["writableRoots"]=json!(roots);
+        },
+        _=>return None,
+    }
+    let profile=value.get("activePermissionProfile")?;
+    let profile=if profile.is_null() {Value::Null} else {
+        let id=profile["id"].as_str()?;
+        if id.is_empty() || id.len()>256 {return None;}
+        let parent=match profile.get("extends") {None|Some(Value::Null)=>None,Some(value)=>Some(value.as_str()?)};
+        if parent.is_some_and(|v|v.len()>256) {return None;}
+        json!({"id":id,"extends":parent})
+    };
+    Some(json!({"approvalPolicy":approval,"approvalsReviewer":reviewer,"sandboxPolicy":sandbox,"activePermissionProfile":profile}))
 }
 
 fn write<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,thread_id: &str,window: Option<i64>,cancelled: &AtomicBool,deadline: Instant) -> Result<Option<Value>,String> {
