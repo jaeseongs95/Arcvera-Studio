@@ -1,0 +1,18 @@
+{
+  "schema": "frontend-fullsource1-browser-diagnostic-v1",
+  "source": "3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2",
+  "originalTestBytes": true,
+  "shard": "1/2",
+  "casesPerBrowser": 169,
+  "repeatEach": 1,
+  "retries": 0,
+  "workers": 1,
+  "browsers": [
+    "chromium",
+    "msedge"
+  ],
+  "trace": "on",
+  "testDeadlineMs": 300000,
+  "diagnosisRequestDigest": "sha256:85247a1ca2e1470cf1510db5e9b6bc43a0c9555a61d3a339d5018a39a77ea46b",
+  "outcome": "Preserve both original failures. Success does not establish cause elimination or actualGUI behavior."
+}

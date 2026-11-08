@@ -24,6 +24,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium
+      - name: Original frontend preceding commands
+        run: |
+          node --test scripts/updater-manifest.test.mjs scripts/notices.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Manifest regressions failed' }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
       - name: Read baseline resources
         shell: pwsh
         run: |
@@ -33,7 +41,7 @@ jobs:
           @{phase='before';utc=[DateTime]::UtcNow.ToString('o');freePhysicalKB=$os.FreePhysicalMemory;freeVirtualKB=$os.FreeVirtualMemory;tcp=@(Get-NetTCPConnection|Group-Object State|Select-Object Name,Count)}|ConvertTo-Json -Depth 5|Set-Content diagnostic-resources/before.json -Encoding utf8NoBOM
           netsh int ipv4 show dynamicport tcp | Set-Content diagnostic-resources/dynamic-tcp.txt -Encoding utf8NoBOM
       - name: Compare original cases in selected browser
-        run: node verification/frontend-diagnostic-171/run.mjs ${{ matrix.channel }}
+        run: node verification/frontend-diagnostic-171/run.mjs ${{ matrix.channel }} source-1
       - name: Read final resources
         if: always()
         shell: pwsh
