@@ -19,6 +19,9 @@ use winapi::um::{
 };
 
 const FIXTURE: &str = "win::suspended_tests::fixture_child";
+// WinError.h defines 1656; winapi 0.3.9 predates this constant.
+// https://github.com/microsoft/win32metadata/blob/main/generation/WinSDK/RecompiledIdlHeaders/shared/winerror.h
+const ERROR_NOT_SAME_OBJECT: u32 = 1656;
 // Test-only object identity query; never close or reclaim a captured raw handle.
 #[link(name = "kernelbase")]
 extern "system" {
@@ -390,7 +393,7 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
             );
             assert!(
                 matches!(query_error, Some(winapi::shared::winerror::ERROR_INVALID_HANDLE)
-                    | Some(winapi::shared::winerror::ERROR_NOT_SAME_OBJECT)),
+                    | Some(ERROR_NOT_SAME_OBJECT)),
                 "unexpected handle identity query error: {query_error:?}"
             );
             // Release our independent observer before bounded job accounting.
