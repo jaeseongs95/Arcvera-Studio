@@ -658,6 +658,56 @@ pub async fn install_codex_update(confirmed: bool, version: String) -> Result<()
 mod tests {
     use super::*;
 
+// Explicit prebuilt-test-only diagnostic; never called by the product.
+    #[test]
+    #[ignore = "manual native HTTPS diagnostic: two fixed public metadata GETs"]
+    fn updater_network_probe_once() {
+        use std::error::Error as _;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        println!("UPDATER_NETWORK_PROBE source={}:{} package={} commit={} unix_ms={}",
+            file!(), line!(), env!("CARGO_PKG_VERSION"),
+            option_env!("GITHUB_SHA").unwrap_or("not-recorded"), stamp());
+        let client_started = Instant::now();
+        let client = request_client().unwrap_or_else(|mapped| {
+            println!("UPDATER_NETWORK_PROBE phase=client_build unix_ms={} elapsed_ms={} class=mapped_client_build_error error={mapped:?}",
+                stamp(), client_started.elapsed().as_millis());
+            panic!("actual request_client failed; its existing mapped error has no underlying chain");
+        });
+        let mut failed = false;
+        for (target, url) in [
+            ("desktop", "https://api.github.com/repos/jaeseongs95/opendiy-desktop/releases/latest"),
+            ("codex", "https://api.github.com/repos/jaeseongs95/opendiy-codex/releases/latest"),
+        ] {
+            let started = Instant::now();
+            println!("UPDATER_NETWORK_PROBE phase=send target={target} unix_ms={} timeout_ms=5000", stamp());
+            match client.get(url).timeout(Duration::from_secs(5)).send() {
+                Ok(response) => {
+                    let status = response.status();
+                    println!("UPDATER_NETWORK_PROBE phase=response target={target} unix_ms={} elapsed_ms={} status={} class={} body=NOT_READ",
+                        stamp(), started.elapsed().as_millis(), status.as_u16(),
+                        if status.is_success() { "http_success" } else { "http_failure" });
+                    failed |= !status.is_success();
+                }
+                Err(error) => {
+                    failed = true;
+                    let error = error.without_url();
+                    let class = if error.is_timeout() { "timeout" } else if error.is_connect() { "connect" } else { "other_request" };
+                    println!("UPDATER_NETWORK_PROBE phase=error target={target} unix_ms={} elapsed_ms={} class={class} timeout={} connect={} request={} debug={error:?}",
+                        stamp(), started.elapsed().as_millis(), error.is_timeout(), error.is_connect(), error.is_request());
+                    let mut cause = error.source();
+                    let mut depth = 0;
+                    while let Some(source) = cause {
+                        println!("UPDATER_NETWORK_PROBE target={target} source_depth={depth} debug={source:?}");
+                        cause = source.source();
+                        depth += 1;
+                    }
+                }
+            }
+        }
+        assert!(!failed, "native public metadata HTTPS diagnostic failed; retain both endpoint observations");
+    }
+
     fn in_fresh_tls_process(test_name: &str, scenario: impl FnOnce()) {
         const CHILD: &str = "OPENDIY_UPDATE_TLS_TEST_CHILD";
         let witness = format!("fresh TLS case completed: {test_name}");
