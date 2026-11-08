@@ -166,6 +166,36 @@ jobs:
           cache-on-failure: true
       - run: npm ci
       - run: node scripts/notices.mjs
+      - name: Prepare verified official NSIS tools
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((node -p "require('./node_modules/@tauri-apps/cli/package.json').version") -ne '2.12.4') { throw 'Review pinned NSIS tools when Tauri CLI changes' }
+          $download = Join-Path $env:RUNNER_TEMP 'opendiy-nsis-2.12.4'
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download nsis-3.13 --repo tauri-apps/binary-releases --pattern nsis-3.13.zip --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Official NSIS download failed' }
+          gh release download nsis_tauri_utils-v0.5.3 --repo tauri-apps/nsis-tauri-utils --pattern nsis_tauri_utils.dll --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Official Tauri NSIS plugin download failed' }
+          $archive = Join-Path $download 'nsis-3.13.zip'
+          $plugin = Join-Path $download 'nsis_tauri_utils.dll'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8' -or
+              (Get-FileHash -LiteralPath $archive -Algorithm SHA1).Hash -ne 'DB14F8AF2EA346B786C6AE19343F61AAF5E09B8E') { throw 'NSIS archive hash mismatch' }
+          if ((Get-FileHash -LiteralPath $plugin -Algorithm SHA256).Hash -ne '5BA143B5DB4A87D32D6E7802E033330AAE56CBCEABE0D1E3BA41948385AD4709' -or
+              (Get-FileHash -LiteralPath $plugin -Algorithm SHA1).Hash -ne '75197FEE3C6A814FE035788D1C34EAD39349B860') { throw 'Tauri NSIS plugin hash mismatch' }
+          # Same artifacts and layout as tauri-cli-v2.12.4's NSIS bundler;
+          # Tauri still performs its own required-file and hash verification.
+          Expand-Archive -LiteralPath $archive -DestinationPath $download
+          $cache = Join-Path $env:LOCALAPPDATA 'tauri'
+          $nsis = Join-Path $cache 'NSIS'
+          if (Test-Path -LiteralPath $nsis) { throw 'Unexpected existing NSIS cache; refusing to overwrite it' }
+          New-Item -ItemType Directory -Path $cache -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $download 'nsis-3.13') -Destination $nsis -Recurse
+          $plugins = Join-Path $nsis 'Plugins/x86-unicode/additional'
+          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
+          Copy-Item -LiteralPath $plugin -Destination (Join-Path $plugins 'nsis_tauri_utils.dll')
       - name: Build ordinary Windows package
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.updater_package }}
         run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
