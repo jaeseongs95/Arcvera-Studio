@@ -18,6 +18,8 @@ mod session;
 pub mod self_test;
 mod storage;
 mod ui_language;
+mod relay;
+mod relay_dispatch;
 
 use session::{BackendEvent, Engine, SessionInfo, StartRequest};
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
@@ -361,10 +363,13 @@ async fn unconfirmed_exit_available(engine: State<'_, Engine>) -> Result<bool, S
 #[tauri::command]
 async fn complete_exit(app: tauri::AppHandle, engine: State<'_, Engine>, confirmed: bool, allow_unconfirmed_remote: Option<bool>) -> Result<(), String> {
     if !confirmed { return Err("explicit exit confirmation is required".into()); }
+    relay::relay_disconnect(app.state()).await?;
     let engine = engine.inner().clone();
     native_worker(move || {
         if allow_unconfirmed_remote == Some(true) { engine.shutdown_with_unconfirmed_remote() } else { engine.shutdown() }
     }).await.map_err(|e| format!("application cleanup worker: {e}"))??;
+    // Stop admission from the relay before the process actually exits. The
+    // relay never gains access to this local-only command.
     app.state::<ExitState>().0.store(true, Ordering::Release);
     app.exit(0);
     Ok(())
@@ -392,6 +397,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ExitState::default())
+        .manage(relay::RelayState::default())
         .manage(project::FolderPicker::default())
         .manage(executable_picker::ExecutablePicker::default())
         .setup(|app| {
@@ -401,10 +407,21 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             std::fs::create_dir_all(&directory)?;
             let handle = app.handle().clone();
-            let sink = Arc::new(move |event| match event {
-                BackendEvent::Output(output) => handle.emit("terminal-output", output),
-                BackendEvent::Changed(info) => handle.emit("session-changed", info),
-            }.map_err(|e| format!("deliver renderer event: {e}")));
+            let sink = Arc::new(move |event| {
+                // Deliver locally first; remote backpressure must never block
+                // local terminal output or turn a local success into failure.
+                match event {
+                    BackendEvent::Output(output) => {
+                        handle.emit("terminal-output", &output).map_err(|e|format!("deliver renderer event: {e}"))?;
+                        if let Ok(payload)=serde_json::to_value(&output) {handle.state::<relay::RelayState>().forward("terminal-output",payload);}
+                    }
+                    BackendEvent::Changed(info) => {
+                        handle.emit("session-changed", &info).map_err(|e|format!("deliver renderer event: {e}"))?;
+                        if let Ok(payload)=serde_json::to_value(&info) {handle.state::<relay::RelayState>().forward("session-changed",payload);}
+                    }
+                }
+                Ok(())
+            });
             app.manage(Engine::new(&directory.join("workspace.sqlite3"), sink).map_err(std::io::Error::other)?);
             let show = MenuItem::with_id(app, "show", "OpenDIY Desktop 열기", true, None::<&str>)?;
             let exit = MenuItem::with_id(app, "exit", "종료…", true, None::<&str>)?;
@@ -423,7 +440,7 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![desktop_updates::get_update_preferences, desktop_updates::set_update_preferences, desktop_updates::check_desktop_update, desktop_updates::install_desktop_update, desktop_updates::check_codex_update, desktop_updates::install_codex_update, external_links::open_external_url, get_ui_language, set_ui_language, prepare_runtime, start_session, list_sessions, session_write, session_resize, session_stop, session_output_ack, load_layout, save_layout, list_external, list_projects, import_project, create_project, rename_project, set_project_favorite, reorder_project, delete_project, move_session_to_project, choose_project_folder, choose_project, catalog_list, catalog_preview, get_codex_settings, runtime_compatibility, runtime_pair_status, runtime_transition_preview, apply_runtime_transition, set_codex_executable, choose_codex_executable, set_app_server_executable, choose_app_server_executable, extensions_list, extensions_mutate, choose_skill_folder, mobile_control, cron_request, saved_cron_list, saved_cron_save, saved_cron_delete, saved_cron_register, subagents_request, conversation_request, list_pending_questions, respond_pending_question, choose_conversation_attachments, conversation_attachment_storage, stage_conversation_image, cleanup_conversation_attachment, weekly_usage, unconfirmed_exit_available, complete_exit])
+        .invoke_handler(tauri::generate_handler![relay::relay_status, relay::relay_connect, relay::relay_disconnect, desktop_updates::get_update_preferences, desktop_updates::set_update_preferences, desktop_updates::check_desktop_update, desktop_updates::install_desktop_update, desktop_updates::check_codex_update, desktop_updates::install_codex_update, external_links::open_external_url, get_ui_language, set_ui_language, prepare_runtime, start_session, list_sessions, session_write, session_resize, session_stop, session_output_ack, load_layout, save_layout, list_external, list_projects, import_project, create_project, rename_project, set_project_favorite, reorder_project, delete_project, move_session_to_project, choose_project_folder, choose_project, catalog_list, catalog_preview, get_codex_settings, runtime_compatibility, runtime_pair_status, runtime_transition_preview, apply_runtime_transition, set_codex_executable, choose_codex_executable, set_app_server_executable, choose_app_server_executable, extensions_list, extensions_mutate, choose_skill_folder, mobile_control, cron_request, saved_cron_list, saved_cron_save, saved_cron_delete, saved_cron_register, subagents_request, conversation_request, list_pending_questions, respond_pending_question, choose_conversation_attachments, conversation_attachment_storage, stage_conversation_image, cleanup_conversation_attachment, weekly_usage, unconfirmed_exit_available, complete_exit])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if !window.state::<ExitState>().0.load(Ordering::Acquire) {

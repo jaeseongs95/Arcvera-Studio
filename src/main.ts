@@ -1,4 +1,5 @@
 import { createAttachmentStorage } from './attachment-storage';
+import { createRelayControl, type RelayStatus } from './relay-control';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { Terminal } from '@xterm/xterm';
@@ -968,6 +969,8 @@ const permissionStatus = createPermissionStatus({ call, availabilityChanged(id, 
   if (current?.generation === generation) updatePermissionButton(current);
 } });
 const settingsDialog = $<HTMLDialogElement>('#settings-dialog');
+const relayControl = createRelayControl({ call });
+settingsDialog.querySelector('.settings-options')!.append(relayControl.button);
 const updatesHost = document.createElement('section'); settingsDialog.append(updatesHost);
 const updateSettings = createUpdateSettings({ host: updatesHost, call });
 const github = document.createElement('button'); github.id = 'github-open'; github.type = 'button'; github.className = 'side-link';
@@ -1253,6 +1256,7 @@ async function initialize() {
     await initializeNativeLanguage();
     unlisteners.push(await listen<Output>('terminal-output', event => receiveOutput(event.payload)));
     unlisteners.push(await listen<SessionInfo>('session-changed', event => receiveSession(event.payload)));
+    unlisteners.push(await listen<RelayStatus>('relay-status', event => relayControl.accept(event.payload)));
     unlisteners.push(await listen<string>('application-error', event => notify(event.payload, true)));
     unlisteners.push(await listen<boolean>('application-visibility', event => { nativeWindowVisible = event.payload; weeklyUsage.setVisible(event.payload && runtimeReady); questionCenter.setVisible(event.payload); cronManager.setVisible(event.payload); subagentManager.setVisible(event.payload); updateConversationVisibility(); }));
     unlisteners.push(await listen('exit-requested', openExitDialog));

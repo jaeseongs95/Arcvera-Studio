@@ -1,6 +1,6 @@
 [package]
 name = "opendiy-desktop"
-version = "1.6.5"
+version = "1.7.0"
 description = "Independent terminal workspace for local coding agents"
 authors = ["OpenDIY Desktop contributors"]
 license = "MIT"
@@ -42,9 +42,9 @@ tauri-plugin-updater = "=2.14.1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = "1"
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
 
 [target.'cfg(windows)'.dependencies]
-tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Diagnostics_ToolHelp", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_IO", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls_Dialogs"] }
 

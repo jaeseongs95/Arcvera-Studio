@@ -1,0 +1,12 @@
+{
+  "project": "OPENDIY_DESKTOP",
+  "date": "2026-11-08",
+  "source": "verification/release-plan-20261108/version-plan.json",
+  "reason": "사용자 Remote 연동 먼저 요청. 원본 68개 ID·수용조건·미완료 상태를 보존한다.",
+  "versionMapping": { "1.6.5": "1.7.1", "1.7.0": "1.8.0", "1.7.1": "1.8.1", "1.8.0": "1.7.0" },
+  "counts": { "1.7.0": 3, "1.7.1": 58, "1.8.0": 4, "1.8.1": 3 },
+  "total": 68,
+  "nextRelease": "1.7.0",
+  "preservedCandidate": "1.6.5 / 5e42056",
+  "priorityIds": ["OPENDIY_DESKTOP-T-0073", "OPENDIY_DESKTOP-T-0061", "OPENDIY_DESKTOP-C-0008"]
+}
