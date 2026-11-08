@@ -229,7 +229,8 @@ fn preview_commands_mode(exe: &OsString, server: &OsString, kind: &str, pair: Ru
         checkpoint(cancelled, deadline)?;
         bind(&mut hash, &help);
         if !supports_update(&help, replace_existing)? {
-            return Err("선택한 CLI는 작업을 강제로 종료하지 않는 서버 전환을 지원하지 않습니다. 새 전체 패키지를 선택하세요.".into());
+            return Err(if replace_existing { "선택한 CLI는 해당 패키지로 공유 서버를 교체하는 명령을 지원하지 않습니다." }
+                else { "선택한 CLI는 작업을 강제로 종료하지 않는 서버 전환을 지원하지 않습니다. 새 전체 패키지를 선택하세요." }.into());
         }
         let evidence = package()?;
         checkpoint(cancelled, deadline)?;
