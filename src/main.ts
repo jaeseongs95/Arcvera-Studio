@@ -989,12 +989,17 @@ const executableSettings = createExecutableSettings(async <T>(command: string, a
   // Server selection is followed by its explicit replacement request. Do not
   // race that request by reconnecting to the old shared daemon after saving.
   let shouldPrepare = !transitioning && !serverSelection;
-  runtimeTransitionBlocked = transitioning;
+  const previouslyBlocked = runtimeTransitionBlocked;
+  runtimeTransitionBlocked = transitioning || serverSelection;
   runtimeGeneration++; runtimePreparation = undefined; runtimeReady = false;
   weeklyUsage.setVisible(false); weeklyUsage.refresh();
   const mutation = call<T>(command, args); executableMutation = mutation;
   try {
     const result = await mutation;
+    if (serverSelection && result === null) {
+      runtimeTransitionBlocked = previouslyBlocked;
+      shouldPrepare = !previouslyBlocked;
+    }
     if (transitioning) {
       shouldPrepare = runtimeTransitionSucceeded(result);
       runtimeTransitionBlocked = !shouldPrepare;

@@ -75,7 +75,7 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
     ['label[for="codex-executable-path"]', '직접 지정한 파일', 'Selected file'],
     ['#codex-executable-resolved-label', '선택된 CLI 경로', 'Selected CLI path'],
     ['#codex-executable-source-label', '찾은 위치', 'Source'],
-    ['#codex-settings-scope', '새 서버를 선택하면 기존 공유 서버를 종료하고 새 서버를 시작합니다. 실행 중인 작업과 다른 창의 연결이 중단될 수 있습니다. 전체 패키지를 사용하며, 실행 파일만 선택한 경우에는 파일 3개가 모두 동일한 설치 패키지가 있을 때만 재사용합니다.', 'Selecting a new server stops the existing shared server and starts the new server. Running work and connections in other windows may be interrupted. A complete package is required; a runtime-only selection reuses an installed package only when all three executable files are identical.'],
+    ['#codex-settings-scope', '새 서버를 선택하면 기존 공유 서버를 종료하고 선택한 서버 패키지로 시작합니다. 관리 서버는 패키지의 CLI를 통해 실행됩니다. 실행 중인 작업과 다른 창의 연결이 중단될 수 있습니다. 전체 패키지를 사용하며, 실행 파일만 선택한 경우에는 파일 3개가 모두 동일한 설치 패키지가 있을 때만 재사용합니다.', 'Selecting a new server stops the existing shared server and starts the selected server package. The managed server runs through the package CLI. Running work and connections in other windows may be interrupted. A complete package is required; a runtime-only selection reuses an installed package only when all three executable files are identical.'],
     ['#codex-settings-discovery', '자동 찾기는 환경변수, PATH 순서로 실행 파일을 찾습니다.', 'Automatic discovery checks the environment variable, then PATH.'],
     ['#codex-executable-reset', '자동 찾기로 변경', 'Use automatic discovery'],
     ['#codex-executable-choose', '실행 파일 선택…', 'Choose executable…'],

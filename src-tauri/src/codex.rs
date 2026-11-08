@@ -79,6 +79,7 @@ mod runtime_transition;
 pub use runtime_transition::{RuntimeTransitionPreview, RuntimeTransitionReply};
 pub(crate) use runtime_transition::preview as preview_runtime_transition;
 pub(crate) use runtime_transition::preview_replacement as preview_runtime_replacement;
+pub(crate) use runtime_transition::verify_replacement_target as verify_runtime_replacement_target;
 
 pub(crate) fn apply_runtime_transition(exe: &OsString, cancelled: &Arc<AtomicBool>) -> Result<RuntimeTransitionReply, String> {
     apply_runtime_transition_mode(exe, cancelled, false)

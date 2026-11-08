@@ -1008,9 +1008,26 @@ impl Engine {
         let management_executable = current.management_executable.as_ref().map(std::ffi::OsString::from).ok_or("공유 서버 교체에 사용할 CLI 경로를 확인하지 못했습니다.")?;
         let reply = if replace_existing { codex::apply_runtime_replacement(&management_executable, &self.inner.exiting) }
             else { codex::apply_runtime_transition(&selected.executable, &self.inner.exiting) }?;
-        Ok(Self::finish_runtime_transition_with(reply,
+        let mut reply = Self::finish_runtime_transition_with(reply,
             || codex::inspect_runtime_pair(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting),
-            || codex::prepare_runtime_with_executable(&selected.executable, &self.inner.exiting)))
+            || codex::prepare_runtime_with_executable(&selected.executable, &self.inner.exiting));
+        if replace_existing {
+            reply = Self::finish_replacement_with(reply, || {
+                codex::inspect_runtime_pair(&selected.executable, &selected.server_executable, &selected.server_kind, &self.inner.exiting)
+                    .and_then(|pair| codex::verify_runtime_replacement_target(&current, &pair, &self.inner.exiting))
+            });
+        }
+        Ok(reply)
+    }
+
+    fn finish_replacement_with(mut reply: codex::RuntimeTransitionReply, check: impl FnOnce() -> Result<(), String>) -> codex::RuntimeTransitionReply {
+        if reply.success {
+            if let Err(error) = check() {
+                reply.success = false; reply.outcome = "unknown".into();
+                reply.message = Some(format!("{error} 교체 결과는 확인되지 않았으며 자동 재시도하지 않습니다."));
+            }
+        }
+        reply
     }
 
     fn finish_runtime_transition_with(mut reply: codex::RuntimeTransitionReply,
@@ -1471,6 +1488,22 @@ mod runtime_preparation_tests {
         assert!(reply.success);
         assert_eq!(reply.outcome, "updated");
         assert_eq!((preparations, inspections), (1, 2));
+    }
+
+    #[test]
+    fn replacement_identity_failure_is_unknown_after_running_or_stopped_transition_without_retry() {
+        for stopped in [false, true] {
+            let observations = if stopped { vec![Ok(transition_pair("stopped")), Ok(transition_pair("matched"))] }
+                else { vec![Ok(transition_pair("matched"))] };
+            let (reply, preparations, inspections) = finish_transition_fixture(updated_reply(), observations, Ok(()));
+            let mut checks = 0;
+            let reply = Engine::finish_replacement_with(reply, || { checks += 1; Err("선택한 파일과 다릅니다".into()) });
+            assert!(!reply.success); assert_eq!(reply.outcome, "unknown");
+            assert!(reply.message.as_ref().unwrap().contains("자동 재시도하지 않습니다"));
+            assert_eq!(checks, 1); assert_eq!(preparations, usize::from(stopped));
+            assert_eq!(inspections, if stopped { 2 } else { 1 });
+            let _reply = Engine::finish_replacement_with(reply, || panic!("unknown must not retry"));
+        }
     }
 
     #[test]
