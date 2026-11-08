@@ -1,0 +1,53 @@
+name: Frontend browser diagnostic
+on:
+  push:
+    branches: [test/desktop171-frontend-diagnostic]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        channel: [chromium, msedge]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - name: Read baseline resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Path diagnostic-resources | Out-Null
+          $os=Get-CimInstance Win32_OperatingSystem
+          @{phase='before';utc=[DateTime]::UtcNow.ToString('o');freePhysicalKB=$os.FreePhysicalMemory;freeVirtualKB=$os.FreeVirtualMemory;tcp=@(Get-NetTCPConnection|Group-Object State|Select-Object Name,Count)}|ConvertTo-Json -Depth 5|Set-Content diagnostic-resources/before.json -Encoding utf8NoBOM
+          netsh int ipv4 show dynamicport tcp | Set-Content diagnostic-resources/dynamic-tcp.txt -Encoding utf8NoBOM
+      - name: Compare original cases in selected browser
+        run: node verification/frontend-diagnostic-171/run.mjs ${{ matrix.channel }}
+      - name: Read final resources
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Path diagnostic-resources -Force | Out-Null
+          $os=Get-CimInstance Win32_OperatingSystem
+          @{phase='after';utc=[DateTime]::UtcNow.ToString('o');freePhysicalKB=$os.FreePhysicalMemory;freeVirtualKB=$os.FreeVirtualMemory;tcp=@(Get-NetTCPConnection|Group-Object State|Select-Object Name,Count)}|ConvertTo-Json -Depth 5|Set-Content diagnostic-resources/after.json -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-diagnostic-${{ matrix.channel }}-${{ github.run_attempt }}
+          path: |
+            diagnostic-${{ matrix.channel }}/
+            diagnostic-resources/
+          if-no-files-found: error
+          retention-days: 14

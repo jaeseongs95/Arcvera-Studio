@@ -1,0 +1,34 @@
+{
+  "schema": "frontend-browser-diagnostic-plan-v1",
+  "source": "3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2",
+  "requestDigest": "sha256:a6c65ebf70ba8b06dd54e55e191b52c333720cdc1e5ad8c24321072c6ed8bf44",
+  "hypotheses": [
+    "H-CHROMIUM",
+    "H-COMMON"
+  ],
+  "cases": [
+    {
+      "file": "tests/context-controls.spec.ts",
+      "title": "지원 true인 이전 판본 응답은 최신 false를 되돌리지 않는다"
+    },
+    {
+      "file": "tests/conversation-integration.spec.ts",
+      "title": "ko 전환 오류를 상위 알림과 전체 화면에 원문으로 노출하지 않는다: handoff"
+    }
+  ],
+  "browsers": [
+    "chromium",
+    "msedge"
+  ],
+  "repeatEach": 10,
+  "workers": 1,
+  "totalPerBrowser": 20,
+  "retries": 0,
+  "trace": "on",
+  "method": "Original test bytes, exact title filter; compare browser/version and retained request failure trace. Fresh runner per browser, matrixmaxparallel1.",
+  "limits": {
+    "jobMinutes": 15,
+    "testProcessMs": 300000
+  },
+  "acceptance": "Diagnostic evidence only; no replacement for full source shard or actualGUI. Preserve all failures and unsupported setup."
+}
