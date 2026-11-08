@@ -4,7 +4,7 @@
 
 호출자는 전용 fixture root를 준비하고 그 안에 `.opendiy-runtime-test-owned` 파일을 정확한 UTF-8 바이트 `opendiy-runtime-test-v1` + LF로 만든다. 이 표식은 실수 방지용이며 인증이나 외부 프로세스 소유 증명이 아니다. 선택한 CLI와 app-server 및 기존 관리 패키지는 fixture 안의 복사본이어야 한다. 전체 패키지 manifest와 helper·정적 자원은 CLI 담당자가 제공한 동일 후보를 보존한다.
 
-프로세스 환경의 `CODEX_HOME`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`를 fixture 안의 기존 디렉터리로 명시한다. 기존 운영 HOME, 인증·DB·개인 로그를 읽거나 복사하지 않는다. `--report`는 fixture의 하위 보고서 디렉터리에 있는 새 파일이어야 한다. 기존 파일은 덮어쓰지 않으며 생성 실패 때 실행 파일을 호출하지 않는다.
+프로세스의 작업 디렉터리도 fixture 안으로 지정한다. 프로세스 환경의 `CODEX_HOME`, `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`를 fixture 안의 기존 디렉터리로 명시한다. 기존 운영 HOME, 인증·DB·개인 로그를 읽거나 복사하지 않는다. `--report`는 fixture의 하위 보고서 디렉터리에 있는 새 파일이어야 한다. 기존 파일은 덮어쓰지 않으며 생성 실패 때 실행 파일을 호출하지 않는다.
 
 ```powershell
 & $desktopExe --runtime-transition-test --root $fixtureRoot --cli $ownCli --server $ownServer --action preview --report $newPreviewReport

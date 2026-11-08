@@ -49,9 +49,11 @@ fn inside(path: &Path, root: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn guard(opts: &Options, mut environment: impl FnMut(&str) -> Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
+fn guard(opts: &Options, cwd: &Path, mut environment: impl FnMut(&str) -> Option<PathBuf>) -> Result<(PathBuf, PathBuf), String> {
     if !opts.root.is_absolute() { return Err("fixture root must be absolute".into()); }
     let root = opts.root.canonicalize().map_err(|e| format!("fixture root: {e}"))?;
+    let cwd = cwd.canonicalize().map_err(|e| format!("fixture working directory: {e}"))?;
+    if !cwd.starts_with(&root) { return Err("working directory escapes the marked fixture root".into()); }
     let marker = inside(&root.join(".opendiy-runtime-test-owned"), &root)?;
     if marker.parent() != Some(root.as_path()) || fs::metadata(&marker).map_err(|e| e.to_string())?.len() != MARKER.len() as u64
         || fs::read_to_string(marker).map_err(|e| e.to_string())? != MARKER { return Err("invalid owned fixture marker".into()); }
@@ -170,7 +172,8 @@ fn reserve_report(path: &Path) -> Result<File, String> {
 pub fn run() -> i32 {
     let outcome = (|| -> Result<i32, String> {
         let opts = options(&std::env::args().collect::<Vec<_>>())?;
-        let (root, home) = guard(&opts, |key| std::env::var_os(key).map(PathBuf::from))?;
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let (root, home) = guard(&opts, &cwd, |key| std::env::var_os(key).map(PathBuf::from))?;
         // Exclusive creation precedes every executable invocation; never overwrite evidence.
         let mut file = reserve_report(&opts.report)?;
         let mut report = json!({"schema":"opendiy-runtime-transition-test-v1","observerPid":std::process::id(),"action":opts.action,"replaceExisting":opts.replace_existing,"fixtureRoot":root,"codexHome":home,"requestedFingerprint":opts.fingerprint,"observationCompleted":false,"scope":"Actual in-memory Engine runtime transition only; no GUI/TUI/model or production runtime validation."});
@@ -210,18 +213,19 @@ mod tests {
         fs::write(root.join("cli.exe"), b"not executed").unwrap(); fs::write(root.join("server.exe"), b"not executed").unwrap();
         let root = root.canonicalize().unwrap();
         let mut o = Options { cli:root.join("cli.exe"), server:root.join("server.exe"), report:root.join("reports/result.json"), root:root.clone(), action:"preview".into(), fingerprint:None, replace_existing:false };
-        assert!(guard(&o, |_| Some(root.join("own"))).is_ok());
+        assert!(guard(&o, &root, |_| Some(root.join("own"))).is_ok());
+        assert!(guard(&o, &std::env::temp_dir(), |_| Some(root.join("own"))).is_err());
         assert!(observed_path(&root.join("own/not-created/daemon.sock"), &root.join("own")).is_ok());
         assert!(observed_path(&root.join("own/../outside.sock"), &root.join("own")).is_err());
         assert!(observed_path(&std::env::temp_dir().join("outside-daemon.sock"), &root.join("own")).is_err());
-        assert!(guard(&o, |key| (key != "CODEX_HOME").then(|| root.join("own"))).is_err());
-        assert!(guard(&o, |key| Some(if key == "USERPROFILE" { std::env::temp_dir() } else { root.join("own") })).is_err());
-        o.cli = std::env::current_exe().unwrap(); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
-        o.cli = root.join("cli.exe"); o.report = std::env::temp_dir().join("outside-runtime-report.json"); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
+        assert!(guard(&o, &root, |key| (key != "CODEX_HOME").then(|| root.join("own"))).is_err());
+        assert!(guard(&o, &root, |key| Some(if key == "USERPROFILE" { std::env::temp_dir() } else { root.join("own") })).is_err());
+        o.cli = std::env::current_exe().unwrap(); assert!(guard(&o, &root, |_| Some(root.join("own"))).is_err());
+        o.cli = root.join("cli.exe"); o.report = std::env::temp_dir().join("outside-runtime-report.json"); assert!(guard(&o, &root, |_| Some(root.join("own"))).is_err());
         o.report = root.join("reports/result.json"); fs::write(&o.report, b"original evidence").unwrap();
         assert!(reserve_report(&o.report).is_err());
         assert_eq!(fs::read(&o.report).unwrap(), b"original evidence");
-        fs::write(root.join(".opendiy-runtime-test-owned"), "wrong marker").unwrap(); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
+        fs::write(root.join(".opendiy-runtime-test-owned"), "wrong marker").unwrap(); assert!(guard(&o, &root, |_| Some(root.join("own"))).is_err());
         assert!(root.starts_with(std::env::temp_dir().canonicalize().unwrap()));
         assert!(root.file_name().unwrap().to_string_lossy().starts_with("opendiy-runtime-guard-"));
         fs::remove_dir_all(root).unwrap();
