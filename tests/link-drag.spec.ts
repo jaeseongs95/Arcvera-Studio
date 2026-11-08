@@ -131,3 +131,26 @@ test('LD-04 real session drag handle still reorders demo cards', async ({ page }
   await expect(page.locator('.terminal-card.dragging')).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).linkDrag.drags.some((event: any) => event.className === 'drag-handle' && !event.prevented))).toBe(true);
 });
+
+test('LD-05 released plain and OSC8 clicks end selection before the next hover', async ({ page }) => {
+  await setup(page);
+  const terminal = page.locator('#drag-terminal .xterm');
+  const urls = ['https://example.com/terminal-long-link', 'https://example.com/osc8'];
+  const opened: string[] = [];
+  // Each next hover is a button-free move, with no intervening mousedown to
+  // hide a document mouseup listener left behind by the preceding activation.
+  for (const row of [1, 2, 1]) {
+    const point = await terminalPoint(page, 4, row);
+    await page.mouse.move(point.x, point.y);
+    expect(await page.evaluate(() => (window as any).linkDrag.terminal.getSelection()), 'released link must not keep extending a selection').toBe('');
+    await expect(terminal).toHaveAttribute('title', urls[row - 1]);
+    await page.mouse.click(point.x, point.y);
+    opened.push(urls[row - 1]);
+    expect(await page.evaluate(() => (window as any).linkDrag.calls)).toEqual(opened);
+    const blank = await terminalPoint(page, 60, 4);
+    await page.mouse.move(blank.x, blank.y);
+    expect(await page.evaluate(() => (window as any).linkDrag.terminal.getSelection()), 'button-free movement after mouseup cannot select text').toBe('');
+    expect(await page.evaluate(() => (window as any).linkDrag.calls)).toEqual(opened);
+  }
+  expect(await page.evaluate(() => (window as any).linkDrag.errors)).toEqual([]);
+});
