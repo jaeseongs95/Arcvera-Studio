@@ -345,21 +345,108 @@ fn dropping_uncommitted_launch_or_resume_token_reaps_the_real_target() {
         .slave
         .spawn_command_in_job_suspended(harness.command(), harness.job())
         .unwrap();
+    // Retain the exact second target, then restore the same whole-wrapper Drop.
+    let (second_child, second_token) = suspended.into_parts();
+    let target_pid = second_child.process_id().unwrap();
+    let process = unsafe {
+        BorrowedHandle::borrow_raw(second_child.as_raw_handle().unwrap())
+    }
+    .try_clone_to_owned()
+    .unwrap();
+    let suspended = super::SuspendedPtyChild::new(second_child, second_token);
+    let clock = Instant::now();
     drop(suspended);
-    let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
-    assert_ne!(
-        unsafe {
+    let first_wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 0) };
+
+    #[repr(C)]
+    struct OwnJobProcessIds {
+        assigned: u32,
+        listed: u32,
+        pids: [usize; 16],
+    }
+    #[derive(Clone)]
+    struct Snapshot {
+        exit_ok: bool,
+        job_ok: bool,
+        active: u32,
+        ids_ok: bool,
+        pids: Vec<usize>,
+    }
+    let observe = |phase: &str, wait: u32| {
+        let mut exit_code = 0;
+        let exit_ok = unsafe {
+            winapi::um::processthreadsapi::GetExitCodeProcess(
+                process.as_raw_handle() as _, &mut exit_code,
+            )
+        } != 0;
+        let exit_error = if exit_ok { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(-1) };
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        let job_ok = unsafe {
             QueryInformationJobObject(
-                harness.job.as_raw_handle() as _,
-                JobObjectBasicAccountingInformation,
-                &mut info as *mut _ as _,
-                std::mem::size_of_val(&info) as u32,
+                harness.job.as_raw_handle() as _, JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as _, std::mem::size_of_val(&info) as u32,
                 std::ptr::null_mut(),
             )
-        },
-        0
+        } != 0;
+        let job_error = if job_ok { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(-1) };
+        let mut ids = OwnJobProcessIds { assigned: 0, listed: 0, pids: [0; 16] };
+        let ids_ok = unsafe {
+            QueryInformationJobObject(
+                harness.job.as_raw_handle() as _, JobObjectBasicProcessIdList,
+                &mut ids as *mut _ as _, std::mem::size_of_val(&ids) as u32,
+                std::ptr::null_mut(),
+            )
+        } != 0;
+        let ids_error = if ids_ok { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(-1) };
+        let pids = ids.pids[..(ids.listed as usize).min(ids.pids.len())].to_vec();
+        eprintln!(
+            "DROP_DISCRIMINATOR {{\"kind\":\"snapshot\",\"phase\":\"{}\",\"elapsed_ms\":{},\"target_pid\":{},\"target_wait0\":{},\"exit_query_ok\":{},\"exit_code\":{},\"exit_error\":{},\"job_query_ok\":{},\"active_processes\":{},\"job_error\":{},\"ids_query_ok\":{},\"ids_error\":{},\"assigned\":{},\"listed\":{},\"pids\":{:?}}}",
+            phase, clock.elapsed().as_millis(), target_pid, wait, exit_ok, exit_code,
+            exit_error, job_ok, info.ActiveProcesses, job_error, ids_ok, ids_error,
+            ids.assigned, ids.listed, pids,
+        );
+        Snapshot { exit_ok, job_ok, active: info.ActiveProcesses, ids_ok, pids }
+    };
+    let initial = observe("initial", first_wait);
+    let mut last = initial.clone();
+    let mut samples = 1;
+    // Observe lag only after an already signaled target. Never alter the oracle.
+    if first_wait == 0 && initial.exit_ok && initial.job_ok && initial.ids_ok && initial.active != 0 {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while last.active != 0 && last.job_ok && last.ids_ok && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            if Instant::now() >= deadline {
+                break;
+            }
+            let wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 0) };
+            last = observe("bounded-accounting", wait);
+            samples += 1;
+        }
+    }
+    let classification = if !initial.exit_ok || !initial.job_ok || !initial.ids_ok
+        || !last.exit_ok || !last.job_ok || !last.ids_ok || (first_wait != 0 && first_wait != 258) {
+        "OBSERVATION_ERROR"
+    } else if first_wait != 0 {
+        "TARGET_NOT_SIGNALED"
+    } else if initial.active == 0 && initial.pids.is_empty() {
+        "CLEAN_INITIAL_NOT_A_FIX_CLAIM"
+    } else if initial.active != 0 && last.active == 0 && last.pids.is_empty() {
+        "ACCOUNTING_LAG_ORIGINAL_ASSERT_STILL_FAILS"
+    } else if last.active != 0 {
+        "ACTIVE_ACCOUNTING_PERSISTED"
+    } else {
+        "INCONSISTENT_JOB_SNAPSHOT"
+    };
+    eprintln!(
+        "DROP_DISCRIMINATOR {{\"kind\":\"classification\",\"classification\":\"{}\",\"first_wait0\":{},\"first_active\":{},\"last_active\":{},\"samples\":{},\"elapsed_ms\":{},\"original_assert_would_pass\":{}}}",
+        classification, first_wait, initial.active, last.active, samples,
+        clock.elapsed().as_millis(), initial.active == 0,
     );
-    assert_eq!(info.ActiveProcesses, 0, "uncommitted target remained");
+    assert_eq!(first_wait, 0, "drop returned before original target signaled");
+    assert!(initial.exit_ok && initial.job_ok && initial.ids_ok, "initial observation failed");
+    assert!(last.exit_ok && last.job_ok && last.ids_ok, "bounded observation failed");
+    assert!(initial.pids.is_empty() || initial.active != 0, "inconsistent initial job snapshot");
+    assert_eq!(initial.active, 0, "uncommitted target remained");
     assert!(!harness.directory.join("entered").exists());
 }
 
