@@ -105,12 +105,40 @@ fn preview_paths(preview: &RuntimeTransitionPreview, root: &Path, home: &Path) -
 
 // A passive preview may name an installation/endpoint which does not exist yet.
 // Resolve every existing ancestor and reject traversal; never create that path.
+#[cfg(windows)]
+fn windows_socket_leaf(path: &Path, metadata: &fs::Metadata) -> Result<bool, String> {
+    use std::os::windows::{fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle};
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    if metadata.file_attributes() & 0x400 == 0 { return Ok(false); } // FILE_ATTRIBUTE_REPARSE_POINT
+    // Open the reparse point itself, without following a link or opening a socket.
+    // Only AF_UNIX is nonredirecting and cannot be canonicalized (Windows1920).
+    let file = OpenOptions::new().access_mode(0).share_mode(7)
+        .custom_flags(0x0020_0000 | 0x0200_0000) // OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+        .open(path).map_err(|e| format!("inspect observed reparse point {}: {e}", path.display()))?;
+    let mut bytes = [0u8; 16 * 1024];
+    let mut returned = 0;
+    let ok = unsafe { DeviceIoControl(file.as_raw_handle() as _, 0x0009_00a8, // FSCTL_GET_REPARSE_POINT
+        std::ptr::null(), 0, bytes.as_mut_ptr().cast(), bytes.len() as u32, &mut returned, std::ptr::null_mut()) };
+    if ok == 0 { return Err(format!("read observed reparse point {}: {}", path.display(), std::io::Error::last_os_error())); }
+    if returned < 8 { return Err("observed reparse point header is incomplete".into()); }
+    Ok(u32::from_le_bytes(bytes[..4].try_into().expect("four-byte tag")) == 0x8000_0023) // IO_REPARSE_TAG_AF_UNIX
+}
+
 fn observed_path(path: &Path, root: &Path) -> Result<(), String> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) { return Err("invalid observed fixture path".into()); }
     let mut ancestor = path;
     loop {
         match fs::symlink_metadata(ancestor) {
-            Ok(_) => {
+            Ok(metadata) => {
+                #[cfg(windows)]
+                if windows_socket_leaf(ancestor, &metadata)? {
+                    // The socket leaf names no target. Resolve its parent normally,
+                    // including junctions; an outside parent must still be rejected.
+                    ancestor = ancestor.parent().ok_or("socket has no owned parent")?;
+                    continue;
+                }
+                #[cfg(not(windows))]
+                let _ = metadata;
                 let canonical = ancestor.canonicalize().map_err(|e| e.to_string())?;
                 if !canonical.starts_with(root) { return Err("observed runtime path escapes owned fixture".into()); }
                 return Ok(());
