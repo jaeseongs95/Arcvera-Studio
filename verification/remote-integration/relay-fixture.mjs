@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createInterface } from 'node:readline';
 if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('CI fixture only');
 const root = path.resolve(process.argv[2]);
 const sourceUrl = 'https://raw.githubusercontent.com/jaeseongs95/opendiy-remote/56c1968cbdc1626005993f1dc32f64d936c10f00/server/remote-server.mjs';
@@ -19,4 +20,7 @@ await new Promise(resolve => instance.server.listen(0, '127.0.0.1', resolve));
 const address = `http://127.0.0.1:${instance.server.address().port}`;
 console.log(JSON.stringify({ address, sourceSha256: 'c85949fbecc32e8ad2512b60415bc7efae06f408c4e03b01109b312fa5299f90' }));
 process.stdin.resume();
+createInterface({ input: process.stdin }).on('line', line => {
+  if (line === 'drop-owned-connections') instance.server.closeAllConnections();
+});
 process.stdin.on('end', async () => { await instance.close(); });

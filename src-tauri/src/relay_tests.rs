@@ -1,5 +1,5 @@
 use super::*;
-use std::{fs, io::{BufRead, BufReader}, path::PathBuf, process::{Child, Command, Stdio}, time::Instant};
+use std::{fs, io::{BufRead, BufReader, Write}, path::PathBuf, process::{Child, Command, Stdio}, time::Instant};
 
 #[test]
 fn url_normalization_preserves_tls_and_never_accepts_remote_plaintext_or_credentials() {
@@ -105,9 +105,25 @@ fn pinned_actual_remote_relay_roundtrip_shares_owned_engine_and_disconnects() {
         let response=invoke("list_projects",json!({})).send().await.unwrap();let result:Value=serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(result["result"][0]["name"],"remote-owned-fixture");
         let response=invoke("complete_exit",json!({"confirmed":true})).send().await.unwrap();assert!(!response.status().is_success());
+        let before_revision=relay.snapshot().unwrap().revision;
+        let original_host=relay.active.lock().unwrap().as_ref().unwrap().connection.host_id.clone();
+        fixture.child.as_mut().unwrap().stdin.as_mut().unwrap().write_all(b"drop-owned-connections\n").unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        loop {
+            let current=relay.snapshot().unwrap();
+            if current.state=="connected" && current.revision>=before_revision+2 {break;}
+            assert!(Instant::now()<deadline,"same-host reconnection did not complete");tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(relay.active.lock().unwrap().as_ref().unwrap().connection.host_id,original_host);
+        assert_eq!(engine.list_projects().unwrap().len(),1,"reconnection must not repeat project creation");
         let second=RelayState::default();second.start(&address,"relay-host-test-only".into(),dispatch.clone(),Arc::new(|_|{})).unwrap();wait_state(&second,"error").await;
         assert!(second.snapshot().unwrap().error.unwrap().contains("409"));assert!(second.stop().await.is_ok());
+        let old_connection=relay.active.lock().unwrap().as_ref().unwrap().connection.clone();
         let result=relay.stop().await.unwrap();assert_eq!(result.state,"disconnected");assert_eq!(result.release_confirmed,Some(true));
+        old_connection.fatal("late POST failure".into());assert_eq!(relay.snapshot().unwrap().state,"disconnected","late failure must not overwrite explicit disconnection");
+        relay.start(&address,"relay-host-test-only".into(),dispatch.clone(),Arc::new(|_|{})).unwrap();wait_state(&relay,"connected").await;
+        old_connection.status("error",Some("old generation".into()));assert_eq!(relay.snapshot().unwrap().state,"connected");
+        assert!(relay.stop().await.unwrap().release_confirmed.unwrap());
         let bad=RelayState::default();bad.start(&address,"wrong-fixture-secret".into(),dispatch,Arc::new(|_|{})).unwrap();wait_state(&bad,"error").await;
         assert!(bad.snapshot().unwrap().error.unwrap().contains("401"));assert!(bad.stop().await.is_ok());
     });
