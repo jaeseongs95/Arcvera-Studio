@@ -494,7 +494,11 @@ function setActive(id: string, focus = true) {
   active = id;
   for (const [key, view] of terminals) view.card.classList.toggle('focused', key === id);
   for (const element of document.querySelectorAll<HTMLElement>('[data-session-link]')) element.classList.toggle('active', element.dataset.sessionLink === id);
-  if (focus) { const view = terminals.get(id); if (view && !view.card.querySelector<HTMLElement>('.conversation-host')?.hidden) view.card.querySelector<HTMLTextAreaElement>('.conversation-input')?.focus(); else view?.terminal.focus(); }
+  if (focus) {
+    const view = terminals.get(id), host = view?.card.querySelector<HTMLElement>('.conversation-host');
+    if (host && !host.hidden) view?.card.querySelector<HTMLTextAreaElement>('.conversation-input')?.focus();
+    else view?.terminal.focus();
+  }
 }
 
 function canType(id: string) {

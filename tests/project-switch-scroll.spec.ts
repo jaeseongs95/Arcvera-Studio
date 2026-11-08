@@ -161,3 +161,47 @@ test('PS-5 closing a session while history is pending rejects its late response'
   await expect(card(page)).toHaveCount(0);
   await expect(tab(page, 'beta')).toBeFocused();
 });
+
+for (const selection of ['click', 'keyboard'] as const) {
+  async function selectSession(page: Page, id: 'alpha' | 'beta') {
+    if (selection === 'keyboard') await page.keyboard.press(id === 'alpha' ? 'Alt+1' : 'Alt+2');
+    else await page.locator(`#session-list [data-session-link="${id}"]`).click();
+    await expect(card(page, id)).toHaveClass(/focused/);
+  }
+
+  test(`FOCUS164 lazy first terminal input after ${selection} selection`, async ({ page }) => {
+    await workspace(page);
+    await expect(card(page, 'beta').locator('.conversation-host, .conversation-input')).toHaveCount(0);
+    await expect(card(page, 'beta').locator('.terminal-host + div')).toHaveJSProperty('hidden', true);
+    await selectSession(page, 'beta');
+    await expect(card(page, 'beta').locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('b');
+    await expect.poll(() => page.evaluate(() => (window as any).scrollFixture.calls.filter((c: any) => c.command === 'session_write').map((c: any) => c.args))).toEqual([{ id: 'beta', generation: 1, data: 'b' }]);
+  });
+
+  test(`FOCUS164 hidden conversation returns focus to terminal after ${selection} switch`, async ({ page }) => {
+    await workspace(page);
+    await card(page).locator('.conversation-toggle').click();
+    await expect(card(page).locator('.conversation-host')).toBeVisible();
+    await card(page).locator('.conversation-toggle').click();
+    await expect(card(page).locator('.conversation-host')).toHaveJSProperty('hidden', true);
+    await page.locator('#session-list [data-session-link="beta"]').click();
+    await selectSession(page, 'alpha');
+    await expect(card(page).locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('h');
+    await expect.poll(() => page.evaluate(() => (window as any).scrollFixture.calls.filter((c: any) => c.command === 'session_write').map((c: any) => c.args))).toEqual([{ id: 'alpha', generation: 1, data: 'h' }]);
+  });
+
+  test(`FOCUS164 visible conversation retains its draft and input focus after ${selection} switch`, async ({ page }) => {
+    await workspace(page);
+    await card(page).locator('.conversation-toggle').click();
+    const input = card(page).locator('.conversation-input');
+    await input.fill('보존한 초안');
+    await page.locator('#session-list [data-session-link="beta"]').click();
+    await selectSession(page, 'alpha');
+    await expect(input).toBeFocused();
+    await page.keyboard.insertText(' 추가');
+    await expect(input).toHaveValue('보존한 초안 추가');
+    expect(await page.evaluate(() => (window as any).scrollFixture.calls.filter((c: any) => c.command === 'session_write'))).toEqual([]);
+  });
+}
