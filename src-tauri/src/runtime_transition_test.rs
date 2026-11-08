@@ -163,12 +163,16 @@ fn write_report(file: &mut File, report: &Value) -> Result<(), String> {
     file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| e.to_string())
 }
 
+fn reserve_report(path: &Path) -> Result<File, String> {
+    OpenOptions::new().write(true).create_new(true).open(path).map_err(|e| format!("exclusive report creation: {e}"))
+}
+
 pub fn run() -> i32 {
     let outcome = (|| -> Result<i32, String> {
         let opts = options(&std::env::args().collect::<Vec<_>>())?;
         let (root, home) = guard(&opts, |key| std::env::var_os(key).map(PathBuf::from))?;
         // Exclusive creation precedes every executable invocation; never overwrite evidence.
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&opts.report).map_err(|e| format!("exclusive report creation: {e}"))?;
+        let mut file = reserve_report(&opts.report)?;
         let mut report = json!({"schema":"opendiy-runtime-transition-test-v1","observerPid":std::process::id(),"action":opts.action,"replaceExisting":opts.replace_existing,"fixtureRoot":root,"codexHome":home,"requestedFingerprint":opts.fingerprint,"observationCompleted":false,"scope":"Actual in-memory Engine runtime transition only; no GUI/TUI/model or production runtime validation."});
         write_report(&mut file, &report)?;
         report["desktop"] = identity(&std::env::current_exe().map_err(|e| e.to_string())?)?;
@@ -215,7 +219,7 @@ mod tests {
         o.cli = std::env::current_exe().unwrap(); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
         o.cli = root.join("cli.exe"); o.report = std::env::temp_dir().join("outside-runtime-report.json"); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
         o.report = root.join("reports/result.json"); fs::write(&o.report, b"original evidence").unwrap();
-        assert!(OpenOptions::new().write(true).create_new(true).open(&o.report).is_err());
+        assert!(reserve_report(&o.report).is_err());
         assert_eq!(fs::read(&o.report).unwrap(), b"original evidence");
         fs::write(root.join(".opendiy-runtime-test-owned"), "wrong marker").unwrap(); assert!(guard(&o, |_| Some(root.join("own"))).is_err());
         assert!(root.starts_with(std::env::temp_dir().canonicalize().unwrap()));
