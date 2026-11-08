@@ -1,0 +1,75 @@
+name: Isolated GUI experiment executable
+on:
+  push:
+    branches: [test/desktop171-socket-gui-identity]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  experiment:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require pinned TEST product and original validation guard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          git diff --exit-code 3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2 HEAD -- src src-tauri tests playwright.config.ts package.json package-lock.json .github/workflows/windows.yml
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen TEST candidate changed' }
+          $c=Get-Content -LiteralPath src-tauri/tauri.bundle.conf.json -Raw|ConvertFrom-Json
+          if ($c.identifier -ne 'io.agentgrid.desktop.test' -or $c.productName -ne 'OpenDIY Desktop TEST' -or $c.app.windows[0].title -ne 'OpenDIY Desktop TEST') { throw 'TEST identity required' }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - run: node scripts/notices.mjs
+      - name: Build TEST executable without installer
+        run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --no-bundle
+      - name: Preserve candidate identity and execute packaged PTY check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item -ItemType Directory -Path experiment-artifacts | Out-Null
+          Copy-Item -LiteralPath src-tauri/target/release/opendiy-desktop.exe -Destination experiment-artifacts/opendiy-desktop.exe
+          Copy-Item -LiteralPath verification/native-gui-experiment-171/plan.json -Destination experiment-artifacts/experiment-plan.json
+          $exe=(Resolve-Path experiment-artifacts/opendiy-desktop.exe).Path
+          $sha=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{ commit='${{ github.sha }}'; run='${{ github.run_id }}'; productSource='63b4863c2c2fe0c9c9ab6e0e6f7fd38103d6fc1b'; testSource='3a7f111b7e4c8b0dcc0841e82afdd2dabc70beb2'; executableSha256=$sha; kind='isolated-gui-experiment-not-release'; installerCreated=$false; regularValidation='42502762255 failed twice; retained and unresolved'; releaseEligible=$false }|ConvertTo-Json|Set-Content experiment-artifacts/build-info.json -Encoding utf8NoBOM
+          $report=Join-Path $PWD 'experiment-artifacts/self-test.json'
+          $argv=@('--self-test','--duration-seconds','60','--report',('"{0}"' -f $report))
+          $started=[DateTime]::UtcNow.ToString('o')
+          $exit=$null
+          $launchError=$null
+          try {
+            $child=Start-Process -FilePath $exe -ArgumentList $argv -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$PWD/experiment-artifacts/self-test.stdout.txt" -RedirectStandardError "$PWD/experiment-artifacts/self-test.stderr.txt"
+            $exit=$child.ExitCode
+          } catch {
+            $launchError=$_.Exception.Message
+            throw
+          } finally {
+            $result=@{ executableSha256=$sha; arguments=$argv; startedAtUtc=$started; finishedAtUtc=[DateTime]::UtcNow.ToString('o'); exitCode=$exit; launchError=$launchError; reportExists=(Test-Path -LiteralPath $report -PathType Leaf) }
+            if ($result.reportExists) { $result.reportSha256=(Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash.ToLowerInvariant() }
+            $result|ConvertTo-Json -Depth 5|Set-Content experiment-artifacts/self-test-execution.json -Encoding utf8NoBOM
+          }
+          if ($exit -ne 0) { throw "Actual TEST PTY check failed: $exit" }
+          Get-ChildItem -LiteralPath experiment-artifacts -File|ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name }|Set-Content experiment-artifacts/SHA256SUMS.txt -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: isolated-test-gui-experiment
+          path: experiment-artifacts/
+          if-no-files-found: error
+          retention-days: 14
