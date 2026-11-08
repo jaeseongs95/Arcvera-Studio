@@ -52,10 +52,12 @@ fn actual_windows_socket_under_foreign_junction_is_rejected() {
     let root = fixture();
     let short_root = PathBuf::from(root.to_str().unwrap().strip_prefix(r"\\?\").unwrap_or(root.to_str().unwrap()));
     let socket = own_socket(&short_root.join("out/s"));
-    let link = short_root.join("in/link");
-    let status = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
-        .arg(&link).arg(short_root.join("out")).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
-    assert!(status.success(), "create own junction pointing outside allowed parent");
+    // cmd's mklink parses a forward slash as a switch, unlike filesystem APIs.
+    let link = short_root.join("in").join("link");
+    let output = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
+        .arg(&link).arg(short_root.join("out")).output().unwrap();
+    assert!(output.status.success(), "create own junction pointing outside allowed parent: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     let escaped = observed_path(&link.join("s"), &root.join("in"));
     let outside = observed_path(&short_root.join("out/s"), &root.join("in"));
     let traversal = observed_path(&short_root.join("in/../out/s"), &root.join("in"));
