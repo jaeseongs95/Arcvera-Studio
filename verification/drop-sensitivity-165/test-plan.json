@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "desktop-165-d0053-sensitivity",
+  "contractDigest": "sha256:6475c4c55dbd0def1523a65605a897ab4e734cf8ca7aba8f34d9a24a06c0762e",
+  "requirements": ["INV-DROP"],
+  "scopeFiles": ["src-tauri/vendor/portable-pty/src/win/suspended.rs", "src-tauri/vendor/portable-pty/src/win/suspended_tests.rs"],
+  "runner": "Existing Cargo Windows integration test; isolated complete crate copies, one case at a time",
+  "environment": "GitHub Actions windows-latest only. Same locked dependency graph, no local Rust, daemon, authentication or joint test. Red cases precede an unmodified control; each copy has a distinct Cargo target directory to prevent stale mutant binaries.",
+  "cases": [
+    {
+      "id": "DROP-01-NO-TERMINATE", "requirementIds": ["INV-DROP"],
+      "scenario": "Drop releases pending handle without requesting termination; same uncommitted launch fixture must detect the suspended live target.",
+      "entryPoint": "spawn_command_in_job_suspended -> ResumeToken Drop",
+      "level": "integration", "expectedBehavior": "Control passes all 16 token/whole-launch iterations; mutant fails the exact target bounded handle wait on iteration 0.",
+      "oracle": "One named Rust test runs and fails with target did not terminate: whole_launch=false, iteration=0; compile/spawn/timeout errors never count as detected.",
+      "testFiles": ["src-tauri/vendor/portable-pty/src/win/suspended_tests.rs"],
+      "required": true, "sensitivity": "mutation", "sensitivityReason": "Remove only cancellation termination in ResumeToken Drop in a CI temporary copy; test bytes and argv remain identical.",
+      "argv": ["cargo", "test", "--locked", "--manifest-path", "Cargo.toml", "--lib", "win::suspended_tests::dropping_uncommitted_launch_or_resume_token_reaps_the_real_target", "--", "--exact", "--nocapture", "--test-threads=1"]
+    },
+    {
+      "id": "DROP-01-RETAIN-HANDLE", "requirementIds": ["INV-DROP"],
+      "scenario": "Drop terminates the child but leaks its pending process handle; same fixture must distinguish termination from completed reference release.",
+      "entryPoint": "spawn_command_in_job_suspended -> ResumeToken Drop -> Job accounting",
+      "level": "integration", "expectedBehavior": "Control passes; mutant reaches exact process termination then fails bounded zero Job accounting on iteration 0.",
+      "oracle": "One named Rust test fails with uncommitted target remained: active>0, whole_launch=false, iteration=0. A handle-wait failure is the wrong red for this mutation.",
+      "testFiles": ["src-tauri/vendor/portable-pty/src/win/suspended_tests.rs"],
+      "required": true, "sensitivity": "mutation", "sensitivityReason": "Leak only the Drop-owned pending handle after real termination in a CI temporary copy; unchanged test verifies the reference lifetime boundary.",
+      "argv": ["cargo", "test", "--locked", "--manifest-path", "Cargo.toml", "--lib", "win::suspended_tests::dropping_uncommitted_launch_or_resume_token_reaps_the_real_target", "--", "--exact", "--nocapture", "--test-threads=1"]
+    }
+  ],
+  "exclusions": ["D0053 historical transient root cause is not inferred from mutation results.", "Actual Desktop selected-server/GUI/TUI behavior and installation remain outside this fixture.", "Shipping product and test source bytes remain unchanged."]
+}
