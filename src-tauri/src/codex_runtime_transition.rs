@@ -19,7 +19,7 @@ pub struct RuntimeTransitionPreview {
 }
 
 #[derive(Debug)]
-struct ReplacementIdentity { cli: Vec<u8>, server: Vec<u8>, helper: Option<Vec<u8>> }
+struct ReplacementIdentity { kind: String, cli: Vec<u8>, server: Vec<u8>, helper: Option<Vec<u8>> }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,7 +248,7 @@ fn preview_commands_mode(exe: &OsString, server: &OsString, kind: &str, pair: Ru
         if let Some(helper) = &evidence.runtime_helper_hash { bind(&mut hash, helper); }
         report.package_root = Some(evidence.root.to_str().ok_or("패키지 폴더가 올바른 문자열이 아닙니다.")?.to_owned());
         report.management_executable = Some(evidence.cli.to_str().ok_or("관리 CLI 경로가 올바른 문자열이 아닙니다.")?.to_owned());
-        report.target_identity = Some(ReplacementIdentity { cli: evidence.cli_hash, server: evidence.server_hash, helper: evidence.runtime_helper_hash });
+        report.target_identity = Some(ReplacementIdentity { kind: kind.to_owned(), cli: evidence.cli_hash, server: evidence.server_hash, helper: evidence.runtime_helper_hash });
         report.can_apply = true;
         // 이 preview는 전체 패키지 무결성을 인증하지 않는다. 트리 검증은 CLI 책임이다.
         report.reason = Some(if replace_existing {
@@ -276,9 +276,9 @@ pub(crate) fn verify_replacement_target(expected: &RuntimeTransitionPreview, pai
     }
     let managed = pair.managed_cli_executable.as_ref().ok_or("교체 후 관리 패키지 경로가 없습니다.")?;
     let cli = Path::new(managed);
-    let server = cli.with_file_name("codex-app-server.exe");
+    let server = if identity.kind == "cli" { cli.to_path_buf() } else { cli.with_file_name("codex-app-server.exe") };
     let deadline = Instant::now() + Duration::from_secs(20);
-    let actual = package_evidence(&cli.as_os_str().to_owned(), &server.into_os_string(), "standalone",
+    let actual = package_evidence(&cli.as_os_str().to_owned(), &server.into_os_string(), &identity.kind,
         &expected.pair.cli_version, cancelled, deadline)?;
     if actual.cli_hash != identity.cli || actual.server_hash != identity.server {
         return Err("교체 후 관리 패키지의 실행 파일이 선택한 파일과 다릅니다.".into());
@@ -490,6 +490,26 @@ mod tests {
         assert!(verify_replacement_target(&expected, &observed, &cancelled).is_err());
         observed.managed_cli_executable = Some(manager.clone());
         fs::remove_file(Path::new(&manager).with_file_name("codex-app-server.exe")).unwrap();
+        assert!(verify_replacement_target(&expected, &observed, &cancelled).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cli_only_package_postcheck_uses_the_cli_identity_without_a_standalone_server() {
+        let (root, _raw_cli, _raw_server, manager) = runtime_only_fixture();
+        fs::remove_file(Path::new(&manager).with_file_name("codex-app-server.exe")).unwrap();
+        let cli = OsString::from(&manager);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let evidence = package_evidence(&cli, &cli, "cli", VERSION, &cancelled, deadline).unwrap();
+        let expected = preview_commands_mode(&cli, &cli, "cli", pair(), &cancelled, deadline, true,
+            || Ok(evidence), |_, _| Ok(help())).unwrap();
+        assert!(expected.can_apply);
+        let mut observed = pair(); observed.state = "matched".into();
+        observed.managed_version = Some(VERSION.into()); observed.running_version = Some(VERSION.into());
+        observed.managed_cli_executable = Some(manager.clone());
+        assert!(verify_replacement_target(&expected, &observed, &cancelled).is_ok());
+        fs::write(&manager, b"different CLI with the same version").unwrap();
         assert!(verify_replacement_target(&expected, &observed, &cancelled).is_err());
         fs::remove_dir_all(root).unwrap();
     }
