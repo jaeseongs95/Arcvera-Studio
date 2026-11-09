@@ -451,7 +451,7 @@ mod expected_interrupt_tests {
     }
 
 
-    fn idle_close_over_socket(states: Vec<&'static str>, supported: bool) -> (Result<(), String>, Vec<Value>) {
+    fn idle_close_over_socket(states: Vec<&'static str>, supported: bool) -> (Result<(), String>, Vec<Value>, bool) {
         let cwd = env::current_dir().unwrap().canonicalize().unwrap();
         let server_cwd = cwd.clone();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -476,19 +476,21 @@ mod expected_interrupt_tests {
             received
         });
         let mut rpc = Rpc { ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:None, deadline:Some(Instant::now()+Duration::from_secs(3)) };
-        let result = capture_supported_idle_stop(&mut rpc, "selected-thread", &cwd).and_then(|()| interrupt_exact(&mut rpc, "selected-thread", &cwd, None));
-        drop(rpc); (result, worker.join().unwrap())
+        let mut entered_cleanup = false;
+        let result = capture_supported_idle_stop(&mut rpc, "selected-thread", &cwd).and_then(|()| { entered_cleanup = true; interrupt_exact(&mut rpc, "selected-thread", &cwd, None) });
+        drop(rpc); (result, worker.join().unwrap(), entered_cleanup)
     }
     #[test]
     fn idle_cleanup_refuses_active_unknown_and_new_turn_without_interrupting() {
-        for states in [vec!["active"], vec!["unknown"], vec!["idle", "active"], vec!["notLoaded", "active"]] {
-            let (result, requests) = idle_close_over_socket(states, true);
+        for (states, expected_cleanup) in [(vec!["active"], false), (vec!["unknown"], false), (vec!["idle", "active"], true), (vec!["notLoaded", "active"], true)] {
+            let (result, requests, entered_cleanup) = idle_close_over_socket(states, true);
             assert!(result.is_err());
+            assert_eq!(entered_cleanup, expected_cleanup, "initial active/unknown must be refused before cleanup continuation; late activity is a different boundary");
             assert!(requests.iter().all(|r| !matches!(r["method"].as_str(), Some("turn/interrupt" | "thread/turns/list"))));
         }
-        for state in ["idle", "notLoaded"] { let (result, requests) = idle_close_over_socket(vec![state], true); assert!(result.is_ok(), "{result:?}"); assert_eq!(requests.iter().filter(|r| r["method"] == "thread/read").count(), 2); }
-        let (result, requests) = idle_close_over_socket(vec!["idle"], false);
-        assert!(result.is_err()); assert!(requests.iter().all(|r| r["method"] != "thread/read"));
+        for state in ["idle", "notLoaded"] { let (result, requests, entered_cleanup) = idle_close_over_socket(vec![state], true); assert!(entered_cleanup); assert!(result.is_ok(), "{result:?}"); assert_eq!(requests.iter().filter(|r| r["method"] == "thread/read").count(), 2); }
+        let (result, requests, entered_cleanup) = idle_close_over_socket(vec!["idle"], false);
+        assert!(result.is_err()); assert!(!entered_cleanup); assert!(requests.iter().all(|r| r["method"] != "thread/read"));
     }
 
     #[test]
