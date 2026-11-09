@@ -36,7 +36,7 @@ function stateLabels(state: string): [string, string] { return states[state] ?? 
 const sessions = new Map<string, Session>();
 interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
-const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout> }>();
+const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
@@ -62,6 +62,7 @@ let runtimeRestoration: Promise<void> | undefined;
 let runtimeReady = !native;
 let runtimeTransitionBlocked = false;
 let serverSelectionPending = false;
+let runtimeReconnecting = false;
 let runtimeGeneration = 0;
 let runtimeCommand: Promise<void> | undefined;
 let runtimeCommandGeneration = 0;
@@ -563,6 +564,7 @@ function mountConversation(session: Session) {
     }
     return conversation!;
   }
+  view.getConversation = getConversation;
   toggle.onclick = async () => {
     if (toggle.hidden) return;
     toggle.disabled = true;
@@ -598,7 +600,7 @@ function mountConversation(session: Session) {
 }
 
 function createTerminal(session: Session) {
-  const card = document.createElement('article'); card.className = 'terminal-card'; card.dataset.id = session.id;
+  const card = document.createElement('article'); card.className = 'terminal-card'; card.dataset.id = session.id; card.inert = runtimeReconnecting;
   card.innerHTML = `<header class="terminal-header"><span class="drag-handle" draggable="true" title="드래그로 순서 변경" aria-hidden="true">⠿</span><span class="terminal-title"></span><span class="session-compaction" role="status" hidden></span><span class="session-state"></span><div class="window-actions"><button class="maximize icon-button" aria-label="세션 최대화" title="세션 최대화">⛶</button><button class="stop icon-button" aria-label="이 세션 종료" title="이 세션 종료">×</button></div></header><div class="terminal-path"></div><div class="terminal-host"></div><div class="terminal-footer"><div class="terminal-meta"><span class="terminal-identity"></span><span class="terminal-hint">Shift+드래그 선택 · Ctrl+C 복사 · Ctrl+V 붙여넣기</span></div><div class="card-actions"><button class="session-id-copy icon-button" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button><span class="context-controls"></span><button class="subagents-open icon-button" type="button" aria-haspopup="dialog" aria-controls="subagents-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v4M5 16v-4h14v4"/></svg></button><button class="cron-open icon-button" type="button" aria-haspopup="dialog" aria-controls="cron-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></svg></button><button class="conversation-toggle icon-button" type="button" aria-label="대화 보기" title="대화 / 터미널">☷</button><button class="session-restart icon-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2.3 5.7"/></svg></button></div></div>`;
   localizeMarkup(card);
   const terminal = new Terminal({ fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', fontSize: 12, lineHeight: 1.45, cursorBlink: true, scrollback: 10000, disableStdin: !native, allowProposedApi: false, theme: { background: '#141820', foreground: '#ced5e3', cursor: '#a5b4fc', selectionBackground: '#3b4567', black: '#212735', red: '#f78b99', green: '#91d6ad', yellow: '#eac184', blue: '#8eaafb', magenta: '#c4a4f3', cyan: '#87cfd9', white: '#e3e8f0' } });
@@ -990,14 +992,29 @@ const executableSettings = createExecutableSettings(async <T>(command: string, a
   if (!['choose_codex_executable', 'set_codex_executable', 'choose_app_server_executable', 'set_app_server_executable', 'apply_runtime_transition'].includes(command)) return call<T>(command, args);
   const serverSelection = ['choose_app_server_executable', 'set_app_server_executable'].includes(command);
   const transitioning = command === 'apply_runtime_transition';
+  const replacing = transitioning && args?.replaceExisting === true;
+  if (replacing && runtimeReconnecting) throw new UiError('서버 연결을 교체하고 있습니다. 결과를 확인한 뒤 다시 시도하세요.', 'Server connections are being replaced. Wait for the result before retrying.');
   // Server selection is followed by its explicit replacement request. Do not
   // race that request by reconnecting to the old shared daemon after saving.
   let shouldPrepare = !transitioning && !serverSelection;
   const previouslyBlocked = runtimeTransitionBlocked;
   runtimeTransitionBlocked = transitioning || serverSelection;
   runtimeGeneration++; runtimePreparation = undefined; runtimeReady = false;
+  const transitionGeneration = runtimeGeneration;
+  const checkTransition = () => {
+    if (exitInProgress || runtimeGeneration !== transitionGeneration) throw new UiError('종료 또는 실행 파일 변경으로 연결 복구를 중단했습니다. 대화와 초안을 확인하세요. 서버 교체를 자동 재시도하지 않습니다.', 'Reconnection stopped because the app is exiting or the executable changed. Check the conversation and draft. Server replacement will not be retried automatically.');
+  };
+  const frozenViews = new Map<string, boolean>();
+  if (replacing) {
+    runtimeReconnecting = true;
+    for (const [id, view] of terminals) { frozenViews.set(id, view.card.inert); view.card.inert = true; }
+  }
   weeklyUsage.setVisible(false); weeklyUsage.refresh();
-  const mutation = call<T>(command, args); executableMutation = mutation;
+  const reconnects: RuntimeReconnect[] = [];
+  const mutation = Promise.resolve().then(async () => {
+    if (replacing) { await suspendRuntimeSessions(reconnects, checkTransition); checkTransition(); }
+    return call<T>(command, args);
+  }); executableMutation = mutation;
   try {
     const result = await mutation;
     if (serverSelection && result === null) {
@@ -1007,10 +1024,28 @@ const executableSettings = createExecutableSettings(async <T>(command: string, a
     if (transitioning) {
       shouldPrepare = runtimeTransitionSucceeded(result);
       runtimeTransitionBlocked = !shouldPrepare;
+      if (shouldPrepare && reconnects.length) {
+        // Release the completed mutation before preparation waits for its owner.
+        if (executableMutation === mutation) executableMutation = undefined;
+        shouldPrepare = false;
+        await prepareRuntime();
+        checkTransition();
+        await reconnectRuntimeSessions(reconnects, checkTransition);
+        await resumeWorkspace();
+      }
     }
     return result;
   }
+  catch (error) {
+    // The picker validates before saving. Cancel/error did not change the daemon.
+    if (serverSelection) { runtimeTransitionBlocked = previouslyBlocked; shouldPrepare = !previouslyBlocked; }
+    throw error;
+  }
   finally {
+    if (replacing) {
+      runtimeReconnecting = false;
+      for (const [id, view] of terminals) view.card.inert = frozenViews.get(id) ?? false;
+    }
     if (executableMutation === mutation) {
       executableMutation = undefined;
       if (shouldPrepare && workspaceReady && !exitInProgress) void prepareRuntime().then(() => resumeWorkspace()).catch(error => notifyError('공유서버 준비 실패', 'Could not prepare the shared server', error));
@@ -1026,6 +1061,71 @@ $('#runtime-settings').onclick = () => void executableSettings.open({ checkServe
 $('#settings-open').onclick = () => $<HTMLDialogElement>('#settings-dialog').showModal();
 for (const button of document.querySelectorAll<HTMLElement>('[data-close]')) button.onclick = () => button.closest('dialog')?.close();
 $('#column-options').onclick = event => { const button = (event.target as HTMLElement).closest<HTMLElement>('[data-columns]'); if (button) { columns = Number(button.dataset.columns); maximized = ''; renderGrid(); scheduleSave(); } };
+
+interface RuntimeReconnect { replacement: SessionReplacement; request: SavedSession; draft?: string; showing: boolean }
+async function suspendRuntimeSessions(captured: RuntimeReconnect[], checkTransition: () => void) {
+  if (exitInProgress || restoringWorkspace || startOperations.size || restartingSessions.size) throw new UiError('세션 작업이 진행 중입니다. 작업이 끝난 뒤 서버를 교체하세요.', 'Session operations are pending. Wait for them to finish before replacing the server.');
+  const latest = await call<SessionInfo[]>('list_sessions');
+  checkTransition();
+  for (const info of latest) if (sessions.has(info.id)) receiveSession(info);
+  // Validate every owner before stopping any of them. A draft with staged files
+  // cannot move to a new native session ID, so retain it and decline replacement.
+  for (const info of latest.filter(info => info.active)) {
+    const current = sessions.get(info.id), view = terminals.get(info.id), conversation = conversations.get(info.id);
+    const draft = conversation?.runtimeReconnectDraft();
+    if (!current || !view || !info.threadId || info.state !== 'idle' || draft === null || view.card.querySelector<HTMLButtonElement>('.conversation-toggle')!.disabled) {
+      throw new UiError('진행 중인 작업·요청 또는 첨부가 있습니다. 기존 대화와 초안을 보존했습니다. 작업과 첨부를 정리한 뒤 서버를 교체하세요.', 'Work, requests, or attachments are pending. Your conversation and draft are preserved. Finish them before replacing the server.');
+    }
+    captured.push({ replacement: { id: info.id, generation: info.generation, threadId: info.threadId, projectId: current.projectId, projectAssigned: current.projectAssigned, projectRevision: current.projectRevision }, request: savedSessionMetadata({ ...current, resumeOnStartup: true }), draft, showing: view.card.querySelector('.conversation-toggle')!.getAttribute('aria-pressed') === 'true' });
+  }
+  for (const item of captured) {
+    const { id, generation } = item.replacement, view = terminals.get(id)!;
+    explicitlyStoppedSessions.delete(id); exitResumeIntents.add(id);
+    view.card.inert = true; view.input.cancelPending(); view.resize.cancelPending(); clearTimeout(view.resizeTimer);
+    await conversations.get(id)?.setVisible(false);
+    checkTransition();
+    if (!replacementIdentityCurrent(item.replacement)) throw new UiError('세션 상태가 바뀌어 서버를 교체하지 않았습니다.', 'The session changed. The server was not replaced.');
+    await call('session_stop', { id, generation });
+    checkTransition();
+    const stopped = await call<SessionInfo[]>('list_sessions');
+    checkTransition();
+    for (const info of stopped) if (sessions.has(info.id)) receiveSession(info);
+    if (!replacementCurrent(item.replacement)) throw new UiError('기존 연결의 종료를 확인하지 못해 서버를 교체하지 않았습니다. 대화와 초안은 유지됩니다.', 'The previous connection could not be confirmed stopped. The server was not replaced. Your conversation and draft are preserved.');
+  }
+  if (captured.some(item => !replacementCurrent(item.replacement))) throw new UiError('종료한 세션의 상태가 바뀌어 서버를 교체하지 않았습니다.', 'A stopped session changed. The server was not replaced.');
+}
+async function reconnectRuntimeSessions(captured: RuntimeReconnect[], checkTransition: () => void) {
+  for (const item of captured) {
+    checkTransition();
+    if (exitInProgress || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 세션 상태가 바뀌어 대화를 다시 연결하지 않았습니다. 기존 대화와 초안을 확인하세요.', 'The server was replaced, but the session changed before reconnection. Check the preserved conversation and draft.');
+    const next = await start(item.request, false, item.replacement);
+    checkTransition();
+    if (!next.active || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(next.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
+    const conversation = terminals.get(next.id)!.getConversation!();
+    if (item.draft !== undefined) conversation.restoreRuntimeDraft(item.draft);
+    if (item.showing) {
+      await conversation.setVisible(true);
+      checkTransition();
+      if (!replacementCurrent(item.replacement)) throw new UiError('이전 세션이 바뀌어 카드를 교체하지 않았습니다. 기존 초안을 확인하세요.', 'The previous session changed. Its card was not replaced. Check the original draft.');
+      const view = terminals.get(next.id)!;
+      view.card.querySelector<HTMLElement>('.terminal-host')!.hidden = true;
+      view.card.querySelector('.conversation-toggle')!.setAttribute('aria-pressed', 'true');
+    }
+    finishSessionReplacement(item.replacement.id, next.id);
+  }
+}
+
+function finishSessionReplacement(id: string, nextId: string) {
+  workspaceSlots = workspaceSlots.map(slot => slot === id ? nextId : slot);
+  workspaceSlots = workspaceSlots.filter((slot, index, slots) => typeof slot !== 'string' || slots.indexOf(slot) === index);
+  order = order.filter(item => item !== nextId).map(item => item === id ? nextId : item);
+  if (maximized === id) maximized = nextId;
+  if (active === id) active = nextId;
+  retiredRestartSessions.add(id);
+  if (retiredRestartSessions.size > MAX_SAVED_WORKSPACE_SESSIONS) retiredRestartSessions.delete(retiredRestartSessions.values().next().value!);
+  removeSession(id, true);
+  renderAll();
+}
 
 async function restartSession(id: string): Promise<void> {
   if (restartingSessions.has(id)) return restartingSessions.get(id);
@@ -1054,15 +1154,7 @@ async function restartSession(id: string): Promise<void> {
       const request = savedSessionMetadata({ ...stopped, resumeOnStartup: true });
       const next = await start(request, false, replacement);
       if (!next.active || next.threadId !== replacement.threadId || ['error', 'stopping'].includes(next.state)) throw new UiError('세션을 다시 연결하지 못했습니다. 같은 대화에서 재시작을 다시 시도하세요.', 'Could not reconnect the session. Retry restarting the same conversation.');
-      workspaceSlots = workspaceSlots.map(slot => slot === id ? next.id : slot);
-      workspaceSlots = workspaceSlots.filter((slot, index, slots) => typeof slot !== 'string' || slots.indexOf(slot) === index);
-      order = order.filter(item => item !== next.id).map(item => item === id ? next.id : item);
-      if (maximized === id) maximized = next.id;
-      if (active === id) active = next.id;
-      retiredRestartSessions.add(id);
-      if (retiredRestartSessions.size > MAX_SAVED_WORKSPACE_SESSIONS) retiredRestartSessions.delete(retiredRestartSessions.values().next().value!);
-      removeSession(id, true);
-      renderAll();
+      finishSessionReplacement(id, next.id);
       if (selectionVersion === projectSelectionVersion && isVisible(next.id) && active === next.id) setActive(next.id);
       notify('같은 대화로 세션을 재시작했습니다.', false, 'The session restarted with the same conversation.');
     } catch {
@@ -1078,9 +1170,12 @@ async function restartSession(id: string): Promise<void> {
 }
 
 interface SessionReplacement { id: string; generation: number; threadId: string; projectId?: string | null; projectAssigned?: boolean; projectRevision?: number }
-function replacementCurrent(replacement: SessionReplacement) {
+function replacementIdentityCurrent(replacement: SessionReplacement) {
   const current = sessions.get(replacement.id);
-  return !!current && !current.active && current.generation === replacement.generation && current.threadId === replacement.threadId && current.projectId === replacement.projectId && current.projectAssigned === replacement.projectAssigned && current.projectRevision === replacement.projectRevision;
+  return !!current && current.generation === replacement.generation && current.threadId === replacement.threadId && current.projectId === replacement.projectId && current.projectAssigned === replacement.projectAssigned && current.projectRevision === replacement.projectRevision;
+}
+function replacementCurrent(replacement: SessionReplacement) {
+  return replacementIdentityCurrent(replacement) && !sessions.get(replacement.id)!.active;
 }
 
 async function start(request: SavedSession, focus = true, replacement?: SessionReplacement) {

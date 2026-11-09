@@ -704,6 +704,7 @@ export function createConversation(options: ConversationOptions) {
   for (const [element, ko, en] of [[model, '모델', 'Model'], [effort, '추론 수준', 'Reasoning effort'], [turns, '대화 구간', 'Conversation turns'], [messages, '대화 내용', 'Conversation'], [$('.conversation-attachments'), '첨부 파일', 'Attachments']] as const) bindAttribute(element, 'aria-label', ko, en);
   const unlanguage = onLanguageChange(() => { requestSignature = ''; renderedItems.clear(); messages.replaceChildren(); renderModels(); renderTurns(); renderItems(); renderRequests(); renderAttachments(); });
   renderCurrentSettings(); renderModels(); renderItems(); updateControls();
+  const canRestart = () => !sending && !staging && !uncertain && !composing && !interrupting && !responding.size && !questionDrafts.size;
   return {
     setVisible,
     handoffToTerminal,
@@ -712,7 +713,12 @@ export function createConversation(options: ConversationOptions) {
     revealLatest: moveLatest,
     refresh: () => visible && foreground && !loading ? loadPage() : Promise.resolve(),
     hasDraft: () => !!input.value || !!attachments.length,
-    canRestart: () => !sending && !staging && !uncertain && !composing && !interrupting && !responding.size && !questionDrafts.size,
+    canRestart,
+    runtimeReconnectDraft: () => canRestart() && !activeTurn && !attachments.length ? input.value : null,
+    restoreRuntimeDraft(value: string) {
+      if (disposed || input.value || attachments.length || value.length > 65536) throw new Error('Cannot restore the conversation draft into this view.');
+      input.value = value; updateControls();
+    },
     async dispose({ sessionEnded = false }: { sessionEnded?: boolean } = {}) {
       if (disposed) return;
       // The host may abandon a confirmed ended generation; an active lease always needs detach.
