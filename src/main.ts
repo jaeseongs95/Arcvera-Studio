@@ -34,7 +34,7 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.qu
 const states: Record<string, [string, string]> = { restored: ['저장됨 · 미실행', 'Saved · not started'], notLoaded: ['상태 미확인', 'Unknown state'], starting: ['시작 중', 'Starting'], running: ['실행 중', 'Running'], idle: ['입력 가능', 'Ready'], waiting: ['응답 대기', 'Waiting for response'], stopping: ['종료 중', 'Stopping'], stopped: ['종료됨', 'Stopped'], exited: ['종료됨', 'Exited'], error: ['오류', 'Error'], unknown: ['상태 미확인', 'Unknown state'] };
 function stateLabels(state: string): [string, string] { return states[state] ?? states.unknown; }
 const sessions = new Map<string, Session>();
-interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
+interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number; initializingRuntimeGeneration?: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
 const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; initialReply: Promise<void>; resolveInitialReply: () => void; rejectInitialReply: (error: unknown) => void; initialReplyStarted: boolean; initializingRuntimeGeneration?: number; inputWarning: boolean; terminalInputSent?: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
@@ -504,13 +504,19 @@ function setActive(id: string, focus = true) {
   }
 }
 
-function canType(id: string) {
+function canWriteTerminal(id: string) {
   const session = sessions.get(id);
-  return native && !restartingSessions.has(id) && !!session?.active && isVisible(id) && !['restored', 'starting', 'stopping', 'stopped', 'exited'].includes(session.state);
+  return native && !restartingSessions.has(id) && !!session?.active && !['restored', 'starting', 'stopping', 'stopped', 'exited'].includes(session.state);
+}
+function canType(id: string) { return canWriteTerminal(id) && isVisible(id); }
+function canInitializeRuntimeTerminal(id: string) {
+  return runtimeReconnecting && terminals.get(id)?.initializingRuntimeGeneration === runtimeGeneration && canWriteTerminal(id) && !conversationOwners.has(id);
 }
 function refreshInputState(id: string) {
   const view = terminals.get(id); if (!view) return;
-  view.terminal.options.disableStdin = !canType(id) || conversationOwners.has(id) || view.input.paused || view.input.disposed;
+  // xterm's disableStdin also suppresses parser-generated CPR, even when a
+  // hidden card is inert. Only the current replacement may initialize there.
+  view.terminal.options.disableStdin = (!canType(id) && !canInitializeRuntimeTerminal(id)) || conversationOwners.has(id) || view.input.paused || view.input.disposed;
   view.card.dataset.inputPending = String(view.input.size); view.card.dataset.inputBytes = String(view.input.byteLength);
   const paused = String(view.input.paused);
   if (view.card.dataset.inputPaused !== paused) {
@@ -525,10 +531,11 @@ function inputError(error: unknown) {
 }
 function sendInput(id: string, data: string, binary?: true, preserveTerminalDraft = true) {
   const session = sessions.get(id); const view = terminals.get(id);
-  if (!session || !view || (runtimeReconnecting && (preserveTerminalDraft || view.initializingRuntimeGeneration !== runtimeGeneration)) || !canType(id) || conversationOwners.has(id)) return;
+  const initializing = !preserveTerminalDraft && !binary && /^\x1b\[\d+;\d+R$/.test(data) && canInitializeRuntimeTerminal(id);
+  if (!session || !view || (runtimeReconnecting && (preserveTerminalDraft || view.initializingRuntimeGeneration !== runtimeGeneration)) || (!canType(id) && !initializing) || conversationOwners.has(id)) return;
   // Queued, active, and unknown writes may already belong to the TUI composer.
   if (preserveTerminalDraft) view.terminalInputSent = true;
-  const operation = view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion });
+  const operation = view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion, ...(initializing ? { initializingRuntimeGeneration: runtimeGeneration } : {}) });
   // This matches a parser-generated cursor report only after DOM input origin
   // classified it as automatic; it never reclassifies user input by its bytes.
   if (!preserveTerminalDraft && !view.initialReplyStarted && /^\x1b\[\d+;\d+R$/.test(data)) {
@@ -621,7 +628,8 @@ function createTerminal(session: Session) {
   observer.observe(card.querySelector('.terminal-host')!);
   const input = new TerminalInputQueue<QueuedInput>(async value => {
     const current = sessions.get(session.id);
-    if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || (!canType(session.id) || conversationOwners.has(session.id))) throw new InputQueueError('cancelled');
+    const initializing = value.initializingRuntimeGeneration === runtimeGeneration && canInitializeRuntimeTerminal(session.id);
+    if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || ((!canType(session.id) && !initializing) || conversationOwners.has(session.id))) throw new InputQueueError('cancelled');
     await call<void>('session_write', { id: session.id, generation: value.generation, data: value.data, ...(value.binary ? { binary: true } : {}) });
   }, () => refreshInputState(session.id));
   const resize = new TerminalResizeQueue<QueuedResize>(async value => {
@@ -1130,7 +1138,11 @@ async function reconnectRuntimeSessions(captured: RuntimeReconnect[], checkTrans
       let initializationTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([nextView.initialReply, new Promise<never>((_, reject) => { initializationTimer = setTimeout(() => reject(new Error('New terminal initialization reply was not confirmed.')), 5000); })]);
-      } finally { clearTimeout(initializationTimer); }
+      } finally {
+        clearTimeout(initializationTimer);
+        delete nextView.initializingRuntimeGeneration;
+        refreshInputState(next.id);
+      }
       checkTransition();
       const currentNext = sessions.get(next.id);
       if (!next.active || !currentNext?.active || currentNext.generation !== next.generation || currentNext.threadId !== next.threadId || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(currentNext.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
@@ -1283,7 +1295,7 @@ async function start(request: SavedSession, focus = true, replacement?: SessionR
         await prepareRuntime();
         if (exitInProgress) throw new UiError('앱 종료 중에는 세션을 시작할 수 없습니다.', 'Cannot start a session while the app is exiting.');
         if (replacement && !replacementCurrent(replacement)) throw new UiError('재시작 대상 상태가 바뀌었습니다. 현재 세션을 확인하고 다시 시도하세요.', 'The restart target changed. Check the current session and retry.');
-        const info = await call<SessionInfo>('start_session', { request: { title: request.title, cwd: request.cwd, ...(request.threadId ? { threadId: request.threadId } : {}), ...(request.projectAssigned || request.projectId !== undefined ? { projectId: request.projectId ?? null, projectAssigned: true } : {}), cols: 100, rows: 30 } });
+        const info = await call<SessionInfo>('start_session', { request: { title: request.title, cwd: request.cwd, ...(request.threadId ? { threadId: request.threadId } : {}), ...(request.projectAssigned || request.projectId ? { projectId: request.projectId ?? null, projectAssigned: true } : {}), cols: 100, rows: 30 } });
         if (!info.active || (sessions.get(info.id)?.generation ?? -1) < info.generation) receiveSession(info);
         if (focus && selectionVersion === projectSelectionVersion) focusSession(info.id);
         queueResize(info.id);
