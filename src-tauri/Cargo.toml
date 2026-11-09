@@ -17,6 +17,8 @@ path = "src/bin/updater_actual_probe.rs"
 required-features = ["actual-updater-probe"]
 
 [features]
+# Observation-only isolated TEST executable; never enabled for releases.
+test-link-observe = []
 # Explicit TEST component only, excluded from product builds.
 actual-updater-probe = ["tauri/test"]
 

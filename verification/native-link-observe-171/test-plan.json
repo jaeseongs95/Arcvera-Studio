@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "task-acb6daf2-ae08-4055-8e73-5ba547467866",
+  "contractDigest": "sha256:b9bfd31ae1ed8fd3da592b2fb809cbef9ca69d2b40b280e1dfe60a784078ceaa",
+  "requirements": [
+    "NATIVE-POLICY-PRESERVED",
+    "BOUNDED-OWN-OBSERVE",
+    "CI-ONLY"
+  ],
+  "scopeFiles": [
+    "src-tauri/src/external_links.rs",
+    "src-tauri/Cargo.toml",
+    ".github/workflows/native-link-observe.yml",
+    "verification/native-link-observe-171/check-source.cjs"
+  ],
+  "runner": "Existing cargo tests on CI Windows runner, existing tauri build and local CDP runner",
+  "environment": "CI Windows only for native compilation; local own TEST observation afterward",
+  "cases": [
+    {
+      "id": "OBSERVE41-NATIVE",
+      "requirementIds": [
+        "NATIVE-POLICY-PRESERVED",
+        "BOUNDED-OWN-OBSERVE",
+        "CI-ONLY"
+      ],
+      "scenario": "Existing native URL tests plus own nonce selector and concurrent bounded trace slot tests; default-off and feature builds",
+      "entryPoint": "Existing open_url_with/launch_url and TEST feature selector only",
+      "level": "integration",
+      "expectedBehavior": "Original policy preserved; ordinary/non-own URLs produce no observation; concurrent trace bound16; CI produces identifiable TEST executable",
+      "oracle": "Existing URL assertions and invalid/valid own path cases; exact approved diff; native test output and feature/default Cargo configuration; executableSHA",
+      "testFiles": [
+        "src-tauri/src/external_links.rs"
+      ],
+      "required": true,
+      "sensitivity": "not-applicable",
+      "sensitivityReason": "Observation-only diagnostic, no product fix; native original failure and all acceptance gaps retained. Own selector/claim tested directly, no simulated browser success.",
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "--lib",
+        "--features",
+        "test-link-observe",
+        "external_links",
+        "--",
+        "--nocapture"
+      ]
+    }
+  ],
+  "exclusions": [
+    "No product COM fix or performance claim",
+    "No whole GUI acceptance from CI unit tests",
+    "Direct OS input remains NOT_RUN"
+  ]
+}

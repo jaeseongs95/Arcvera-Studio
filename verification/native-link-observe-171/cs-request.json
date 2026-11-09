@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1.0.0",
+  "requestId": "desktop171-native-observe664",
+  "mode": "derive",
+  "objective": "Preserve actual native worker lifetime and COM ownership while adding bounded read-only observation; original API acceptance distinct from exact browser GET",
+  "sourceSnapshotDigest": "sha256:2e62d4d5d63dd62c64f113ee2d3d2f0bc8ff9f10bd4c0fe1200c0fc53b9c5b89",
+  "sourceRefs": [
+    {
+      "id": "PRODUCT",
+      "path": "odDesktop164-focus/src-tauri/src/external_links.rs",
+      "digest": "sha256:ded203e4702c059d9f466f38e515b6a310ae2a05b8cb0272d996676743c8c4ad"
+    },
+    {
+      "id": "APP38",
+      "path": "od171-local25/g66p/evidence/native-report.json",
+      "digest": "sha256:2cca4348748e8362c427955cdb2209b1504a0c15da3003d3ffd3d89faeab446e"
+    },
+    {
+      "id": "CONTRACT",
+      "path": "odDesktop171-native-observe/verification/native-link-observe-171/contract.json",
+      "digest": "sha256:ece26c6d3fbf6e97277cde2ce70d0f3816eb5d54a564ceb21214d74e4a06e97b"
+    }
+  ],
+  "operationalFacts": [
+    {
+      "id": "F-WORKER",
+      "statement": "Existing spawn_blocking owns actual ShellExecute call; current worker COM state unknown",
+      "evidenceRefs": [
+        "PRODUCT"
+      ]
+    },
+    {
+      "id": "F-OBS",
+      "statement": "Command success does not establish browser GET; own actual38 key succeeds but three other exact GET stages fail",
+      "evidenceRefs": [
+        "APP38"
+      ]
+    },
+    {
+      "id": "F-CONTRACT",
+      "statement": "Read-only TEST observation cannot initialize COM, spawn new work, alter policy or claim direct OS input; bounded own URL metadata only",
+      "evidenceRefs": [
+        "CONTRACT"
+      ]
+    }
+  ],
+  "existingContractRef": "odDesktop171-native-observe/verification/native-link-observe-171/contract.json"
+}

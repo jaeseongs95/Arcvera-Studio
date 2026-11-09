@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "1.0.0",
+  "reportId": "desktop171-native-observe664",
+  "requestDigest": "sha256:70aaf9b0bb04e70fd354888044ee64437eaaefe85a7c7ed92c40ce91b0418678",
+  "sourceSnapshotDigest": "sha256:2e62d4d5d63dd62c64f113ee2d3d2f0bc8ff9f10bd4c0fe1200c0fc53b9c5b89",
+  "knowledgePackVersion": "0.1.0",
+  "knowledgePackDigest": "sha256:88b8b16bf4d1bcafca881ad49ead4d7a53bd9fa63f5fa680439c9d8c0627b92d",
+  "draftUse": {
+    "allowed": false,
+    "basis": "Only validated cancel/completion ownership principle; OS API semantics from official source, no draft cards"
+  },
+  "applicability": "applicable",
+  "applicabilityReason": "Existing worker completion and ownership must remain unchanged; instrument before/after within same worker, no new unjoined work",
+  "selectedRules": [
+    {
+      "ruleId": "CONC-CANCEL-004",
+      "ruleDigest": "sha256:d83cfc1ef0ec586c5e818b71c454f06605a43c5b640ed1d0e1fdda45561bbdbc",
+      "applicabilityReason": "Native worker may complete API call before external browser effect; do not report response/observer completion as external cancellation or GET"
+    }
+  ],
+  "facts": [
+    {
+      "id": "F-WORKER",
+      "statement": "Existing spawn_blocking owns actual ShellExecute call; current worker COM state unknown",
+      "evidenceRefs": [
+        "PRODUCT"
+      ]
+    },
+    {
+      "id": "F-OBS",
+      "statement": "Command success does not establish browser GET; own actual38 key succeeds but three other exact GET stages fail",
+      "evidenceRefs": [
+        "APP38"
+      ]
+    },
+    {
+      "id": "F-CONTRACT",
+      "statement": "Read-only TEST observation cannot initialize COM, spawn new work, alter policy or claim direct OS input; bounded own URL metadata only",
+      "evidenceRefs": [
+        "CONTRACT"
+      ]
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A-COM",
+      "statement": "Actual thread apartment could differ; no root cause confirmed",
+      "verificationPlan": "Observe actual worker before/after only, correlate exact GET per nonce and kind"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "INV-LIFETIME",
+      "statement": "Keep original blocking worker and result semantics; observation adds no COM ownership, spawned work or deferred cleanup",
+      "scope": "TEST native observer only",
+      "basisRefs": [
+        "F-WORKER",
+        "F-CONTRACT"
+      ],
+      "requirementLevel": "required-invariant",
+      "ruleIds": [
+        "CONC-CANCEL-004"
+      ]
+    },
+    {
+      "id": "INV-OBSERVATION",
+      "statement": "Bound own observations and preserve actual HRESULT/API result distinct from exact GET; normal URLs and disabled feature produce none",
+      "scope": "own nonce test metadata",
+      "basisRefs": [
+        "F-OBS",
+        "F-CONTRACT"
+      ],
+      "requirementLevel": "required-invariant",
+      "ruleIds": [
+        "CONC-CANCEL-004"
+      ]
+    }
+  ],
+  "designChoices": [
+    {
+      "id": "CH-OBSERVE",
+      "statement": "Use default-off feature and nonce target filter, atomic16 record cap, stderr metadata, no file/service/thread ownership",
+      "rationale": "Existing stderr capture is bounded and reuses actual worker without a replacement launcher",
+      "basisRefs": [
+        "F-CONTRACT",
+        "A-COM"
+      ]
+    }
+  ],
+  "verificationObligations": [
+    {
+      "id": "OB-LIFETIME",
+      "invariantIds": [
+        "INV-LIFETIME"
+      ],
+      "method": "static-review",
+      "requiredEnvironment": "Fixed diff against b7fb7b2 plus CI Windows compiler",
+      "failureOracle": "New COM init/uninit, worker/task, altered existing validator/command/launch result semantics",
+      "requirementLevel": "required"
+    },
+    {
+      "id": "OB-OWN-BOUND",
+      "invariantIds": [
+        "INV-OBSERVATION"
+      ],
+      "method": "dynamic-test",
+      "requiredEnvironment": "CI Windows native tests and local own TEST app",
+      "failureOracle": "Non-own target accepted for tracing, more than16 slots, absent/wrong actual worker metadata or APIok misreported as GET",
+      "requirementLevel": "required"
+    }
+  ],
+  "requiredCapabilities": [
+    "cs-constraint-derivation"
+  ],
+  "verdict": "READY"
+}

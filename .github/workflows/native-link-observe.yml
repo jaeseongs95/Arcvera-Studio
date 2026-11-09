@@ -1,0 +1,59 @@
+name: TEST native link worker observation
+on:
+  push:
+    branches: [test/desktop171-native-observe]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Freeze original native policy and TEST identity
+        run: node verification/native-link-observe-171/check-source.cjs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - run: node scripts/notices.mjs
+      - name: Default feature remains buildable
+        run: cargo check --manifest-path src-tauri/Cargo.toml --lib
+      - name: Native policy and observation regressions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path observation-artifacts | Out-Null
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --features test-link-observe external_links -- --nocapture 2>&1 | Tee-Object -FilePath observation-artifacts/native-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Native observation tests failed' }
+      - name: Build isolated TEST observation executable without installer
+        run: npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --no-bundle --features test-link-observe
+      - name: Record exact observation candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Copy-Item -LiteralPath src-tauri/target/release/opendiy-desktop.exe -Destination observation-artifacts/opendiy-desktop.exe
+          Copy-Item -LiteralPath verification/native-link-observe-171/contract.json -Destination observation-artifacts/contract.json
+          Copy-Item -LiteralPath verification/native-link-observe-171/test-plan.json -Destination observation-artifacts/test-plan.json
+          $exe=(Resolve-Path observation-artifacts/opendiy-desktop.exe).Path
+          @{commit='${{ github.sha }}';run='${{ github.run_id }}';base='b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2';feature='test-link-observe';executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant();kind='observation-only-not-release';installerCreated=$false;releaseEligible=$false;productFixClaimed=$false}|ConvertTo-Json|Set-Content observation-artifacts/build-info.json -Encoding utf8NoBOM
+          Get-ChildItem -LiteralPath observation-artifacts -File|ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name }|Set-Content observation-artifacts/SHA256SUMS.txt -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-link-observation-test
+          path: observation-artifacts/
+          if-no-files-found: error
+          retention-days: 14

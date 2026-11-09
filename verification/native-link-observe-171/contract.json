@@ -1,0 +1,20 @@
+{
+  "kind": "native-link-observe-contract",
+  "taskId": "task-acb6daf2-ae08-4055-8e73-5ba547467866",
+  "purpose": "Observe actual existing ShellExecute worker without COM initialization or browser behavior changes",
+  "base": "b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2",
+  "hypothesis": "COM/thread execution context differs across calls; unconfirmed",
+  "conditions": [
+    "Feature default off",
+    "Explicit own nonce required, only http://127.0.0.1:<port>/own-link/<kind>/<nonce>",
+    "At most16 bounded metadata records, no complete URL or user data",
+    "Same worker/same ShellExecuteW, no new task, no CoInitialize/CoUninitialize",
+    "Record actual CoGetApartmentType before and after, thread ID, numeric Shell return",
+    "CLI/source27 fixed; direct OS-input remains NOT_RUN; new candidate distinct from97ee"
+  ],
+  "verification": [
+    "CI native original external_links tests and new target selector/atomic cap boundary tests, no browser opener in unit tests",
+    "CI default-off check and feature build; no local Rust build",
+    "Local actual4stages IPC/GET and trace correlations plus normal own cleanup"
+  ]
+}

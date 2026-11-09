@@ -21,8 +21,12 @@ fn launch_url(url: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     let operation: Vec<u16> = "open\0".encode_utf16().collect();
     let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    #[cfg(feature = "test-link-observe")]
+    let observation = test_link_observe::begin(url);
     // ShellExecute receives the URL as one native argument; no command shell.
     let result = unsafe { ShellExecuteW(std::ptr::null_mut(), operation.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), 1) } as isize;
+    #[cfg(feature = "test-link-observe")]
+    if let Some(observation) = observation { observation.finish(result); }
     if result <= 32 { return Err(format!("기본 브라우저 실행에 실패했습니다 (Windows 오류 {result}).")); }
     Ok(())
 }
@@ -140,5 +144,112 @@ mod tests {
             assert!(validated_url(value).is_err(), "unexpected accepted fixture {value:?}");
         }
         assert!(validated_url(&format!("https://example.com/{}", "a".repeat(8192))).is_err());
+    }
+}
+
+// TEST-only metadata; disabled in every normal product build.
+#[cfg(all(windows, feature = "test-link-observe"))]
+mod test_link_observe {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
+    static RECORDS: AtomicUsize = AtomicUsize::new(0);
+    const LIMIT: usize = 16; // Four independent cases, bounded extra observations.
+
+    pub(super) fn own_kind(value: &str, nonce: &str) -> Option<&'static str> {
+        if nonce.len() != 16 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+        let url = tauri::Url::parse(value).ok()?;
+        if url.scheme() != "http" || url.host_str() != Some("127.0.0.1")
+            || !url.username().is_empty() || url.password().is_some()
+            || url.query().is_some() || url.fragment().is_some() { return None; }
+        ["control", "plain", "osc", "keyboard"].into_iter()
+            .find(|kind| url.path() == format!("/own-link/{kind}/{nonce}"))
+    }
+
+    pub(super) fn claim(records: &AtomicUsize) -> Option<usize> {
+        // Only the counter is shared; no data publication depends on this order.
+        records.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |count| (count < LIMIT).then_some(count + 1)).ok()
+    }
+
+    fn apartment() -> (u32, i32, i32) {
+        let (mut kind, mut qualifier) = (-1, -1);
+        let hr = unsafe { windows_sys::Win32::System::Com::CoGetApartmentType(&mut kind, &mut qualifier) };
+        (hr as u32, kind, qualifier)
+    }
+
+    pub(super) struct Observation {
+        kind: &'static str,
+        index: usize,
+        thread: u32,
+        before: (u32, i32, i32),
+        started: Instant,
+    }
+
+    pub(super) fn begin(value: &str) -> Option<Observation> {
+        let nonce = std::env::var("OPENDIY_TEST_LINK_OBSERVE_NONCE").ok()?;
+        let kind = own_kind(value, &nonce)?;
+        let index = claim(&RECORDS)?;
+        Some(Observation { kind, index, thread: unsafe {
+            windows_sys::Win32::System::Threading::GetCurrentThreadId()
+        }, before: apartment(), started: Instant::now() })
+    }
+
+    impl Observation {
+        pub(super) fn finish(self, result: isize) {
+            use std::io::Write;
+            let after = apartment();
+            let record = serde_json::json!({"kind":self.kind,"index":self.index,
+                "threadId":self.thread,"afterThreadId":unsafe {
+                    windows_sys::Win32::System::Threading::GetCurrentThreadId()
+                },"before":{"hr":self.before.0,"type":self.before.1,"qualifier":self.before.2},
+                "after":{"hr":after.0,"type":after.1,"qualifier":after.2},
+                "shellResult":result,"elapsedMicros":self.started.elapsed().as_micros()});
+            // Missing/failed stderr output is missing evidence, never a browser PASS.
+            // Preserve the original launch result even if diagnostic output fails.
+            let _ = writeln!(std::io::stderr().lock(), "OWN_LINK_NATIVE_OBSERVE {record}");
+        }
+    }
+}
+
+#[cfg(all(test, windows, feature = "test-link-observe"))]
+mod observation_tests {
+    use super::test_link_observe::{claim, own_kind};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    #[test]
+    fn only_exact_owned_nonce_targets_are_observed() {
+        let nonce = "0123456789abcdef";
+        for kind in ["control", "plain", "osc", "keyboard"] {
+            assert_eq!(own_kind(&format!("http://127.0.0.1:42017/own-link/{kind}/{nonce}"), nonce), Some(kind));
+        }
+        for value in [
+            "https://127.0.0.1:42017/own-link/plain/0123456789abcdef",
+            "http://localhost:42017/own-link/plain/0123456789abcdef",
+            "http://127.0.0.2:42017/own-link/plain/0123456789abcdef",
+            "http://user@127.0.0.1:42017/own-link/plain/0123456789abcdef",
+            "http://127.0.0.1:42017/own-link/other/0123456789abcdef",
+            "http://127.0.0.1:42017/own-link/plain/fedcba9876543210",
+            "http://127.0.0.1:42017/own-link/plain/0123456789abcdef?x=1",
+            "http://127.0.0.1:42017/own-link/plain/0123456789abcdef#x",
+            "http://127.0.0.1:42017/own-link/plain/0123456789abcdef/",
+            "https://example.com/",
+        ] { assert_eq!(own_kind(value, nonce), None, "unexpected observation: {value}"); }
+        for nonce in ["", "short", "zzzzzzzzzzzzzzzz", "0123456789abcdef0"] {
+            assert_eq!(own_kind("http://127.0.0.1:42017/own-link/plain/0123456789abcdef", nonce), None);
+        }
+    }
+
+    #[test]
+    fn concurrent_observation_claims_stop_at_sixteen() {
+        let records = Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..8).map(|_| {
+            let records = Arc::clone(&records);
+            std::thread::spawn(move || (0..8).filter_map(|_| claim(&records)).collect::<Vec<_>>())
+        }).collect();
+        let mut slots: Vec<_> = workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..16).collect::<Vec<_>>());
+        assert_eq!(records.load(Ordering::Relaxed), 16);
+        assert_eq!(claim(&records), None);
     }
 }
