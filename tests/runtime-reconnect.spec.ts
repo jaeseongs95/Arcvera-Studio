@@ -11,7 +11,7 @@ async function setup(page: Page, options: Record<string, unknown> = {}) {
     const listeners = new Map<string, (value: any) => void>();
     const old = { id: 'old', generation: 1, threadId: 'same-thread', cwd: 'D:\\Work', title: '보존할 대화', state: options.state ?? 'idle', active: true, projectId: null, projectAssigned: false, projectRevision: 0 };
     const fixture = state.reconnectFixture = { calls: [] as any[], live: [old], applied: false, starts: 0, selected: false, holdList: options.holdList };
-    (fixture as any).emitOutput = (data: string) => listeners.get('terminal-output')?.({event:'terminal-output',id:1,payload:{id:old.id,generation:old.generation,seq:1,data}});
+    (fixture as any).emitOutput = (data: string, id = old.id, seq = 1) => { const owner = fixture.live.find((s: any) => s.id === id); listeners.get('terminal-output')?.({event:'terminal-output',id:1,payload:{id,generation:owner?.generation ?? 1,seq,data}}); };
     const emit = (info: any) => listeners.get('session-changed')?.({ event: 'session-changed', id: 1, payload: { ...info } });
     const settings = () => ({ savedPath: null, resolvedPath: 'D:\\runtime\\codex.exe', source: 'environment', error: null, appServer: { savedPath: fixture.selected ? 'D:\\runtime\\new-server.exe' : null, resolvedPath: 'D:\\runtime\\new-server.exe', source: 'saved', error: null, kind: 'standalone' } });
     state.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
@@ -60,10 +60,13 @@ async function setup(page: Page, options: Record<string, unknown> = {}) {
           if (args.request.threadId && fixture.live.some((s: any) => s.active && s.threadId === args.request.threadId)) throw Error('duplicate active thread');
           const info = { ...args.request, id: `new-${++fixture.starts}`, generation: 1, threadId: args.request.threadId ?? 'other-thread', state: 'idle', active: true };
           fixture.live.push(info); emit(info);
+          if (options.startupStatusOnly) { (fixture as any).emitOutput('\x1b[5n', info.id); await new Promise(resolve => setTimeout(resolve, 150)); }
+          else if (options.startupOutput !== false) { (fixture as any).emitOutput('STARTUP_MARKER' + (options.splitStartup ? '\x1b[' : '\x1b[6n'), info.id); if (options.splitStartup) { await new Promise(resolve => setTimeout(resolve, 20)); (fixture as any).emitOutput('6n', info.id, 2); } await new Promise(resolve => setTimeout(resolve, 150)); }
           if (options.changedAfterStart) { old.generation++; emit(old); }
           return info;
         }
         if (command === 'choose_conversation_attachments') return [{ type: 'file', path: 'D:\\Work\\draft.txt', name: 'draft.txt' }];
+        if (command === 'session_write' && (options.writeFailure || (options.initialWriteFailure && args.id !== old.id))) throw Error('write outcome unknown');
         if (command === 'conversation_request') {
           const kind = args.request.type;
           if (kind === 'detach' && args.id === old.id && fixture.selected && options.activeDuringDetach) { old.state = 'running'; emit(old); }
@@ -91,7 +94,7 @@ async function choose(page: Page) {
   await page.locator('#settings-open').click();
   await page.locator('#codex-settings-open').click();
   await page.locator('#app-server-executable-choose').click();
-  await expect(page.locator('#app-server-executable-choose')).toBeEnabled();
+  await expect(page.locator('#app-server-executable-choose')).toBeEnabled({ timeout: 10000 });
 }
 async function closeSettings(page: Page) {
   await page.locator('#codex-settings-close').click();
@@ -242,4 +245,44 @@ test('RC-AUTO-INPUT real xterm CPR replies do not mark a user composer draft', a
  await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();await choose(page);await closeSettings(page);
  await expect(page.locator('.terminal-card[data-id="new-1"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
  expect(await calls(page,'apply_runtime_transition')).toHaveLength(1);
+});
+
+for (const splitStartup of [false, true]) test(`RC-STARTUP-OUTPUT split=${splitStartup} reconnect retains initial output until TUI can answer`, async ({ page }) => {
+  await setup(page, { startupOutput: true, splitStartup });
+  await choose(page); await closeSettings(page);
+  const next = page.locator('.terminal-card[data-id="new-1"]');
+  await expect(next.locator('.conversation-input')).toHaveValue('초안 보존 한글🙂');
+  await next.locator('.conversation-toggle').click();
+  await expect.poll(async () => (await calls(page, 'session_write')).some(c => c.args.id === 'new-1' && /^\x1b\[\d+;\d+R$/.test(c.args.data))).toBe(true);
+  await expect(next.locator('.xterm-rows')).toContainText('STARTUP_MARKER');
+  expect((await calls(page, 'conversation_request')).filter(c => c.args.request.type === 'send')).toEqual([]);
+});
+
+
+for (const method of ['typing', 'text', 'paste-event', 'composition-event', 'Shift+Enter', 'Alt+Enter', 'unknown-write']) test(`RC-INPUT-ORIGINS ${method} keeps input preservation refusal`, async ({ page }) => {
+  await setup(page, { writeFailure: method === 'unknown-write' });
+  await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();
+  const input = page.locator('.xterm-helper-textarea'); await input.focus();
+  if (method === 'paste-event') await input.evaluate(el => { const data = new DataTransfer(); data.setData('text/plain', 'own-paste'); el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true })); });
+  else if (method === 'composition-event') { await input.dispatchEvent('compositionstart', { data: '한' }); await page.keyboard.insertText('한글'); await input.dispatchEvent('compositionend', { data: '한글' }); }
+  else if (method === 'text') await page.keyboard.insertText('own-text');
+  else if (method.includes('Enter')) await input.press(method);
+  else await input.pressSequentially('own-input');
+  await expect.poll(async () => (await calls(page, 'session_write')).length).toBeGreaterThan(0);
+  await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();
+  await choose(page); await closeSettings(page);
+  expect(await calls(page, 'session_suspend_idle')).toEqual([]);
+  expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
+  await expect(page.locator('.terminal-card')).toHaveCount(1);
+  await expect(page.locator('.conversation-input')).toHaveValue('초안 보존 한글🙂');
+});
+
+for (const options of [{ startupOutput: false }, { initialWriteFailure: true }, { startupStatusOnly: true }]) test(`RC-STARTUP-UNCONFIRMED ${JSON.stringify(options)} preserves original draft and cleans new owner`, async ({ page }) => {
+  await setup(page, options); await choose(page);
+  await expect(page.locator('#codex-settings-error')).toBeVisible(); await closeSettings(page);
+  await expect(page.locator('.terminal-card')).toHaveCount(1);
+  await expect(page.locator('.conversation-input')).toHaveValue('초안 보존 한글🙂');
+  expect(await page.evaluate(() => (window as any).reconnectFixture.live.filter((s: any) => s.active))).toEqual([]);
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+  expect((await calls(page, 'conversation_request')).filter(c => c.args.id === 'new-1' && c.args.request.type === 'attach')).toEqual([]);
 });
