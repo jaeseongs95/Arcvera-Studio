@@ -10,6 +10,8 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
     const state = window as any;
     state.isTauri = true;
     let callback = 0;
+    const callbacks = new Map<number, (value: any) => void>();
+    const listeners = new Map<string, (value: any) => void>();
     state.settingsFixture = {
       calls: [], choices: 0, serverChoices: 0, releaseChoose: () => {}, releaseServerChoose: () => {}, serverOutcome: 'save', getFailure: options.getFailure,
       replacementOutcome: 'updated', replacementSupported: true, releaseReplacement: () => {},
@@ -23,10 +25,11 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
     let starts = 0;
     const automaticServer = () => ({ savedPath: null, resolvedPath: state.settingsFixture.settings.resolvedPath === chosenPath ? chosenServerPath : automaticServerPath, source: 'sibling', error: null, kind: 'standalone' });
     state.__TAURI_INTERNALS__ = {
-      transformCallback: () => ++callback, unregisterCallback() {},
+      transformCallback: (handler: (value: any) => void) => { callbacks.set(++callback, handler); return callback; }, unregisterCallback() {},
       async invoke(command: string, args: any = {}) {
         const fixture = state.settingsFixture;
         fixture.calls.push({ command, args });
+        if (command === 'plugin:event|listen') { listeners.set(args.event, callbacks.get(args.handler)!); return callback; }
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
         if (command === 'set_ui_language') return { show: args.language === 'en' ? 'Open OpenDIY Desktop' : 'OpenDIY Desktop 열기', exit: args.language === 'en' ? 'Exit…' : '종료…' };
@@ -39,7 +42,10 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
         }
         if (command === 'start_session') {
           if (owned.active || args.request.threadId !== owned.threadId) throw Error('duplicate or changed thread');
-          owned = { ...owned, ...args.request, id: `reconnected-${++starts}`, generation: 1, state: 'idle', active: true }; return structuredClone(owned);
+          owned = { ...owned, ...args.request, id: `reconnected-${++starts}`, generation: 1, state: 'idle', active: true };
+          listeners.get('session-changed')?.({ event: 'session-changed', id: 1, payload: structuredClone(owned) });
+          listeners.get('terminal-output')?.({ event: 'terminal-output', id: 1, payload: { id: owned.id, generation: owned.generation, seq: 1, data: '\x1b[6n' } });
+          return structuredClone(owned);
         }
         if (command === 'get_codex_settings') { if (fixture.getFailure) throw new Error('설정 파일을 읽을 수 없습니다'); return fixture.settings; }
         if (command === 'choose_codex_executable') {

@@ -36,7 +36,7 @@ function stateLabels(state: string): [string, string] { return states[state] ?? 
 const sessions = new Map<string, Session>();
 interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
-const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; terminalInputSent?: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
+const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; initialReply: Promise<void>; resolveInitialReply: () => void; rejectInitialReply: (error: unknown) => void; initialReplyStarted: boolean; initializingRuntimeGeneration?: number; inputWarning: boolean; terminalInputSent?: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
@@ -525,10 +525,17 @@ function inputError(error: unknown) {
 }
 function sendInput(id: string, data: string, binary?: true, preserveTerminalDraft = true) {
   const session = sessions.get(id); const view = terminals.get(id);
-  if (!session || !view || runtimeReconnecting || !canType(id) || conversationOwners.has(id)) return;
+  if (!session || !view || (runtimeReconnecting && (preserveTerminalDraft || view.initializingRuntimeGeneration !== runtimeGeneration)) || !canType(id) || conversationOwners.has(id)) return;
   // Queued, active, and unknown writes may already belong to the TUI composer.
   if (preserveTerminalDraft) view.terminalInputSent = true;
-  void view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
+  const operation = view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion });
+  // This matches a parser-generated cursor report only after DOM input origin
+  // classified it as automatic; it never reclassifies user input by its bytes.
+  if (!preserveTerminalDraft && !view.initialReplyStarted && /^\x1b\[\d+;\d+R$/.test(data)) {
+    view.initialReplyStarted = true;
+    void operation.then(view.resolveInitialReply, view.rejectInitialReply);
+  }
+  void operation.catch(error => {
     if (error instanceof InputQueueError && error.reason === 'cancelled') return;
     if (error instanceof InputQueueError && view.inputWarning) return;
     if (error instanceof InputQueueError) view.inputWarning = true;
@@ -622,7 +629,11 @@ function createTerminal(session: Session) {
     if (!current || value.selectionVersion !== projectSelectionVersion || current.generation !== value.generation || !canType(session.id)) return;
     await call('session_resize', { id: session.id, generation: value.generation, cols: value.cols, rows: value.rows });
   }, error => notifyError('터미널 크기 변경 실패', 'Could not resize terminal', error));
-  terminals.set(session.id, { terminal, fit, search, card, observer, links, input, resize, inputWarning: false });
+  let resolveInitialReply!: () => void, rejectInitialReply!: (error: unknown) => void;
+  const initialReply = new Promise<void>((resolve, reject) => { resolveInitialReply = resolve; rejectInitialReply = reject; });
+  // Normal sessions need not await initialization; retain failures for an explicit reconnect waiter.
+  void initialReply.catch(() => {});
+  terminals.set(session.id, { terminal, fit, search, card, observer, links, input, resize, initialReply, resolveInitialReply, rejectInitialReply, initialReplyStarted: false, ...(runtimeReconnecting ? { initializingRuntimeGeneration: runtimeGeneration } : {}), inputWarning: false });
   refreshInputState(session.id);
   mountConversation(session);
   // xterm also emits CPR and focus reports through onData. Only user input
@@ -716,7 +727,7 @@ function removeSession(id: string, preserveRestore = false) {
     workspaceSlots = workspaceSlots.filter(slot => typeof slot === 'string' || !removed.includes(slot));
     updateRestoreBanner();
   }
-  contextControls.get(id)?.dispose(); contextControls.delete(id); workspaceSlots = workspaceSlots.filter(slot => slot !== id); exitResumeIntents.delete(id); failedRestoreCards.delete(id); explicitlyStoppedSessions.delete(id); const view = terminals.get(id); const conversation = conversations.get(id); conversations.delete(id); conversationOwners.delete(id); if (conversation) void conversation.dispose({ sessionEnded: true }).catch(error => notify('대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Conversation cleanup could not be confirmed. Check the session status.')); clearTimeout(view?.resizeTimer); view?.input.dispose(); view?.resize.dispose(); view?.observer.disconnect(); view?.links.dispose(); view?.terminal.dispose(); view?.card.remove(); terminals.delete(id); sessions.delete(id); order = order.filter(item => item !== id); if (maximized === id) maximized = ''; if (active === id) active = visibleOrder()[0] ?? ''; renderAll(); scheduleSave(); }
+  contextControls.get(id)?.dispose(); contextControls.delete(id); workspaceSlots = workspaceSlots.filter(slot => slot !== id); exitResumeIntents.delete(id); failedRestoreCards.delete(id); explicitlyStoppedSessions.delete(id); const view = terminals.get(id); view?.rejectInitialReply(new InputQueueError('cancelled')); const conversation = conversations.get(id); conversations.delete(id); conversationOwners.delete(id); if (conversation) void conversation.dispose({ sessionEnded: true }).catch(error => notify('대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Conversation cleanup could not be confirmed. Check the session status.')); clearTimeout(view?.resizeTimer); view?.input.dispose(); view?.resize.dispose(); view?.observer.disconnect(); view?.links.dispose(); view?.terminal.dispose(); view?.card.remove(); terminals.delete(id); sessions.delete(id); order = order.filter(item => item !== id); if (maximized === id) maximized = ''; if (active === id) active = visibleOrder()[0] ?? ''; renderAll(); scheduleSave(); }
 
 function receiveSession(info: SessionInfo, persist = true) {
   if (retiredRestartSessions.has(info.id)) return;
@@ -730,7 +741,7 @@ function receiveSession(info: SessionInfo, persist = true) {
   }
   if (!order.includes(session.id)) order.push(session.id);
   const terminal = terminals.get(session.id)?.terminal ?? createTerminal(session);
-  if (previous && previous.generation !== session.generation) { const view = terminals.get(session.id)!; view.input.cancelPending(); view.resize.cancelPending(); clearTimeout(view.resizeTimer); terminal.write('', () => terminal.reset()); const oldConversation = conversations.get(session.id); conversations.delete(session.id); conversationOwners.delete(session.id); if (oldConversation) void oldConversation.dispose({ sessionEnded: true }).catch(error => notify('이전 대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Previous conversation cleanup could not be confirmed. Check the session status.')); mountConversation(session); }
+  if (previous && previous.generation !== session.generation) { const view = terminals.get(session.id)!; view.rejectInitialReply(new InputQueueError('cancelled')); view.input.cancelPending(); view.resize.cancelPending(); clearTimeout(view.resizeTimer); terminal.write('', () => terminal.reset()); const oldConversation = conversations.get(session.id); conversations.delete(session.id); conversationOwners.delete(session.id); if (oldConversation) void oldConversation.dispose({ sessionEnded: true }).catch(error => notify('이전 대화 연결 정리를 확인하지 못했습니다. 세션 상태를 확인하세요.', true, 'Previous conversation cleanup could not be confirmed. Check the session status.')); mountConversation(session); }
   if (previous && previous.state !== session.state) notify(`${session.title} · ${stateLabels(session.state)[0]}`, false, `${session.title} · ${stateLabels(session.state)[1]}`);
   renderAll();
   if (!previous || previous.state === 'starting') queueResize(session.id);
@@ -1112,8 +1123,17 @@ async function reconnectRuntimeSessions(captured: RuntimeReconnect[], checkTrans
     let next: SessionInfo | undefined;
     try {
       next = await start(item.request, false, item.replacement);
+      // A new Windows ConPTY emits its initial DSR before it can draw. Keep
+      // user input frozen, but finish its automatic reply before claiming the
+      // conversation lease (which correctly disables terminal input).
+      const nextView = terminals.get(next.id)!;
+      let initializationTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([nextView.initialReply, new Promise<never>((_, reject) => { initializationTimer = setTimeout(() => reject(new Error('New terminal initialization reply was not confirmed.')), 5000); })]);
+      } finally { clearTimeout(initializationTimer); }
       checkTransition();
-      if (!next.active || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(next.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
+      const currentNext = sessions.get(next.id);
+      if (!next.active || !currentNext?.active || currentNext.generation !== next.generation || currentNext.threadId !== next.threadId || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(currentNext.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
       const conversation = terminals.get(next.id)!.getConversation!();
       if (item.draft !== undefined) conversation.restoreRuntimeDraft(item.draft);
       if (item.showing) {
