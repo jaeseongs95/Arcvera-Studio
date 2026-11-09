@@ -1,16 +1,16 @@
 {
   "schema": "desktop171-gui-reconnect-build-v1",
-  "productSource": "41be92c94309bbe7a6a8ef9ca71261494b3a976e",
-  "testSource": "68b4db7e21a22373b82e1d3a7d6e5a8b18995c10",
+  "productSource": "4b79f299021c223c30667332d875f0a5e27eabbb",
+  "testSource": "fa59656064f9b1b202a68952c3d8dbf6741698b2",
   "previousProductSource": "db767f19f966a24d93586178e9f7b128eaf13c6a",
   "previousTestBuild": "b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2",
   "previousExecutableSha256": "97ee2cd96f09a4512889e047aee4ff5831dcc64e4610f38f21f822ec25de147a",
   "purpose": "Build fixed runtime reconnect product as isolated TEST; preserve raw original47 FAIL and original TEST executable. Preparation is input to required actual same-thread/draft GUI acceptance, not completion.",
-  "regularProductCI": "42553424749",
+  "regularProductCI": "42555650433",
   "cases": [
     {
       "id": "SOURCE",
-      "oracle": "Product41be92c src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
+      "oracle": "Product4b79f29 src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
     },
     {
       "id": "BUILD",
@@ -28,7 +28,8 @@
   "knownFailures": [
     "Original97ee/source27 actual47 runtime replacement succeeded but GUI conversation request timeout/WebSocket reset; entire FAIL retained.",
     "Original42502762255 source1 ERR_NO_BUFFER_SPACE attempts1/2 unresolved; this new candidate is distinct.",
-    "32906be regularCI42551072205 bundled settings4F retained; fixture lifecycle corrected; peer active race/new owner cleanup/TUI guard added in41be92c."
+    "32906be regularCI42551072205 bundled settings4F retained; fixture lifecycle corrected; peer active race/new owner cleanup/TUI guard added in41be92c.",
+    "Actual48/49 41be92c new0f1e EXE completed own conversation and picker but CPR/focus misclassified as user composer led preflight refusal/apply0; rawFAILs preserved. D0059 repaired in4b79f29; actual50 pending."
   ],
   "notRun": [
     "Updated actual GUI native selection/replacement/reconnect",
@@ -37,6 +38,6 @@
     "Final complete workunit fresh audit/release",
     "Installation"
   ],
-  "previousPreparedBuild": "9222b5c1097b9d13e5dfcc5c7d5a1fcb0aac45d6",
-  "previousPreparedExecutableSha256": "253b78b17a4d4c5b2f6a935d09d92f062b4b495cc74ab179be4b1cdf2d35e16a"
+  "previousPreparedBuild": "8590cee5b8bbad647459ad33c1e0e36bdc1c5ce0",
+  "previousPreparedExecutableSha256": "0f1e0d7ce186df6628b6d140119c7de6cca7de5cc22d81dc8b3cf02935c56796"
 }
