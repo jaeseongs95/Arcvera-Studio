@@ -1,16 +1,16 @@
 {
   "schema": "desktop171-gui-reconnect-build-v1",
-  "productSource": "32906bec892ecc9655c17e1d2b0117e2e84c7824",
-  "testSource": "d853a5af5c43da7dc06f673a4fe02da9d93ce71f",
+  "productSource": "41be92c94309bbe7a6a8ef9ca71261494b3a976e",
+  "testSource": "68b4db7e21a22373b82e1d3a7d6e5a8b18995c10",
   "previousProductSource": "db767f19f966a24d93586178e9f7b128eaf13c6a",
   "previousTestBuild": "b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2",
   "previousExecutableSha256": "97ee2cd96f09a4512889e047aee4ff5831dcc64e4610f38f21f822ec25de147a",
   "purpose": "Build fixed runtime reconnect product as isolated TEST; preserve raw original47 FAIL and original TEST executable. Preparation is input to required actual same-thread/draft GUI acceptance, not completion.",
-  "regularProductCI": "42551072205",
+  "regularProductCI": "42553424749",
   "cases": [
     {
       "id": "SOURCE",
-      "oracle": "Product32906be src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
+      "oracle": "Product41be92c src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
     },
     {
       "id": "BUILD",
@@ -27,7 +27,8 @@
   ],
   "knownFailures": [
     "Original97ee/source27 actual47 runtime replacement succeeded but GUI conversation request timeout/WebSocket reset; entire FAIL retained.",
-    "Original42502762255 source1 ERR_NO_BUFFER_SPACE attempts1/2 unresolved; this new candidate is distinct."
+    "Original42502762255 source1 ERR_NO_BUFFER_SPACE attempts1/2 unresolved; this new candidate is distinct.",
+    "32906be regularCI42551072205 bundled settings4F retained; fixture lifecycle corrected; peer active race/new owner cleanup/TUI guard added in41be92c."
   ],
   "notRun": [
     "Updated actual GUI native selection/replacement/reconnect",
@@ -35,5 +36,7 @@
     "Direct Windows OS input",
     "Final complete workunit fresh audit/release",
     "Installation"
-  ]
+  ],
+  "previousPreparedBuild": "9222b5c1097b9d13e5dfcc5c7d5a1fcb0aac45d6",
+  "previousPreparedExecutableSha256": "253b78b17a4d4c5b2f6a935d09d92f062b4b495cc74ab179be4b1cdf2d35e16a"
 }
