@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          git diff --exit-code 0ed0ed2967d366c3a60cda9fb992f08698fdbfa0 HEAD -- src src-tauri tests playwright.config.ts package.json package-lock.json .github/workflows/windows.yml
+          git diff --exit-code d853a5af5c43da7dc06f673a4fe02da9d93ce71f HEAD -- src src-tauri tests playwright.config.ts package.json package-lock.json .github/workflows/windows.yml
           if ($LASTEXITCODE -ne 0) { throw 'Frozen TEST candidate changed' }
           $c=Get-Content -LiteralPath src-tauri/tauri.bundle.conf.json -Raw|ConvertFrom-Json
           if ($c.identifier -ne 'io.agentgrid.desktop.test' -or $c.productName -ne 'OpenDIY Desktop TEST' -or $c.app.windows[0].title -ne 'OpenDIY Desktop TEST') { throw 'TEST identity required' }
@@ -44,10 +44,10 @@ jobs:
           $ErrorActionPreference='Stop'
           New-Item -ItemType Directory -Path experiment-artifacts | Out-Null
           Copy-Item -LiteralPath src-tauri/target/release/opendiy-desktop.exe -Destination experiment-artifacts/opendiy-desktop.exe
-          Copy-Item -LiteralPath verification/native-gui-experiment-171/plan.json -Destination experiment-artifacts/experiment-plan.json
+          Copy-Item -LiteralPath verification/native-gui-reconnect-171/plan.json -Destination experiment-artifacts/experiment-plan.json
           $exe=(Resolve-Path experiment-artifacts/opendiy-desktop.exe).Path
           $sha=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          @{ commit='${{ github.sha }}'; run='${{ github.run_id }}'; productSource='db767f19f966a24d93586178e9f7b128eaf13c6a'; testSource='0ed0ed2967d366c3a60cda9fb992f08698fdbfa0'; executableSha256=$sha; kind='isolated-gui-experiment-not-release'; installerCreated=$false; regularValidation='42502762255 failed twice; retained and unresolved'; releaseEligible=$false }|ConvertTo-Json|Set-Content experiment-artifacts/build-info.json -Encoding utf8NoBOM
+          @{ commit='${{ github.sha }}'; run='${{ github.run_id }}'; productSource='32906bec892ecc9655c17e1d2b0117e2e84c7824'; testSource='d853a5af5c43da7dc06f673a4fe02da9d93ce71f'; executableSha256=$sha; kind='isolated-gui-experiment-not-release'; installerCreated=$false; regularValidation='42551072205 product32906be; status checked separately, not inferred from TEST build'; releaseEligible=$false }|ConvertTo-Json|Set-Content experiment-artifacts/build-info.json -Encoding utf8NoBOM
           $report=Join-Path $PWD 'experiment-artifacts/self-test.json'
           $argv=@('--self-test','--duration-seconds','60','--report',('"{0}"' -f $report))
           $started=[DateTime]::UtcNow.ToString('o')
@@ -69,7 +69,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: isolated-test-gui-experiment
+          name: isolated-test-gui-reconnect
           path: experiment-artifacts/
           if-no-files-found: error
           retention-days: 14

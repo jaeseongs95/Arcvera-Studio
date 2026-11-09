@@ -1,0 +1,39 @@
+{
+  "schema": "desktop171-gui-reconnect-build-v1",
+  "productSource": "32906bec892ecc9655c17e1d2b0117e2e84c7824",
+  "testSource": "d853a5af5c43da7dc06f673a4fe02da9d93ce71f",
+  "previousProductSource": "db767f19f966a24d93586178e9f7b128eaf13c6a",
+  "previousTestBuild": "b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2",
+  "previousExecutableSha256": "97ee2cd96f09a4512889e047aee4ff5831dcc64e4610f38f21f822ec25de147a",
+  "purpose": "Build fixed runtime reconnect product as isolated TEST; preserve raw original47 FAIL and original TEST executable. Preparation is input to required actual same-thread/draft GUI acceptance, not completion.",
+  "regularProductCI": "42551072205",
+  "cases": [
+    {
+      "id": "SOURCE",
+      "oracle": "Product32906be src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
+    },
+    {
+      "id": "BUILD",
+      "oracle": "Windows-only Tauri --no-bundle actual release EXE, CI commit/run and SHA256 recorded; no installer or installation."
+    },
+    {
+      "id": "PTY",
+      "oracle": "Same packaged EXE self-test actual exit0, raw report and execution receipt hashed."
+    },
+    {
+      "id": "BOUNDARY",
+      "oracle": "No release eligibility, installation, publication or real GUI claimed from preparation. Current regular CI and final actual GUI independently required."
+    }
+  ],
+  "knownFailures": [
+    "Original97ee/source27 actual47 runtime replacement succeeded but GUI conversation request timeout/WebSocket reset; entire FAIL retained.",
+    "Original42502762255 source1 ERR_NO_BUFFER_SPACE attempts1/2 unresolved; this new candidate is distinct."
+  ],
+  "notRun": [
+    "Updated actual GUI native selection/replacement/reconnect",
+    "First-install without prestart",
+    "Direct Windows OS input",
+    "Final complete workunit fresh audit/release",
+    "Installation"
+  ]
+}
