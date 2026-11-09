@@ -2,7 +2,7 @@
 
 [Home](../README.md) · [한국어](user-guide.ko.md) · [Development](development.md)
 
-This guide describes Desktop 1.2.0. Start with the [installation and support overview](../README.md).
+This guide includes the server-selection changes in Desktop 1.7.1. Start with the [installation and support overview](../README.md).
 
 <a id="runtime"></a>
 
@@ -39,9 +39,9 @@ when unavailable; they are never silently replaced with a separate server.
 
 **Desktop 1.2.0 OpenDIY runtime baseline: OpenDIY Codex R36 CLI with its R36 app-server.** Earlier OpenDIY builds, including R28, are outside the support policy. Use the matching CLI/server package. Official Codex CLI **0.166.0** is supported separately for the basic terminal and session workflow; Extensions are enabled only when the selected CLI and connected server provide the support required by each feature. Schedule control checks the CLI declaration separately from server capabilities.
 
-Existing daemon data and running work are preserved. Selecting an executable does not authorize replacing or stopping another server. Version numbers alone do not establish feature support; the app checks actual declarations.
+Existing daemon data is preserved. Finish work in other Codex windows and on mobile before explicitly selecting a server package. Version numbers alone do not establish feature support; the app checks actual declarations.
 
-In **Settings → Executable settings**, choose the CLI; specifying an app-server separately is optional. Automatic server selection uses the CLI's sibling `codex-app-server.exe`, or the same CLI's built-in server when that sibling is absent. Changing this selection does not replace an existing shared server. Different version numbers alone do not block startup or restoration; connection failures explain their cause and recovery options. A first installation uses the selected CLI's preparation flow and does not automatically replace an existing server.
+In **Settings → Executable settings**, choose the CLI; specifying an app-server separately is optional. Automatic server selection uses the CLI's sibling `codex-app-server.exe`, or the same CLI's built-in server when that sibling is absent. Changing only the CLI selection preserves open terminals. Explicitly choosing an app-server file replaces the managed server when the package and ownership checks permit it, including choosing the same path again. Eligible idle conversations reconnect to the same conversation and directory, preserving plain conversation drafts and the selected view. Work in progress, pending or uncertain operations, attachments and terminal input with unverified preservation block replacement. Finish the work and close the affected session yourself before selecting the server again. A canceled chooser or invalid file keeps the previous runtime usable. A failed or uncertain transition preserves drafts, reports recovery information and never automatically retries the replacement or resends a model request. Different version numbers alone do not block startup or restoration; connection failures explain their cause and recovery options. A first installation uses the selected CLI's preparation flow and does not automatically replace an existing server.
 
 Structured conversation, subagent and manual-compaction controls follow each feature's actual support declaration. The schedule button remains available to manage Desktop definitions; CLI registration and execution controls require runtime support and connection. Support is separate from connection and task readiness. If conversation attachment fails, the app returns to the terminal only after safely releasing input ownership. An uncertain release preserves the draft and input ownership.
 
@@ -123,7 +123,7 @@ Conversation view reads structured runtime history in pages and follows recent e
 not parse terminal text. Earlier pages and large originals are fetched on demand.
 
 Conversation view requires a runtime supporting passive subscriptions and atomic idle user input.
-Selecting a newer executable does not automatically upgrade an already running shared server.
+Selecting a newer CLI alone does not upgrade an already running shared server. Explicit app-server file selection follows the replacement checks above.
 Conversation view checks the connected server and does not itself stop or replace it.
 Use the separately confirmed version transition in executable settings when needed.
 Older servers show a capability limitation; the app does not fall back to operations that can trigger
@@ -291,8 +291,8 @@ daemon through its default proxy. Shared enable, disable and pairing affect all
 conversations on that server. At startup, the app reuses a running daemon or starts
 the installed daemon, then verifies its connection before restoring sessions. A
 failed start leaves saved sessions available for retry. Startup does not replace or
-stop the shared daemon. Changing its version is a separate, confirmed action in
-**Executable settings → Check server versions → Align server version…**.
+stop the shared daemon. To change its version, explicitly select an app-server package under **Executable settings**, or use
+**Check server versions → Align server version…** with its separate confirmation.
 OpenDIY startup uses R36's `--existing-installation` and guarded `--first-installation`
 options. Missing protection options are reported without an individual-server fallback.
 

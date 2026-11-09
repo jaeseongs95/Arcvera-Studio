@@ -40,7 +40,11 @@ does not guarantee a feature. See [runtime selection and server transitions](doc
 3. **Select your CLI.** Open **⚙ Settings → Executable settings** and choose the
    native `codex.exe` or installed `opendiy-codex-launcher.exe`. A server executable
    is selected automatically; specifying one separately is optional. Changing
-   these paths does not replace a running shared server or restart open terminals.
+   the CLI path preserves open terminals. Selecting an app-server file explicitly replaces
+   the managed server when safe and reconnects eligible idle conversations with their drafts.
+   Finish work in other Codex clients first. Sessions with pending work, attachments or
+   terminal input that cannot be preserved block replacement; close those sessions yourself
+   after finishing the work. See [server transitions](docs/user-guide.md#runtime).
 4. **Open a project and a session.** Choose **Import project**, select an existing
    folder, then resume a conversation or create a new session. Use the CLI's own
    interface for model, sign-in and permission prompts. **Shift+Enter** inserts a
