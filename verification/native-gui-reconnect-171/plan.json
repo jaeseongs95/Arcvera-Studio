@@ -1,16 +1,16 @@
 {
   "schema": "desktop171-gui-reconnect-build-v1",
-  "productSource": "65da598eb09255536d3aa0176d3cd1329d987fd0",
-  "testSource": "b8d48c58336f0a296565ba13d88c5ed62d67e6c1",
+  "productSource": "f37fa935c284d16a13a19b192e496b4125c83ce2",
+  "testSource": "fd03928b858c7e137dda68081727a018b5aa0577",
   "previousProductSource": "db767f19f966a24d93586178e9f7b128eaf13c6a",
   "previousTestBuild": "b7fb7b2ba4f92ece17a62e69a643c90a8e62a4d2",
   "previousExecutableSha256": "97ee2cd96f09a4512889e047aee4ff5831dcc64e4610f38f21f822ec25de147a",
   "purpose": "Build fixed runtime reconnect product as isolated TEST; preserve raw original47 FAIL and original TEST executable. Preparation is input to required actual same-thread/draft GUI acceptance, not completion.",
-  "regularProductCI": "42559236821",
+  "regularProductCI": "42561399769",
   "cases": [
     {
       "id": "SOURCE",
-      "oracle": "Product65da598 src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
+      "oracle": "Productf37fa93 src/native/tests/package/regularWindowsworkflow bytes identical except existing exact TEST identity three JSON leaf strings in tauri.bundle.conf.json; only intended workflow and build plan additionally differ."
     },
     {
       "id": "BUILD",
@@ -30,7 +30,8 @@
     "Original42502762255 source1 ERR_NO_BUFFER_SPACE attempts1/2 unresolved; this new candidate is distinct.",
     "32906be regularCI42551072205 bundled settings4F retained; fixture lifecycle corrected; peer active race/new owner cleanup/TUI guard added in41be92c.",
     "Actual48/49 41be92c new0f1e EXE completed own conversation and picker but CPR/focus misclassified as user composer led preflight refusal/apply0; rawFAILs preserved. D0059 repaired in4b79f29; actual50 pending.",
-    "Actual50/52 product4b79/EXEfea7: first/samepath reconnect and invalid preservation PASS but new TUI emitted only initial DSR; no CPR while reconnect gate, final composer invisible FAIL. 51 global output cap overflow incomplete. Originals retained. New65da waits real initial CPR write before conversation attach; same33 RED28P5F/GREEN33P and112 regression pass; updated actual53 required. Arbitrary DSR while owner already true remains separate diagnostic FAIL, not fixed or passed."
+    "Actual50/52 product4b79/EXEfea7: first/samepath reconnect and invalid preservation PASS but new TUI emitted only initial DSR; no CPR while reconnect gate, final composer invisible FAIL. 51 global output cap overflow incomplete. Originals retained. New65da waits real initial CPR write before conversation attach; same33 RED28P5F/GREEN33P and112 regression pass; updated actual53 required. Arbitrary DSR while owner already true remains separate diagnostic FAIL, not fixed or passed.",
+    "Actual53 product65da/TESTfac/EXE8d4ff source27 all4 actual cases exit0: initial/samepath reconnect and invalid preservation, visible unsent TUI refusal+same text/id/gen/thread/active retained, normal app/server cleanup2P. Productf37 changes only 1.7.1 version metadata5files and README/user-guide pair; logic/tests unchanged. Fresh1.7.1 TEST/actual54 required independently."
   ],
   "notRun": [
     "Updated actual GUI native selection/replacement/reconnect",
@@ -39,6 +40,6 @@
     "Final complete workunit fresh audit/release",
     "Installation"
   ],
-  "previousPreparedBuild": "c25d83a4f52c4b3b84850996c8613ce786ff80fb",
-  "previousPreparedExecutableSha256": "fea7d465b2ab7777dc9b99ca234b7b8fe0b9c80270dbfb34a8a92465fcbe38a2"
+  "previousPreparedBuild": "fac4066b64752b4063eee9365aeb6cb10f08a732",
+  "previousPreparedExecutableSha256": "8d4ff2b6dc4c86d0b2200f6296fc9e743ffac4bbacda8495b9899b628e4dfd12"
 }

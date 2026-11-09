@@ -20,7 +20,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          git diff --exit-code b8d48c58336f0a296565ba13d88c5ed62d67e6c1 HEAD -- src src-tauri tests playwright.config.ts package.json package-lock.json .github/workflows/windows.yml
+          git diff --exit-code fd03928b858c7e137dda68081727a018b5aa0577 HEAD -- src src-tauri tests playwright.config.ts package.json package-lock.json .github/workflows/windows.yml
           if ($LASTEXITCODE -ne 0) { throw 'Frozen TEST candidate changed' }
           $c=Get-Content -LiteralPath src-tauri/tauri.bundle.conf.json -Raw|ConvertFrom-Json
           if ($c.identifier -ne 'io.agentgrid.desktop.test' -or $c.productName -ne 'OpenDIY Desktop TEST' -or $c.app.windows[0].title -ne 'OpenDIY Desktop TEST') { throw 'TEST identity required' }
@@ -47,7 +47,7 @@ jobs:
           Copy-Item -LiteralPath verification/native-gui-reconnect-171/plan.json -Destination experiment-artifacts/experiment-plan.json
           $exe=(Resolve-Path experiment-artifacts/opendiy-desktop.exe).Path
           $sha=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          @{ commit='${{ github.sha }}'; run='${{ github.run_id }}'; productSource='65da598eb09255536d3aa0176d3cd1329d987fd0'; testSource='b8d48c58336f0a296565ba13d88c5ed62d67e6c1'; executableSha256=$sha; kind='isolated-gui-experiment-not-release'; installerCreated=$false; regularValidation='42559236821 product65da598; status checked separately, not inferred from TEST build'; releaseEligible=$false }|ConvertTo-Json|Set-Content experiment-artifacts/build-info.json -Encoding utf8NoBOM
+          @{ commit='${{ github.sha }}'; run='${{ github.run_id }}'; productSource='f37fa935c284d16a13a19b192e496b4125c83ce2'; testSource='fd03928b858c7e137dda68081727a018b5aa0577'; executableSha256=$sha; kind='isolated-gui-experiment-not-release'; installerCreated=$false; regularValidation='42561399769 productf37fa93; status checked separately, not inferred from TEST build'; releaseEligible=$false }|ConvertTo-Json|Set-Content experiment-artifacts/build-info.json -Encoding utf8NoBOM
           $report=Join-Path $PWD 'experiment-artifacts/self-test.json'
           $argv=@('--self-test','--duration-seconds','60','--report',('"{0}"' -f $report))
           $started=[DateTime]::UtcNow.ToString('o')
