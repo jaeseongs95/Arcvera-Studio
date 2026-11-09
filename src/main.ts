@@ -1319,7 +1319,7 @@ async function start(request: SavedSession, focus = true, replacement?: SessionR
 $('#create-form').onsubmit = async event => {
   event.preventDefault(); const button = $<HTMLButtonElement>('#create-submit'); button.disabled = true;
   const threadId = $<HTMLInputElement>('#session-thread').value.trim();
-  try { await start({ title: $<HTMLInputElement>('#session-title').value.trim(), cwd: $<HTMLInputElement>('#session-cwd').value.trim(), ...(threadId ? { threadId } : {}), ...(createProjectId !== undefined ? { projectId: createProjectId, projectAssigned: true } : {}) }); $<HTMLDialogElement>('#create-dialog').close(); $<HTMLFormElement>('#create-form').reset(); }
+  try { const opening = start({ title: $<HTMLInputElement>('#session-title').value.trim(), cwd: $<HTMLInputElement>('#session-cwd').value.trim(), ...(threadId ? { threadId } : {}), ...(createProjectId !== undefined ? { projectId: createProjectId, projectAssigned: true } : {}) }); const selectionVersion = projectSelectionVersion; const info = await opening; const dialog = $<HTMLDialogElement>('#create-dialog'); const restoreFocus = dialog.open; dialog.close(); $<HTMLFormElement>('#create-form').reset(); if (restoreFocus && selectionVersion === projectSelectionVersion && isVisible(info.id)) focusSession(info.id); }
   catch (error) { $('#create-error').hidden = false; showError($('#create-error'), error); } finally { button.disabled = false; }
 };
 function renderRestoreList() {
