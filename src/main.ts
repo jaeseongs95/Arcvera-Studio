@@ -523,11 +523,11 @@ function inputError(error: unknown) {
   if (error instanceof InputQueueError && error.reason === 'encoding') return new UiError('바이너리 입력은 0x00–0xFF 바이트만 보낼 수 있습니다. 이 입력은 전송하지 않았습니다.', 'Binary input must contain only 0x00–0xFF bytes. This input was not sent.');
   return error instanceof InputQueueError ? new UiError(error.reason === 'message' ? '한 번에 64KiB 이하로 입력하세요. 이 입력은 전송하지 않았습니다.' : error.reason === 'full' ? '입력 전송 대기열이 가득 찼습니다. 이 입력은 전송하지 않았습니다. 완료 후 다시 시도하세요.' : '대기 중 프로젝트 또는 세션 상태가 변경되어 전송하지 않았습니다.', error.reason === 'message' ? 'Input must be at most 64KiB per operation. This input was not sent.' : error.reason === 'full' ? 'The input queue is full. This input was not sent. Retry after pending writes finish.' : 'Not sent because the project or session state changed while queued.') : error;
 }
-function sendInput(id: string, data: string, binary?: true) {
+function sendInput(id: string, data: string, binary?: true, preserveTerminalDraft = true) {
   const session = sessions.get(id); const view = terminals.get(id);
   if (!session || !view || runtimeReconnecting || !canType(id) || conversationOwners.has(id)) return;
   // Queued, active, and unknown writes may already belong to the TUI composer.
-  view.terminalInputSent = true;
+  if (preserveTerminalDraft) view.terminalInputSent = true;
   void view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
     if (error instanceof InputQueueError && error.reason === 'cancelled') return;
     if (error instanceof InputQueueError && view.inputWarning) return;
@@ -625,7 +625,15 @@ function createTerminal(session: Session) {
   terminals.set(session.id, { terminal, fit, search, card, observer, links, input, resize, inputWarning: false });
   refreshInputState(session.id);
   mountConversation(session);
-  terminal.onData(data => sendInput(session.id, data));
+  // xterm also emits CPR and focus reports through onData. Only user input
+  // intent in this terminal makes composer preservation uncertain.
+  let terminalUserInputObserved = false;
+  const observeTerminalInput = (event: Event) => {
+    if (event instanceof KeyboardEvent && (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock'].includes(event.key) || (event.ctrlKey && event.key.toLowerCase() === 'c' && terminal.hasSelection()))) return;
+    terminalUserInputObserved = true;
+  };
+  for (const name of ['keydown', 'beforeinput', 'paste', 'compositionstart']) terminal.element!.addEventListener(name, observeTerminalInput, { capture: true });
+  terminal.onData(data => sendInput(session.id, data, undefined, terminalUserInputObserved));
   terminal.onBinary(data => sendInput(session.id, data, true));
   terminal.onResize(() => queueResize(session.id));
   terminal.attachCustomKeyEventHandler(event => {

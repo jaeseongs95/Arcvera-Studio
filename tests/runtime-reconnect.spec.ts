@@ -11,6 +11,7 @@ async function setup(page: Page, options: Record<string, unknown> = {}) {
     const listeners = new Map<string, (value: any) => void>();
     const old = { id: 'old', generation: 1, threadId: 'same-thread', cwd: 'D:\\Work', title: '보존할 대화', state: options.state ?? 'idle', active: true, projectId: null, projectAssigned: false, projectRevision: 0 };
     const fixture = state.reconnectFixture = { calls: [] as any[], live: [old], applied: false, starts: 0, selected: false, holdList: options.holdList };
+    (fixture as any).emitOutput = (data: string) => listeners.get('terminal-output')?.({event:'terminal-output',id:1,payload:{id:old.id,generation:old.generation,seq:1,data}});
     const emit = (info: any) => listeners.get('session-changed')?.({ event: 'session-changed', id: 1, payload: { ...info } });
     const settings = () => ({ savedPath: null, resolvedPath: 'D:\\runtime\\codex.exe', source: 'environment', error: null, appServer: { savedPath: fixture.selected ? 'D:\\runtime\\new-server.exe' : null, resolvedPath: 'D:\\runtime\\new-server.exe', source: 'saved', error: null, kind: 'standalone' } });
     state.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
@@ -232,4 +233,13 @@ test('RC-TUI-PRESERVE 전달된 터미널 입력은 지우거나 재송신하지
   expect(await calls(page, 'session_suspend_idle')).toEqual([]);
   expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
   await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
+});
+
+test('RC-AUTO-INPUT real xterm CPR replies do not mark a user composer draft', async ({page}) => {
+ await setup(page);await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();
+ await page.evaluate(()=>(window as any).reconnectFixture.emitOutput('\x1b[6n'));
+ await expect.poll(async()=>(await calls(page,'session_write')).some((x:any)=>/^\x1b\[\d+;\d+R$/.test(x.args.data))).toBe(true);
+ await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();await choose(page);await closeSettings(page);
+ await expect(page.locator('.terminal-card[data-id="new-1"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
+ expect(await calls(page,'apply_runtime_transition')).toHaveLength(1);
 });
