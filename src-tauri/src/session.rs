@@ -173,8 +173,10 @@ impl ProcessControl {
         self.terminate_until(Instant::now() + Duration::from_secs(8))
     }
     fn terminate_until(&self, deadline: Instant) -> Result<(), String> {
+        self.terminate_with(deadline, false, || Ok(()))
+    }
+    fn terminate_with(&self, deadline: Instant, idle_only: bool, before_kill: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let _termination = self.termination.lock().map_err(|_| "session termination lock poisoned")?;
-        #[cfg(windows)] self.cancel_cron();
         // adapter를 회수하는 PTY reaper와 경합하므로 먼저 해당 세션의 제어 핸들만
         // 복제한다. 외부 공유 서버의 프로세스 수명은 이 핸들이 소유하지 않는다.
         let shared = self.adapter.lock().map_err(|_| "session adapter lock poisoned")?.as_ref().and_then(CodexSession::shared_control);
@@ -185,9 +187,20 @@ impl ProcessControl {
                 }
                 return Ok(());
             }
-            self.shared_cleanup_failed.store(true, Ordering::Release);
-            shared.capture_stop(deadline).map(Some)
-        } else { Ok(None) };
+            if idle_only {
+                // Refuse before touching the PTY or marking the session stopped.
+                // This path never captures an active turn for interruption.
+                match shared.capture_idle_stop(deadline) {
+                    Ok(stop) => { self.shared_cleanup_failed.store(true, Ordering::Release); Ok(Some(stop)) },
+                    Err(error) => { self.shared_stop_attempted.store(false, Ordering::Release); return Err(error); },
+                }
+            } else {
+                self.shared_cleanup_failed.store(true, Ordering::Release);
+                shared.capture_stop(deadline).map(Some)
+            }
+        } else if idle_only { return Err("공유 연결의 유휴 상태를 확인할 수 없어 기존 세션을 보존했습니다.".into()); } else { Ok(None) };
+        before_kill()?;
+        #[cfg(windows)] self.cancel_cron();
         let job = self.job.lock().map_err(|_| "owned process job lock poisoned")?;
         let job_result = job.as_ref().map(ProcessJob::terminate).unwrap_or(Ok(()));
         let kill_result = self.killer.lock().map_err(|_| "owned process killer lock poisoned")?.kill().map_err(|e| format!("stop owned PTY: {e}"));
@@ -324,18 +337,28 @@ impl Session {
         self.stop_until(Instant::now() + Duration::from_secs(43))
     }
     fn stop_until(&self, deadline: Instant) -> Result<(), String> {
+        self.stop_with(deadline, false)
+    }
+    fn stop_with(&self, deadline: Instant, idle_only: bool) -> Result<(), String> {
         if self.phase.load(Ordering::Acquire) == 3 {
             return if self.cleanup_failed.load(Ordering::Acquire) { Err("공유 작업 중단 결과가 확인되지 않았습니다. 중단 요청을 재전송하지 않았습니다.".into()) } else { Ok(()) };
         }
-        let status_result = self.request_stop();
         let process = self.process.lock().map_err(|_| "session process lock poisoned")?.clone();
-        let termination_result = if let Some(process) = process { process.terminate_until(deadline) } else { Ok(()) };
+        let termination_result = if idle_only {
+            let process = process.ok_or("session has no live shared process")?;
+            process.terminate_with(deadline, true, || self.request_stop())?;
+            Ok(())
+        } else {
+            let status_result = self.request_stop();
+            let termination_result = if let Some(process) = process { process.terminate_until(deadline) } else { Ok(()) };
+            termination_result.and(status_result)
+        };
         let done = self.done.0.lock().map_err(|_| "session completion lock poisoned")?;
         let remaining = deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(35));
         let (_done_guard, timeout) = self.done.1.wait_timeout_while(done, remaining, |done| !*done).map_err(|_| "session completion lock poisoned")?;
         if timeout.timed_out() { return Err("owned session cleanup has not completed within 35 seconds".into()); }
         if self.cleanup_failed.load(Ordering::Acquire) { return Err("공유 작업 중단 결과가 확인되지 않았습니다. 중단 요청을 재전송하지 않았습니다.".into()); }
-        termination_result.and(status_result)
+        termination_result
     }
 }
 
@@ -677,6 +700,7 @@ impl Engine {
     }
 
     pub fn stop(&self, id: &str, generation: u64) -> Result<(), String> { self.lookup(id, generation)?.stop() }
+    pub fn suspend_idle(&self, id: &str, generation: u64) -> Result<(), String> { self.lookup(id, generation)?.stop_with(Instant::now() + Duration::from_secs(43), true) }
     pub fn acknowledge(&self, id: &str, generation: u64, seq: u64) -> Result<(), String> { self.lookup(id, generation)?.flow.acknowledge(seq) }
     pub fn load_layout(&self) -> Result<serde_json::Value, String> { self.inner.store.lock().map_err(|_| "metadata store lock poisoned")?.load_layout() }
     pub fn save_layout(&self, layout: &serde_json::Value) -> Result<(), String> { self.inner.store.lock().map_err(|_| "metadata store lock poisoned")?.save_layout(layout) }
@@ -998,7 +1022,7 @@ impl Engine {
             runtime.changing = true; runtime.ready = false;
         }
         let _transition = RuntimeTransitionPermit(self.inner.clone());
-        if !replace_existing && self.inner.sessions.lock().map_err(|_| "세션 목록 잠금 실패")?.values().any(|session| session.phase.load(Ordering::Acquire) < 3) {
+        if self.inner.sessions.lock().map_err(|_| "세션 목록 잠금 실패")?.values().any(|session| session.phase.load(Ordering::Acquire) < 3) {
             return Err("앱에 열린 세션이 있습니다. 작업을 마치고 세션을 정리한 뒤 서버를 전환하세요. 서버를 변경하지 않았습니다.".into());
         }
         // No user operation can start after changing=true. Recheck external

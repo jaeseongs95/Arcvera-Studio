@@ -36,7 +36,7 @@ function stateLabels(state: string): [string, string] { return states[state] ?? 
 const sessions = new Map<string, Session>();
 interface QueuedInput { data: string; binary?: true; generation: number; selectionVersion: number }
 interface QueuedResize { generation: number; selectionVersion: number; cols: number; rows: number }
-const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
+const terminals = new Map<string, { terminal: Terminal; fit: FitAddon; search: SearchAddon; card: HTMLElement; observer: ResizeObserver; links: ReturnType<typeof installTerminalExternalLinks>; input: TerminalInputQueue<QueuedInput>; resize: TerminalResizeQueue<QueuedResize>; inputWarning: boolean; terminalInputSent?: boolean; resizeTimer?: ReturnType<typeof setTimeout>; getConversation?: () => ReturnType<typeof createConversation> }>();
 const conversations = new Map<string, ReturnType<typeof createConversation>>();
 const conversationOwners = new Set<string>();
 const contextControls = new Map<string, ReturnType<typeof createContextControls>>();
@@ -525,7 +525,9 @@ function inputError(error: unknown) {
 }
 function sendInput(id: string, data: string, binary?: true) {
   const session = sessions.get(id); const view = terminals.get(id);
-  if (!session || !view || !canType(id) || conversationOwners.has(id)) return;
+  if (!session || !view || runtimeReconnecting || !canType(id) || conversationOwners.has(id)) return;
+  // Queued, active, and unknown writes may already belong to the TUI composer.
+  view.terminalInputSent = true;
   void view.input.enqueue({ data, binary, generation: session.generation, selectionVersion: projectSelectionVersion }).catch(error => {
     if (error instanceof InputQueueError && error.reason === 'cancelled') return;
     if (error instanceof InputQueueError && view.inputWarning) return;
@@ -1037,6 +1039,7 @@ const executableSettings = createExecutableSettings(async <T>(command: string, a
     return result;
   }
   catch (error) {
+    for (const item of reconnects) preserveRuntimeDraft(item);
     // The picker validates before saving. Cancel/error did not change the daemon.
     if (serverSelection) { runtimeTransitionBlocked = previouslyBlocked; shouldPrepare = !previouslyBlocked; }
     throw error;
@@ -1073,8 +1076,8 @@ async function suspendRuntimeSessions(captured: RuntimeReconnect[], checkTransit
   for (const info of latest.filter(info => info.active)) {
     const current = sessions.get(info.id), view = terminals.get(info.id), conversation = conversations.get(info.id);
     const draft = conversation?.runtimeReconnectDraft();
-    if (!current || !view || !info.threadId || info.state !== 'idle' || draft === null || view.card.querySelector<HTMLButtonElement>('.conversation-toggle')!.disabled) {
-      throw new UiError('진행 중인 작업·요청 또는 첨부가 있습니다. 기존 대화와 초안을 보존했습니다. 작업과 첨부를 정리한 뒤 서버를 교체하세요.', 'Work, requests, or attachments are pending. Your conversation and draft are preserved. Finish them before replacing the server.');
+    if (!current || !view || !info.threadId || info.state !== 'idle' || draft === null || view.terminalInputSent || view.card.querySelector<HTMLButtonElement>('.conversation-toggle')!.disabled) {
+      throw new UiError('진행 중인 작업·요청·첨부 또는 보존 여부를 확인할 수 없는 터미널 입력이 있습니다. 기존 대화와 초안을 보존했습니다. 작업을 마친 뒤 해당 세션을 직접 종료하고 서버를 교체하세요.', 'Work, requests, attachments, or terminal input with unverified preservation are present. Your conversation and draft are preserved. Finish the work and close that session before replacing the server.');
     }
     captured.push({ replacement: { id: info.id, generation: info.generation, threadId: info.threadId, projectId: current.projectId, projectAssigned: current.projectAssigned, projectRevision: current.projectRevision }, request: savedSessionMetadata({ ...current, resumeOnStartup: true }), draft, showing: view.card.querySelector('.conversation-toggle')!.getAttribute('aria-pressed') === 'true' });
   }
@@ -1084,8 +1087,8 @@ async function suspendRuntimeSessions(captured: RuntimeReconnect[], checkTransit
     view.card.inert = true; view.input.cancelPending(); view.resize.cancelPending(); clearTimeout(view.resizeTimer);
     await conversations.get(id)?.setVisible(false);
     checkTransition();
-    if (!replacementIdentityCurrent(item.replacement)) throw new UiError('세션 상태가 바뀌어 서버를 교체하지 않았습니다.', 'The session changed. The server was not replaced.');
-    await call('session_stop', { id, generation });
+    if (!replacementIdentityCurrent(item.replacement) || sessions.get(id)?.state !== 'idle') throw new UiError('세션 상태가 바뀌어 서버를 교체하지 않았습니다.', 'The session changed. The server was not replaced.');
+    await call('session_suspend_idle', { id, generation });
     checkTransition();
     const stopped = await call<SessionInfo[]>('list_sessions');
     checkTransition();
@@ -1098,21 +1101,53 @@ async function reconnectRuntimeSessions(captured: RuntimeReconnect[], checkTrans
   for (const item of captured) {
     checkTransition();
     if (exitInProgress || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 세션 상태가 바뀌어 대화를 다시 연결하지 않았습니다. 기존 대화와 초안을 확인하세요.', 'The server was replaced, but the session changed before reconnection. Check the preserved conversation and draft.');
-    const next = await start(item.request, false, item.replacement);
-    checkTransition();
-    if (!next.active || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(next.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
-    const conversation = terminals.get(next.id)!.getConversation!();
-    if (item.draft !== undefined) conversation.restoreRuntimeDraft(item.draft);
-    if (item.showing) {
-      await conversation.setVisible(true);
+    let next: SessionInfo | undefined;
+    try {
+      next = await start(item.request, false, item.replacement);
       checkTransition();
-      if (!replacementCurrent(item.replacement)) throw new UiError('이전 세션이 바뀌어 카드를 교체하지 않았습니다. 기존 초안을 확인하세요.', 'The previous session changed. Its card was not replaced. Check the original draft.');
-      const view = terminals.get(next.id)!;
-      view.card.querySelector<HTMLElement>('.terminal-host')!.hidden = true;
-      view.card.querySelector('.conversation-toggle')!.setAttribute('aria-pressed', 'true');
+      if (!next.active || next.threadId !== item.replacement.threadId || next.cwd !== item.request.cwd || ['error', 'stopping'].includes(next.state) || !replacementCurrent(item.replacement)) throw new UiError('서버는 교체됐지만 같은 대화 연결을 확인하지 못했습니다. 기존 초안을 보존했습니다. 서버 교체를 자동 재시도하지 않습니다.', 'The server was replaced, but reconnection to the same conversation could not be verified. The original draft is preserved. Server replacement will not be retried automatically.');
+      const conversation = terminals.get(next.id)!.getConversation!();
+      if (item.draft !== undefined) conversation.restoreRuntimeDraft(item.draft);
+      if (item.showing) {
+        await conversation.setVisible(true);
+        checkTransition();
+        if (!replacementCurrent(item.replacement)) throw new UiError('이전 세션이 바뀌어 카드를 교체하지 않았습니다. 기존 초안을 확인하세요.', 'The previous session changed. Its card was not replaced. Check the original draft.');
+        const view = terminals.get(next.id)!;
+        view.card.querySelector<HTMLElement>('.terminal-host')!.hidden = true;
+        view.card.querySelector('.conversation-toggle')!.setAttribute('aria-pressed', 'true');
+      }
+      finishSessionReplacement(item.replacement.id, next.id);
+    } catch (error) {
+      preserveRuntimeDraft(item);
+      if (next) {
+        try {
+          const current = sessions.get(next.id);
+          if (!current || current.generation !== next.generation || current.threadId !== item.replacement.threadId) throw new Error('New connection ownership changed; cleanup was not sent.');
+          await call('session_suspend_idle', { id: next.id, generation: next.generation });
+          const latest = await call<SessionInfo[]>('list_sessions');
+          for (const info of latest) if (sessions.has(info.id)) receiveSession(info);
+          const stopped = latest.find(info => info.id === next!.id);
+          if (!stopped || stopped.active || stopped.generation !== next.generation || stopped.threadId !== next.threadId) throw new Error('New connection cleanup could not be confirmed.');
+          removeSession(next.id, true);
+        } catch (cleanupError) {
+          throw new UiError(`연결 복원 실패: ${message(error, 'ko')} · 새 연결 정리 미확인: ${message(cleanupError, 'ko')}`, `Reconnection failed: ${message(error, 'en')} · New connection cleanup unconfirmed: ${message(cleanupError, 'en')}`);
+        }
+      }
+      throw error;
     }
-    finishSessionReplacement(item.replacement.id, next.id);
   }
+}
+
+function preserveRuntimeDraft(item: RuntimeReconnect) {
+  if (!item.draft || replacementIdentityCurrent(item.replacement)) return;
+  const card = terminals.get(item.replacement.id)?.card;
+  if (!card || card.querySelector('.runtime-recovery-draft')) return;
+  const label = document.createElement('label');
+  // A different generation must not receive the previous draft as live input.
+  const draft = document.createElement('textarea'); draft.className = 'runtime-recovery-draft'; draft.readOnly = true; draft.value = item.draft;
+  bindAttribute(draft, 'aria-label', '연결 변경 전 초안 · 복사하여 보관하세요', 'Draft before connection changed · copy to keep');
+  label.textContent = t('연결 변경 전 초안 · 복사하여 보관하세요', 'Draft before connection changed · copy to keep');
+  label.append(draft); card.append(label);
 }
 
 function finishSessionReplacement(id: string, nextId: string) {

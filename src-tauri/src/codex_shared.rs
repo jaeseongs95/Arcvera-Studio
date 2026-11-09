@@ -250,6 +250,11 @@ impl SharedControl {
     }
 
     /// 세대가 확인된 Desktop 세션에서 PTY를 종료하기 전에 원래 작업 ID를 고정한다.
+    pub(crate) fn capture_idle_stop(&self, deadline: Instant) -> Result<SharedStop, String> {
+        let mut proxy = self.endpoint.open_until(None, Some(deadline.min(Instant::now() + STOP_TIMEOUT)))?;
+        capture_supported_idle_stop(proxy.rpc.as_mut().unwrap(), &self.thread_id, &self.cwd)?;
+        Ok(SharedStop { proxy, thread_id: self.thread_id.clone(), cwd: self.cwd.clone(), turn_id: None })
+    }
     pub(crate) fn capture_stop(&self, deadline: Instant) -> Result<SharedStop, String> {
         let mut proxy = self.endpoint.open_until(None, Some(deadline.min(Instant::now() + STOP_TIMEOUT)))?;
         let rpc = proxy.rpc.as_mut().unwrap();
@@ -268,6 +273,17 @@ impl SharedStop {
         // 이 값은 지원을 확인한 동일 연결만 소유한다. 단절 시 재연결·재전송하지 않는다.
         interrupt_exact(self.proxy.rpc.as_mut().unwrap(), &self.thread_id, &self.cwd, self.turn_id.as_deref())
     }
+}
+fn capture_supported_idle_stop<S: Read + Write>(rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path) -> Result<(), String> {
+    if !initialize_stop_rpc(rpc)? { return Err("공유 서버의 유휴 연결 회수 지원을 확인하지 못했습니다. 기존 작업을 보존했습니다.".into()); }
+    require_idle(rpc, thread_id, cwd)
+}
+fn require_idle<S: Read + Write>(rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path) -> Result<(), String> {
+    let thread = read_state(rpc, Some(thread_id), cwd)?.ok_or("회수 대상 대화가 없습니다.")?;
+    if !matches!(thread["status"]["type"].as_str(), Some("idle" | "notLoaded")) {
+        return Err("새 작업 또는 미확인 상태가 관측되어 연결을 회수하지 않았습니다. 기존 작업을 보존했습니다.".into());
+    }
+    Ok(())
 }
 fn capture_supported_stop<S: Read + Write>(rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path) -> Result<Option<String>, String> {
     // 닫기 전용 연결에는 passive 구독이 없다. 관찰자나 다른 연결의 지원을 빌리지 않는다.
@@ -432,6 +448,47 @@ mod expected_interrupt_tests {
             .and_then(|captured| interrupt_exact(&mut rpc, "selected-thread", &cwd, captured.as_deref()));
         drop(rpc);
         (result, worker.join().unwrap())
+    }
+
+
+    fn idle_close_over_socket(states: Vec<&'static str>, supported: bool) -> (Result<(), String>, Vec<Value>) {
+        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+        let server_cwd = cwd.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut ws = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
+            let mut received = Vec::new(); let mut reads = 0;
+            loop {
+                let request: Value = match ws.read() { Ok(Message::Text(text)) => serde_json::from_str(&text).unwrap(), Ok(_) => continue, Err(_) => break };
+                assert!(received.len() < 5, "idle cleanup must be bounded");
+                match request["method"].as_str().unwrap() {
+                    "initialize" => reply(&mut ws, &request, json!({"supportsExpectedTurnInterrupt":supported})),
+                    "initialized" => {},
+                    "thread/read" => { let state = states[reads.min(states.len()-1)]; reads += 1; reply(&mut ws, &request, json!({"thread":{"id":"selected-thread","cwd":server_cwd,"status":{"type":state}}})); },
+                    method => panic!("idle cleanup must never interrupt or enumerate turns: {method}"),
+                }
+                received.push(request);
+            }
+            received
+        });
+        let mut rpc = Rpc { ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:None, deadline:Some(Instant::now()+Duration::from_secs(3)) };
+        let result = capture_supported_idle_stop(&mut rpc, "selected-thread", &cwd).and_then(|()| interrupt_exact(&mut rpc, "selected-thread", &cwd, None));
+        drop(rpc); (result, worker.join().unwrap())
+    }
+    #[test]
+    fn idle_cleanup_refuses_active_unknown_and_new_turn_without_interrupting() {
+        for states in [vec!["active"], vec!["unknown"], vec!["idle", "active"], vec!["notLoaded", "active"]] {
+            let (result, requests) = idle_close_over_socket(states, true);
+            assert!(result.is_err());
+            assert!(requests.iter().all(|r| !matches!(r["method"].as_str(), Some("turn/interrupt" | "thread/turns/list"))));
+        }
+        for state in ["idle", "notLoaded"] { let (result, requests) = idle_close_over_socket(vec![state], true); assert!(result.is_ok(), "{result:?}"); assert_eq!(requests.iter().filter(|r| r["method"] == "thread/read").count(), 2); }
+        let (result, requests) = idle_close_over_socket(vec!["idle"], false);
+        assert!(result.is_err()); assert!(requests.iter().all(|r| r["method"] != "thread/read"));
     }
 
     #[test]

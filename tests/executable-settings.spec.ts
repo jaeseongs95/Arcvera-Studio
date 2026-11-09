@@ -19,6 +19,8 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
     state.settingsFixture.settings.appServer = options.unavailable
       ? { savedPath: null, resolvedPath: null, source: 'unavailable', error: '앱 서버 실행 파일을 찾을 수 없습니다', kind: 'cli' }
       : { savedPath: null, resolvedPath: automaticServerPath, source: 'sibling', error: null, kind: 'standalone' };
+    let owned = { id: 'live-owned', generation: 9, title: '열린 작업', cwd: 'D:\\fixture', threadId: '01900000-0000-7000-8000-000000000001', state: 'idle', active: true };
+    let starts = 0;
     const automaticServer = () => ({ savedPath: null, resolvedPath: state.settingsFixture.settings.resolvedPath === chosenPath ? chosenServerPath : automaticServerPath, source: 'sibling', error: null, kind: 'standalone' });
     state.__TAURI_INTERNALS__ = {
       transformCallback: () => ++callback, unregisterCallback() {},
@@ -30,7 +32,15 @@ async function mockSettings(page: Page, options: { holdChoose?: boolean; holdSer
         if (command === 'set_ui_language') return { show: args.language === 'en' ? 'Open OpenDIY Desktop' : 'OpenDIY Desktop 열기', exit: args.language === 'en' ? 'Exit…' : '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_projects') return [];
-        if (command === 'list_sessions') return [{ id: 'live-owned', generation: 9, title: '열린 작업', cwd: 'D:\\fixture', threadId: '01900000-0000-7000-8000-000000000001', state: 'idle', active: true }];
+        if (command === 'list_sessions') return [structuredClone(owned)];
+        if (command === 'session_suspend_idle') {
+          if (args.id !== owned.id || args.generation !== owned.generation || !owned.active) throw Error('wrong owned connection');
+          owned = { ...owned, active: false, state: 'exited' }; return null;
+        }
+        if (command === 'start_session') {
+          if (owned.active || args.request.threadId !== owned.threadId) throw Error('duplicate or changed thread');
+          owned = { ...owned, ...args.request, id: `reconnected-${++starts}`, generation: 1, state: 'idle', active: true }; return structuredClone(owned);
+        }
         if (command === 'get_codex_settings') { if (fixture.getFailure) throw new Error('설정 파일을 읽을 수 없습니다'); return fixture.settings; }
         if (command === 'choose_codex_executable') {
           const choice = ++fixture.choices;
@@ -178,7 +188,9 @@ test('앱 서버 자동짝 선택과 수동 선택·취소·저장 실패·자�
   await page.screenshot({ path: testInfo.outputPath('runtime-pair-settings-minimum.png'), fullPage: true });
   const calls = await page.evaluate(() => (window as any).settingsFixture.calls);
   expect(calls.filter((call: any) => call.command === 'set_app_server_executable')).toEqual([{ command: 'set_app_server_executable', args: { path: null } }]);
-  expect(calls.filter((call: any) => ['start_session', 'session_stop', 'complete_exit'].includes(call.command))).toEqual([]);
+  expect(calls.filter((call: any) => call.command === 'session_suspend_idle')).toHaveLength(2);
+  expect(calls.filter((call: any) => call.command === 'start_session')).toHaveLength(2);
+  expect(calls.filter((call: any) => ['session_stop', 'complete_exit'].includes(call.command))).toEqual([]);
 });
 
 test('새 서버 선택은 별도 버전 맞추기 없이 교체하며 같은 경로의 명시 재선택도 적용한다', async ({ page }) => {

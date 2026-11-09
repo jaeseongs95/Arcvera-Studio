@@ -34,7 +34,14 @@ async function setup(page: Page, options: Record<string, unknown> = {}) {
           fixture.selected = true; return settings();
         }
         if (command === 'runtime_transition_preview') return { canApply: true, fingerprint: 'known-selection', reason: null };
-        if (command === 'session_stop') {
+        if (command === 'session_suspend_idle') {
+          const target = fixture.live.find((s: any) => s.id === args.id);
+          if (!target || target.generation !== args.generation) throw Error('wrong generation');
+          if (args.id !== old.id) {
+            if (options.cleanupFailure) throw Error('new cleanup unknown');
+            Object.assign(target, { state: 'exited', active: false }); emit(target); return null;
+          }
+          if (options.nativeActiveRace) throw Error('new active turn preserved');
           if (options.stopFailure) throw Error('종료를 확인할 수 없습니다.');
           if (args.id !== old.id || args.generation !== old.generation) throw Error('wrong generation');
           Object.assign(old, { state: 'exited', active: false }); emit(old); return null;
@@ -51,11 +58,14 @@ async function setup(page: Page, options: Record<string, unknown> = {}) {
           if (options.resumeFailure) throw Error('동일 대화 재연결 실패');
           if (args.request.threadId && fixture.live.some((s: any) => s.active && s.threadId === args.request.threadId)) throw Error('duplicate active thread');
           const info = { ...args.request, id: `new-${++fixture.starts}`, generation: 1, threadId: args.request.threadId ?? 'other-thread', state: 'idle', active: true };
-          fixture.live.push(info); emit(info); return info;
+          fixture.live.push(info); emit(info);
+          if (options.changedAfterStart) { old.generation++; emit(old); }
+          return info;
         }
         if (command === 'choose_conversation_attachments') return [{ type: 'file', path: 'D:\\Work\\draft.txt', name: 'draft.txt' }];
         if (command === 'conversation_request') {
           const kind = args.request.type;
+          if (kind === 'detach' && args.id === old.id && fixture.selected && options.activeDuringDetach) { old.state = 'running'; emit(old); }
           if (kind === 'contextStatus') return { passiveSubscriptionSupported: true, connected: true, canCompact: false, compactSupported: false };
           if (kind === 'attach' && args.id !== old.id && options.attachFailure) throw Error('새 연결의 구독 실패');
           if (kind === 'attach') return { threadId: 'same-thread', model: 'fixture-model', reasoningEffort: 'high' };
@@ -97,9 +107,9 @@ test('RC-RECONNECT 교체 전 연결을 정리하고 같은 대화·초안·보�
   await expect(next.locator('.conversation-input')).toHaveValue('초안 보존 한글🙂');
   await expect(page.locator('.terminal-card')).toHaveCount(1);
   const sequence = await page.evaluate(() => (window as any).reconnectFixture.calls.map((c: any) => c.command));
-  expect(sequence.indexOf('session_stop')).toBeLessThan(sequence.indexOf('apply_runtime_transition'));
+  expect(sequence.indexOf('session_suspend_idle')).toBeLessThan(sequence.indexOf('apply_runtime_transition'));
   expect(sequence.indexOf('apply_runtime_transition')).toBeLessThan(sequence.indexOf('start_session'));
-  expect(await calls(page, 'session_stop')).toEqual([{ command: 'session_stop', args: { id: 'old', generation: 1 } }]);
+  expect(await calls(page, 'session_suspend_idle')).toEqual([{ command: 'session_suspend_idle', args: { id: 'old', generation: 1 } }]);
   expect(await calls(page, 'start_session')).toHaveLength(1);
   expect((await calls(page, 'start_session'))[0].args.request).toMatchObject({ threadId: 'same-thread', cwd: 'D:\\Work' });
   expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
@@ -109,7 +119,7 @@ test('RC-RECONNECT 교체 전 연결을 정리하고 같은 대화·초안·보�
 for (const state of ['running', 'waiting', 'unknown']) test(`RC-UNSAFE ${state} 작업은 서버 교체 전에 보존한다`, async ({ page }) => {
   await setup(page, { state }); await choose(page); await closeSettings(page);
   await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
-  expect(await calls(page, 'session_stop')).toHaveLength(0);
+  expect(await calls(page, 'session_suspend_idle')).toHaveLength(0);
   expect(await calls(page, 'apply_runtime_transition')).toHaveLength(0);
   expect(await calls(page, 'start_session')).toHaveLength(0);
 });
@@ -120,7 +130,7 @@ test('RC-UNSAFE 첨부 초안은 종료·교체·첨부 정리 없이 보존한�
   await expect(page.locator('.conversation-attachment')).toContainText('draft.txt');
   await choose(page); await closeSettings(page);
   await expect(page.locator('.conversation-attachment')).toContainText('draft.txt');
-  for (const command of ['session_stop', 'apply_runtime_transition', 'cleanup_conversation_attachment']) expect(await calls(page, command)).toEqual([]);
+  for (const command of ['session_suspend_idle', 'apply_runtime_transition', 'cleanup_conversation_attachment']) expect(await calls(page, command)).toEqual([]);
 });
 
 test('RC-STOPFAIL 종료 미확인은 교체와 새 연결을 시작하지 않고 초안을 남긴다', async ({ page }) => {
@@ -142,7 +152,7 @@ for (const selection of ['cancel', 'error']) test(`RC-CANCEL-ERROR ${selection} 
   await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
   await page.locator('#new-session').click(); await page.locator('#session-title').fill('다른 대화'); await page.locator('#session-cwd').fill('D:\\Work'); await page.locator('#create-submit').click();
   await expect.poll(async () => (await calls(page, 'start_session')).length, { timeout: 5000 }).toBe(1);
-  expect(await calls(page, 'session_stop')).toEqual([]);
+  expect(await calls(page, 'session_suspend_idle')).toEqual([]);
   expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
 });
 
@@ -173,6 +183,8 @@ for (const failure of ['resumeFailure', 'attachFailure']) test(`RC-RECONNECT ${f
   await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
   expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
   expect(await calls(page, 'start_session')).toHaveLength(1);
+  await expect(page.locator('.terminal-card')).toHaveCount(1);
+  expect(await page.evaluate(() => (window as any).reconnectFixture.live.filter((s: any) => s.active))).toHaveLength(0);
 });
 
 test('RC-UNSAFE 늦은 소유권 조회 동안 새 입력을 막고 교체 후 해제한다', async ({ page }) => {
@@ -181,9 +193,43 @@ test('RC-UNSAFE 늦은 소유권 조회 동안 새 입력을 막고 교체 후 �
   await expect.poll(async () => page.evaluate(() => typeof (window as any).reconnectFixture.releaseList)).toBe('function');
   await closeSettings(page);
   await expect(page.locator('.terminal-card[data-id="old"]')).toHaveJSProperty('inert', true);
-  expect(await calls(page, 'session_stop')).toEqual([]);
+  expect(await calls(page, 'session_suspend_idle')).toEqual([]);
   expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
   await page.evaluate(() => (window as any).reconnectFixture.releaseList());
   await expect(page.locator('.terminal-card[data-id="new-1"]')).toBeVisible();
   await expect(page.locator('.terminal-card[data-id="new-1"]')).toHaveJSProperty('inert', false);
+});
+
+for (const race of ['activeDuringDetach', 'nativeActiveRace']) test(`RC-IDLE-ONLY ${race} 새 작업은 보존하고 교체하지 않는다`, async ({ page }) => {
+  await setup(page, { [race]: true }); await choose(page); await closeSettings(page);
+  await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
+  expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
+  expect(await calls(page, 'start_session')).toEqual([]);
+  if (race === 'activeDuringDetach') expect(await calls(page, 'session_suspend_idle')).toEqual([]);
+  expect(await page.evaluate(() => (window as any).reconnectFixture.live.filter((s: any) => s.active))).toHaveLength(1);
+});
+test('RC-FAILED-NEW-OWNER start 이후 세대변경은 새 연결만 회수하고 원카드를 보존한다', async ({ page }) => {
+  await setup(page, { changedAfterStart: true }); await choose(page); await closeSettings(page);
+  await expect(page.locator('.terminal-card')).toHaveCount(1);
+  await expect(page.locator('.terminal-card[data-id="old"] .runtime-recovery-draft')).toHaveValue('초안 보존 한글🙂');
+  expect(await page.evaluate(() => (window as any).reconnectFixture.live.filter((s: any) => s.active))).toHaveLength(0);
+});
+test('RC-FAILED-NEW-OWNER 정리 미확인은 오류와 원초안을 유지하고 재송신하지 않는다', async ({ page }) => {
+  await setup(page, { attachFailure: true, cleanupFailure: true }); await choose(page);
+  await expect(page.locator('#codex-settings-error')).toContainText('새 연결 정리 미확인');
+  expect(await calls(page, 'apply_runtime_transition')).toHaveLength(1);
+  expect(await calls(page, 'start_session')).toHaveLength(1);
+  await closeSettings(page);
+  await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
+});
+test('RC-TUI-PRESERVE 전달된 터미널 입력은 지우거나 재송신하지 않고 교체를 거부한다', async ({ page }) => {
+  await setup(page);
+  await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();
+  await page.locator('.terminal-card[data-id="old"] .xterm-helper-textarea').pressSequentially('unsent-composer');
+  await expect.poll(async () => (await calls(page, 'session_write')).length).toBeGreaterThan(0);
+  await page.locator('.terminal-card[data-id="old"] .conversation-toggle').click();
+  await choose(page); await closeSettings(page);
+  expect(await calls(page, 'session_suspend_idle')).toEqual([]);
+  expect(await calls(page, 'apply_runtime_transition')).toEqual([]);
+  await expect(page.locator('.terminal-card[data-id="old"] .conversation-input')).toHaveValue('초안 보존 한글🙂');
 });

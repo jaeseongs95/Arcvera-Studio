@@ -103,6 +103,11 @@ async fn session_stop(engine: State<'_, Engine>, id: String, generation: u64) ->
     native_worker(move || engine.stop(&id, generation)).await.map_err(|e| format!("terminal cleanup worker: {e}"))?
 }
 #[tauri::command]
+async fn session_suspend_idle(engine: State<'_, Engine>, id: String, generation: u64) -> Result<(), String> {
+    let engine = engine.inner().clone();
+    native_worker(move || engine.suspend_idle(&id, generation)).await.map_err(|e| format!("idle connection cleanup worker: {e}"))?
+}
+#[tauri::command]
 fn session_output_ack(engine: State<'_, Engine>, id: String, generation: u64, seq: u64) -> Result<(), String> { desktop_updates::with_native_operation(|| engine.acknowledge(&id, generation, seq)) }
 #[tauri::command]
 fn load_layout(engine: State<'_, Engine>) -> Result<serde_json::Value, String> { desktop_updates::with_native_operation(|| engine.load_layout()) }
@@ -441,7 +446,7 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![relay::relay_status, relay::relay_connect, relay::relay_disconnect, desktop_updates::get_update_preferences, desktop_updates::set_update_preferences, desktop_updates::check_desktop_update, desktop_updates::install_desktop_update, desktop_updates::check_codex_update, desktop_updates::install_codex_update, external_links::open_external_url, get_ui_language, set_ui_language, prepare_runtime, start_session, list_sessions, session_write, session_resize, session_stop, session_output_ack, load_layout, save_layout, list_external, list_projects, import_project, create_project, rename_project, set_project_favorite, reorder_project, delete_project, move_session_to_project, choose_project_folder, choose_project, catalog_list, catalog_preview, get_codex_settings, runtime_compatibility, runtime_pair_status, runtime_transition_preview, apply_runtime_transition, set_codex_executable, choose_codex_executable, set_app_server_executable, choose_app_server_executable, extensions_list, extensions_mutate, choose_skill_folder, mobile_control, cron_request, saved_cron_list, saved_cron_save, saved_cron_delete, saved_cron_register, subagents_request, conversation_request, list_pending_questions, respond_pending_question, choose_conversation_attachments, conversation_attachment_storage, stage_conversation_image, cleanup_conversation_attachment, weekly_usage, unconfirmed_exit_available, complete_exit])
+        .invoke_handler(tauri::generate_handler![relay::relay_status, relay::relay_connect, relay::relay_disconnect, desktop_updates::get_update_preferences, desktop_updates::set_update_preferences, desktop_updates::check_desktop_update, desktop_updates::install_desktop_update, desktop_updates::check_codex_update, desktop_updates::install_codex_update, external_links::open_external_url, get_ui_language, set_ui_language, prepare_runtime, start_session, list_sessions, session_write, session_resize, session_stop, session_suspend_idle, session_output_ack, load_layout, save_layout, list_external, list_projects, import_project, create_project, rename_project, set_project_favorite, reorder_project, delete_project, move_session_to_project, choose_project_folder, choose_project, catalog_list, catalog_preview, get_codex_settings, runtime_compatibility, runtime_pair_status, runtime_transition_preview, apply_runtime_transition, set_codex_executable, choose_codex_executable, set_app_server_executable, choose_app_server_executable, extensions_list, extensions_mutate, choose_skill_folder, mobile_control, cron_request, saved_cron_list, saved_cron_save, saved_cron_delete, saved_cron_register, subagents_request, conversation_request, list_pending_questions, respond_pending_question, choose_conversation_attachments, conversation_attachment_storage, stage_conversation_image, cleanup_conversation_attachment, weekly_usage, unconfirmed_exit_available, complete_exit])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if !window.state::<ExitState>().0.load(Ordering::Acquire) {
