@@ -8,6 +8,13 @@ import { expect, test, type Page } from '@playwright/test';
  * 통합 담당이 실행 기록을 남긴다. 작성 시점에는 미실행이다.
  */
 async function fixture(page: Page, options: { unsupported?: boolean; count?: number } = {}) {
+  // Explicit, test-only sensitivity probe. The production module has no fallback.
+  if (process.env.SUBAGENT_TEST_MUTATION === 'remove-delete-confirmation-guard') await page.route('**/src/subagent-manager.ts', async route => {
+    const response = await route.fetch(); const source = await response.text();
+    const mutated = source.replace('deletable(agent) && !!deleteSnapshot', 'true');
+    expect(mutated, 'The intended product guard must be present for this mutation').not.toBe(source);
+    await route.fulfill({ response, body: mutated });
+  });
   await page.goto('/');
   await page.clock.install({ time: new Date('2030-01-02T03:04:05Z') });
   await page.evaluate(async ({ unsupported, count }) => {
@@ -63,6 +70,13 @@ async function completedAgent(page: Page, count = 1) {
   await page.evaluate(() => Object.assign((window as any).subagentFixture.snapshot.agents[0], { status: 'completed', activeTurnId: null }));
   await refresh(page);
 }
+
+test('삭제 확인이 없으면 합성 클릭 이벤트도 변경 요청을 만들지 않는다', async ({ page }) => {
+  await completedAgent(page);
+  await page.locator('.subagent-confirm-delete').evaluate(button => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  expect(await mutations(page)).toEqual([]);
+  await expect(page.locator('.subagent-row')).toHaveCount(1);
+});
 
 test('삭제는 미리보기 후 이름과 복구 불가를 확인하고 취소할 수 있다', async ({ page }) => {
   await completedAgent(page); await page.locator('.subagent-prompt').fill('보존할 초안'); await page.locator('.subagent-delete').click();
