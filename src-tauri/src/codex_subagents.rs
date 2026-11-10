@@ -499,6 +499,40 @@ mod tests {
             assert!(delete_request(value.to_string()).validate().is_err());
         }
     }
+    #[test]
+    fn subagents_delete_preview_binds_loaded_and_stored_runtime_generations() {
+        for condition in ["loaded_same","loaded_changed","loaded_to_cold","cold_same","cold_to_loaded","cold_wrong_parent","cold_bad_revision","cold_nonzero_activity"] {
+            let cold=condition.starts_with("cold_");
+            let mut listed=terminal_page();
+            if cold {listed["agents"][0]["runtimeId"]=Value::Null;listed["agents"][0]["status"]=json!("closed");}
+            let mut state=State::default();state.page(PARENT,listed).unwrap();
+            let mut snapshot=cleanup_test_snapshot();
+            let stored=format!("stored-v1:{PARENT_RUNTIME}:{}","a".repeat(40));
+            match condition {
+                "loaded_changed"=>snapshot["runtimeId"]=json!(PARENT_RUNTIME),
+                "loaded_to_cold"|"cold_same"=>{snapshot["runtimeId"]=json!(stored);snapshot["activityRevision"]=json!(0);},
+                "cold_wrong_parent"=>{snapshot["runtimeId"]=json!(format!("stored-v1:{RUNTIME}:{}","a".repeat(40)));snapshot["activityRevision"]=json!(0);},
+                "cold_bad_revision"=>{snapshot["runtimeId"]=json!(format!("stored-v1:{PARENT_RUNTIME}:bad"));snapshot["activityRevision"]=json!(0);},
+                "cold_nonzero_activity"=>{snapshot["runtimeId"]=json!(stored);snapshot["activityRevision"]=json!(1);},
+                _=>{},
+            }
+            let (mut rpc,mut peer)=raw_rpc();
+            let server=thread::spawn(move|| {
+                initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));
+                let check=read(&mut peer);assert_eq!(check["method"],LIST);
+                reply(&mut peer,&check["id"],json!({"parentThreadId":PARENT,"parentRuntimeId":PARENT_RUNTIME,"mutationState":"clear"}));
+                let preview=read(&mut peer);assert_eq!(preview["method"],CLEANUP);assert_eq!(preview["params"]["confirmed"],false);
+                reply(&mut peer,&preview["id"],json!({"results":[{"threadId":CHILD,"outcome":"eligible","snapshot":snapshot}]}));
+                assert!(peer.read().is_err());
+            });
+            let request=SubagentRequest::PreviewDelete {agent_id:CHILD.into(),expected_parent_runtime_id:PARENT_RUNTIME.into(),expected_runtime_id:if cold {None} else {Some(RUNTIME.into())}};
+            let result=exchange(&connection().0,&mut state,&mut rpc,PARENT,&request,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT);
+            drop(rpc);server.join().unwrap();
+            let allowed=matches!(condition,"loaded_same"|"cold_same");
+            assert_eq!(result.is_ok(),allowed,"{condition}: {result:?}");
+            assert_eq!(state.delete_preview.is_some(),allowed,"{condition}");assert!(state.receipts.is_empty());
+        }
+    }
     fn raw_rpc() -> (Rpc<TcpStream>,WebSocket<TcpStream>) {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();
         let stream=TcpStream::connect(listener.local_addr().unwrap()).unwrap();
