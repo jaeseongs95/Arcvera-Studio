@@ -356,7 +356,8 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
         let result=cleanup_result(&response,agent_id)?;
         let status=match result["outcome"].as_str() {
             Some("deleted")=>"applied",
-            Some("preserved"|"changed"|"protected"|"not_found"|"busy"|"pending_user_queue"|"unfinished_goal"|"has_descendants"|"writer_owned"|"reference_publication_busy"|"unsupported_store"|"persistent_graph_unavailable"|"pending_agent_mail"|"ownership_unverified"|"runtime_busy"|"runtime_not_terminal"|"terminal_turn_unverified"|"terminal_turn_mismatch"|"terminal_turn_in_progress")=>"notApplied",
+            Some("preserved"|"changed"|"protected"|"not_found"|"busy"|"pending_user_queue"|"unfinished_goal"|"has_descendants"|"writer_owned"|"reference_publication_busy"|"reference_participants_unverified"|"unsupported_store"|"persistent_graph_unavailable"|"pending_agent_mail"|"ownership_unverified"|"runtime_busy"|"runtime_not_terminal"|"terminal_turn_unverified"|"terminal_turn_mismatch"|"terminal_turn_in_progress")=>"notApplied",
+            Some(outcome) if outcome.starts_with("storage_rejected_before_deletion: ")=>"notApplied",
             _=>return Err("삭제 처리 결과를 확인하지 못했습니다.".into()),
         };
         state.receipts.get_mut(request_id).unwrap().status=status;state.unresolved=None;state.unresolved_runtime=None;
