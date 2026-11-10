@@ -76,7 +76,7 @@ pub enum SkillImportScope { User, Project }
 fn admission() -> Result<std::sync::MutexGuard<'static, ()>, String> {
     EXTENSIONS_REQUEST.try_lock().map_err(|error| match error {
         std::sync::TryLockError::WouldBlock => "Another extension operation is in progress; wait for its result before retrying".into(),
-        std::sync::TryLockError::Poisoned(_) => "Extension operation lock is damaged; restart OpenDIY Desktop".into(),
+        std::sync::TryLockError::Poisoned(_) => "Extension operation lock is damaged; restart Arcvera-Studio".into(),
     })
 }
 /// A non-Send permit covers an entire management operation, including its

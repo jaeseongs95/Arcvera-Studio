@@ -39,7 +39,7 @@ async function workspace(page: Page, fixtureSessions = sessions) {
         if (command === 'plugin:event|listen') { listeners.set(args.event, callbacks.get(args.handler)!); return callback; }
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
+        if (command === 'set_ui_language') return { show: 'Arcvera-Studio 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_sessions') { if (flow.holdMetadata) await new Promise<void>(resolve => metadata.push(resolve)); return sessions; }
         if (command === 'list_projects') return sessions.map(item => ({ id: item.id, name: item.title, cwd: item.cwd, createdAt: 1 }));

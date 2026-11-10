@@ -1,4 +1,4 @@
-// Opt-in test of a root-launched packaged OpenDIY Desktop WebView2. Never starts a browser,
+// Opt-in test of a root-launched packaged Arcvera-Studio WebView2. Never starts a browser,
 // changes global config, approves a terminal prompt, or sends Enter to a terminal.
 // Opt-in executable settings tests change only the fresh isolated fixture database.
 import assert from 'node:assert/strict';
@@ -198,11 +198,11 @@ try {
       const matches = [];
       for (const context of browser.contexts()) for (const candidate of context.pages()) {
         let url; try { url = new URL(candidate.url()); } catch { continue; }
-        if (url.hostname === 'tauri.localhost' && ['http:', 'https:'].includes(url.protocol) && !url.searchParams.has('demo') && await candidate.title() === 'OpenDIY Desktop') matches.push(candidate);
+        if (url.hostname === 'tauri.localhost' && ['http:', 'https:'].includes(url.protocol) && !url.searchParams.has('demo') && await candidate.title() === 'Arcvera-Studio') matches.push(candidate);
       }
-      assert(matches.length <= 1, 'Multiple OpenDIY Desktop targets found; refusing ambiguous ownership');
+      assert(matches.length <= 1, 'Multiple Arcvera-Studio targets found; refusing ambiguous ownership');
       return matches;
-    }, matches => matches.length === 1, 'exactly one OpenDIY Desktop tauri.localhost target');
+    }, matches => matches.length === 1, 'exactly one Arcvera-Studio tauri.localhost target');
     page = candidates[0]; page.setDefaultTimeout(10_000);
     page.on('pageerror', error => report.errors.push(shortError(error)));
     page.on('dialog', async dialog => {
@@ -220,7 +220,7 @@ try {
     return { title: await page.title(), origin: new URL(page.url()).origin, initialTiles: 0 };
   });
   if (process.env.AGENT_GRID_NATIVE_PROJECT_PICKER === '1') {
-    assert(process.env.AGENT_GRID_WORKSPACE_DIR && path.isAbsolute(process.env.AGENT_GRID_WORKSPACE_DIR), 'Picker validation requires an explicitly isolated OpenDIY Desktop workspace');
+    assert(process.env.AGENT_GRID_WORKSPACE_DIR && path.isAbsolute(process.env.AGENT_GRID_WORKSPACE_DIR), 'Picker validation requires an explicitly isolated Arcvera-Studio workspace');
     await check('native project picker cancel preserves empty isolated registry', async () => {
       assert.equal((await nativeCall('list_projects')).length, 0, 'Fixture workspace must start with no imported projects');
       const picker = await projectPicker('Cancel');
@@ -303,7 +303,7 @@ try {
       assert.equal(await page.locator('#language-select').inputValue(), 'en');
       assert.equal(await page.evaluate(() => localStorage.getItem('agent-grid-language')), 'en');
       const menu = await nativeCall('set_ui_language', { language: 'en' });
-      assert.deepEqual(menu, { show: 'Open OpenDIY Desktop', exit: 'Exit…' }, 'Native menu readback did not match English');
+      assert.deepEqual(menu, { show: 'Open Arcvera-Studio', exit: 'Exit…' }, 'Native menu readback did not match English');
       let invalidRejected = false;
       try { await nativeCall('set_ui_language', { language: 'unsupported-language' }); } catch { invalidRejected = true; }
       assert(invalidRejected, 'Native language command silently accepted an unsupported value');
@@ -346,7 +346,7 @@ try {
       await openSettings();
       await page.locator('#language-select').selectOption('ko');
       await until(() => page.locator('html').getAttribute('lang'), value => value === 'ko', '한국어 복원 완료');
-      assert.deepEqual(await nativeCall('set_ui_language', { language: 'ko' }), { show: 'OpenDIY Desktop 열기', exit: '종료…' });
+      assert.deepEqual(await nativeCall('set_ui_language', { language: 'ko' }), { show: 'Arcvera-Studio 열기', exit: '종료…' });
       await page.locator('#settings-close').click();
       for (const previous of retained) await previous.screen?.dispose();
     }
@@ -498,7 +498,7 @@ try {
       await check('native invalid executable choice exposes error and preserves saved setting and live PTYs', async () => {
         const before = await nativeCall('get_codex_settings');
         const invalidExecutable = path.join(outDir, 'invalid-native-cli.exe');
-        await writeFile(invalidExecutable, 'OpenDIY Desktop fixture: this is not a Windows PE executable.\n', { encoding: 'utf8', flag: 'wx' });
+        await writeFile(invalidExecutable, 'Arcvera-Studio fixture: this is not a Windows PE executable.\n', { encoding: 'utf8', flag: 'wx' });
         const picker = await executablePicker('Select', invalidExecutable);
         await page.locator('#codex-settings-error').waitFor({ state: 'visible' });
         const visibleError = (await page.locator('#codex-settings-error').textContent()) ?? '';

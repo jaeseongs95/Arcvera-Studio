@@ -31,7 +31,7 @@ pub(crate) fn update_version_with_executable(exe: &OsString, cancelled: &Arc<Ato
     Ok(text.into())
 }
 
-const TOKEN_ENV: &str = "AGENT_GRID_REMOTE_TOKEN";
+const TOKEN_ENV: &str = "ARCVERA_STUDIO_REMOTE_TOKEN";
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const HELP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FRAME: usize = 8 * 1024 * 1024;
@@ -245,7 +245,7 @@ fn tui_command(exe: &OsString, cwd: &Path, endpoint: &str, token: &str, id: Opti
 }
 
 fn initialize() -> Value {
-    json!({"clientInfo":{"name":"agent_grid","title":"OpenDIY Desktop","version":env!("CARGO_PKG_VERSION")}})
+    json!({"clientInfo":{"name":"arcvera_studio","title":"Arcvera-Studio","version":env!("CARGO_PKG_VERSION")}})
 }
 
 fn is_response_for(message: &Value, id: u64) -> bool {
@@ -443,7 +443,7 @@ fn launch_server_with_cancellation(exe: &OsString, cwd: &Path, thread_id: Option
     check_cancelled(cancelled.as_ref())?;
     // Opt-in namespace isolates this owned process from all existing servers'
     // enrollment records. Older CLIs remain usable with mobile mutations gated.
-    let remote_client_name = namespaced_remote.then(|| format!("opendiy-desktop-{}", Uuid::new_v4().simple()));
+    let remote_client_name = namespaced_remote.then(|| format!("arcvera-studio-{}", Uuid::new_v4().simple()));
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let endpoint = format!("ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
     drop(listener);

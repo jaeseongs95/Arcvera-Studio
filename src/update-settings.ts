@@ -40,7 +40,7 @@ export function createUpdateSettings({ host, call }: Options) {
   const yes = prompt.querySelector<HTMLButtonElement>('.update-yes')!;
   const no = prompt.querySelector<HTMLButtonElement>('.update-no')!;
   const result = prompt.querySelector<HTMLElement>('.update-install-result')!;
-  const name = (target: Target) => target === 'desktop' ? 'OpenDIY Desktop' : 'OpenDIY Codex';
+  const name = (target: Target) => target === 'desktop' ? 'Arcvera-Studio' : 'OpenDIY Codex';
   function message(snapshot?: Snapshot) {
     if (!snapshot) return t('아직 확인하지 않았습니다.', 'Not checked yet.');
     const versions = snapshot.latestVersion ? `${snapshot.currentVersion} → ${snapshot.latestVersion}` : snapshot.currentVersion;

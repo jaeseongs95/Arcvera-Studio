@@ -13,7 +13,7 @@ async function workspace(page: Page) {
         state.settingsPopupCalls.push({ command, args });
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
+        if (command === 'set_ui_language') return { show: 'Arcvera-Studio 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_projects') return projects;
         if (command === 'list_sessions') return Array.from({ length: 12 }, (_, index) => ({ id: `session-${index}`, title: `열린 작업 ${index + 1}`, cwd: projects[0].cwd, generation: 1, state: 'idle', active: true }));

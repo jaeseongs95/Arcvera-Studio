@@ -98,7 +98,7 @@ test('US08 simultaneous product offers are queued without installing either prod
   await setup(page);
   await page.evaluate(() => { (window as any).snapshots.codex = { status: 'available', currentVersion: 'r37', latestVersion: 'r38', installSupported: true }; });
   await page.locator('input').check();
-  await expect(page.locator('.update-confirmation')).toContainText('OpenDIY Desktop');
+  await expect(page.locator('.update-confirmation')).toContainText('Arcvera-Studio');
   await expect.poll(() => page.evaluate(() => (window as any).updateCalls.filter((c: any) => c.command.startsWith('check_')).length)).toBe(2);
   await page.getByRole('button', { name: '아니오', exact: true }).click();
   await expect(page.locator('.update-confirmation')).toContainText('OpenDIY Codex');

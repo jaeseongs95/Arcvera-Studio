@@ -1,4 +1,4 @@
-# OpenDIY Desktop user guide
+# Arcvera-Studio user guide
 
 [Home](../README.md) · [한국어](user-guide.ko.md) · [Development](development.md)
 
@@ -9,9 +9,9 @@ This guide includes the server-selection changes in Desktop 1.7.1. Start with th
 ## Executables and shared servers
 
 Download the portable ZIP or per-user installer from
-[Releases](https://github.com/jaeseongs95/opendiy-desktop/releases). Windows x64 and
+[Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases). Windows x64 and
 WebView2 are required. The application is unsigned.
-Extract the whole portable ZIP and run `opendiy-desktop.exe`. Desktop directly
+Extract the whole portable ZIP and run `arcvera-studio.exe`. Desktop directly
 launches its work processes in Windows Jobs; no separate Desktop helper executable
 is required. Codex, shell and WebView2 processes still run separately.
 
@@ -30,7 +30,7 @@ executable paths. A manually selected server stays selected; a failed launcher
 lookup is reported without falling back to another executable.
 
 Choose **Use automatic discovery** to clear the app's saved override. Resolution then uses
-`AGENT_GRID_CODEX`, if set, followed by the native executable on `PATH`.
+`ARCVERA_STUDIO_CODEX`, if set (or the legacy `AGENT_GRID_CODEX` alias), followed by the native executable on `PATH`.
 The saved app preference has priority over both. Missing or invalid executables
 are reported explicitly instead of silently using a different program.
 The CLI must support `--remote` and either the shared daemon/proxy commands or
@@ -84,7 +84,7 @@ project on the left; inspect dates, the conversation ID and recent messages on
 the right before resuming. Already open conversations focus their existing
 terminal. Browsing uses read-only requests through a short-lived owned server,
 so it does not require an existing desktop daemon. Recent messages are fetched
-in bounded pages and are not stored in OpenDIY Desktop's database.
+in bounded pages and are not stored in Arcvera-Studio's database.
 
 Use **New session** to enter a directory directly. Use the official TUI to choose
 a model, sign in or answer permission prompts. Enter text directly in the terminal
@@ -355,7 +355,7 @@ Use **Settings → Attachment storage** to inspect app-owned image usage and lim
 
 ## Codex and data
 
-Install and sign in to OpenDIY Codex or a compatible official Codex CLI separately. OpenDIY Desktop uses
+Install and sign in to OpenDIY Codex or a compatible official Codex CLI separately. Arcvera-Studio uses
 your existing login and honors `CODEX_HOME`. Initial CLI installation and sign-in remain separate. Desktop never changes global permission settings; a server-package transition requires the separate confirmation described above. Model selection stays
 in Codex's own `/model` interface.
 

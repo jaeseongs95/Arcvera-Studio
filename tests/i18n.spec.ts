@@ -5,12 +5,13 @@ const session = { id: 'owned-i18n', generation: 9, title: '사용자 지정 제�
 const catalogRows = [0, 1].map(index => ({ id: `catalog-${index}`, title: `사용자 대화 ${index}`, cwd: project.cwd, createdAt: 1700000000, updatedAt: 1700000300, status: 'idle' }));
 const savedPath = 'D:\\사용자\\CLI\\codex.exe';
 
-async function nativeFixture(page: Page, options: { stored?: string; nativeLanguage?: 'ko' | 'en'; holdLanguageRead?: boolean; failLanguageRead?: boolean; empty?: boolean; holdSettings?: boolean; holdChooser?: boolean; holdList?: boolean; holdPreview?: boolean } = {}) {
+async function nativeFixture(page: Page, options: { stored?: string; currentStored?: string; nativeLanguage?: 'ko' | 'en'; holdLanguageRead?: boolean; failLanguageRead?: boolean; empty?: boolean; holdSettings?: boolean; holdChooser?: boolean; holdList?: boolean; holdPreview?: boolean } = {}) {
   await page.addInitScript(({ project, session, catalogRows, savedPath, options }) => {
     const state = window as any;
     // Seed only the first load so a real reload must use the app's saved preference.
     if (!sessionStorage.getItem('i18n-fixture-seeded')) {
       if (options.stored !== undefined) localStorage.setItem('agent-grid-language', options.stored);
+      if (options.currentStored !== undefined) localStorage.setItem('arcvera-studio-language', options.currentStored);
       // Native-storage substitute is deliberately separate from the WebView cache.
       // This is a browser integration fixture, not evidence of SQLite durability.
       sessionStorage.setItem('fixture-native-language', options.nativeLanguage ?? 'ko');
@@ -79,6 +80,22 @@ async function switchLanguage(page: Page, language: 'ko' | 'en') {
 }
 const processActions = ['start_session', 'session_stop', 'session_write', 'complete_exit', 'list_external', 'choose_project', 'set_codex_executable'];
 
+for (const entry of [
+  { stored: 'en', expected: 'en' },
+  { stored: 'en', currentStored: 'ko', expected: 'ko' },
+  { stored: 'ko', currentStored: 'en', expected: 'en' },
+  { stored: 'en', currentStored: '', expected: 'ko' },
+]) test(`Arcvera-Studio restores language without losing the legacy preference: ${JSON.stringify(entry)}`, async ({ page }) => {
+  await nativeFixture(page, { ...entry, holdLanguageRead: true });
+  await expect(page).toHaveTitle('Arcvera-Studio');
+  await expect(page.locator('.brand-name')).toHaveText('Arcvera-Studio');
+  await expect(page.locator('html')).toHaveAttribute('lang', entry.expected);
+  expect(await page.evaluate(() => localStorage.getItem('agent-grid-language'))).toBe(entry.stored);
+  await page.evaluate(() => (window as any).i18nFixture.releaseLanguageRead());
+  await expect(page.locator('#app')).toHaveAttribute('aria-busy', 'false');
+  expect(await commands(page, processActions)).toEqual([]);
+});
+
 for (const stored of [undefined, 'invalid-language', 'EN', '']) test(`language defaults to Korean for ${stored === undefined ? 'no preference' : JSON.stringify(stored)}`, async ({ page }) => {
   await nativeFixture(page, { stored });
   expect(await page.locator('#language-select option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))).toEqual(['ko', 'en']);
@@ -92,7 +109,7 @@ test('switch applies immediately and the selected language survives a real reloa
   await nativeFixture(page);
   await switchLanguage(page, 'en');
   await expect(page.locator('#new-session')).toContainText(/new session/i);
-  expect(await page.evaluate(() => localStorage.getItem('agent-grid-language'))).toBe('en');
+  expect(await page.evaluate(() => localStorage.getItem('arcvera-studio-language'))).toBe('en');
   await expect(page.locator('#language-error')).toBeHidden();
   await page.reload();
   await expect(page.locator('#language-select')).toHaveValue('en');
@@ -102,7 +119,7 @@ test('switch applies immediately and the selected language survives a real reloa
   await expect(page.locator('#language-error')).toBeHidden();
   await page.reload();
   await expect(page.locator('#new-session')).toContainText('새 세션');
-  expect(await page.evaluate(() => localStorage.getItem('agent-grid-language'))).toBe('ko');
+  expect(await page.evaluate(() => localStorage.getItem('arcvera-studio-language'))).toBe('ko');
 });
 
 test('live terminals, user content, project selection and search drafts survive repeated language changes without process actions', async ({ page }) => {
@@ -168,7 +185,7 @@ for (const nativeLanguage of ['en', 'ko'] as const) test(`native language ${nati
   await nativeFixture(page, { stored: stale, nativeLanguage });
   await expect(page.locator('#language-select')).toHaveValue(nativeLanguage);
   await expect(page.locator('html')).toHaveAttribute('lang', nativeLanguage);
-  expect(await page.evaluate(() => localStorage.getItem('agent-grid-language'))).toBe(nativeLanguage);
+  expect(await page.evaluate(() => localStorage.getItem('arcvera-studio-language'))).toBe(nativeLanguage);
   const calls = await commands(page, ['get_ui_language', 'set_ui_language']);
   expect(calls[0].command).toBe('get_ui_language');
   expect(calls.filter((call: any) => call.command === 'set_ui_language')).toEqual([{ command: 'set_ui_language', args: { language: nativeLanguage } }]);

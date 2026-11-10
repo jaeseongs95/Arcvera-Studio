@@ -1,18 +1,20 @@
-# OpenDIY Desktop
+# Arcvera-Studio
 
 여러 Codex CLI 세션을 나란히 사용하는 Windows 작업 공간입니다.
 대화를 프로젝트별로 묶고, 터미널 격자의 크기를 조절하고, 저장된 작업을 이어갈 수 있습니다.
 
 [English](README.md) | **한국어**
 
-[다운로드](https://github.com/jaeseongs95/opendiy-desktop/releases/latest) ·
+[다운로드](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest) ·
 [빠른 시작](#빠른-시작) · [사용 가이드](docs/user-guide.ko.md) ·
 [개발 가이드](docs/development.md)
 
-![OpenDIY Desktop에서 프로젝트와 실행 중인 세션을 전환하는 모습](docs/loading-demo.gif)
+![Arcvera-Studio 작업 공간 디자인 미리보기](docs/design-demo.png)
 
-*2026-10-30 실제 사용 중 촬영한 원본 속도 영상입니다.
-사용 예시이며, 성능 비교나 최신 배포판의 실행 영상은 아닙니다.*
+*격리된 브라우저 시험 화면에서 촬영한 디자인 미리보기입니다. 터미널에는 예시 출력이
+표시되며, 네이티브 실행이나 성능 검증을 보여주는 이미지는 아닙니다.*
+
+[명칭 변경과 호환 안내](docs/rebranding.ko.md), [미출시 변경 사항](docs/release-notes.md)을 참고하세요.
 
 ## 지원하는 Codex
 
@@ -32,11 +34,11 @@ Desktop과 Codex는 별도로 설치합니다. Desktop **1.2.0**의 문서상 �
 1. **Codex를 설치하고 로그인합니다.** 위 표의 실행 환경을 사용하세요.
    Desktop 배포 파일에는 Codex가 포함되어 있지 않으며, 앱이 내려받지도 않습니다.
 2. **Desktop을 설치하거나 압축을 풉니다.**
-   [릴리스](https://github.com/jaeseongs95/opendiy-desktop/releases/latest)에서 Windows x64 설치 파일이나
+   [릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest)에서 Windows x64 설치 파일이나
    포터블 ZIP을 받으세요. Windows와 WebView2가 필요하며, 실행 파일은 서명되어 있지 않습니다.
    포터블은 **ZIP 전체를 풀어** 사용하세요.
    릴리스의 `SHA256SUMS.txt`와 다운로드한 파일의 해시를 대조할 수 있습니다.
-   설치한 앱 또는 `opendiy-desktop.exe`를 실행하세요.
+   설치한 앱 또는 `arcvera-studio.exe`를 실행하세요.
 3. **CLI를 선택합니다.** **⚙ 설정 → 실행 파일 설정**에서 네이티브 `codex.exe` 또는 설치된
    `opendiy-codex-launcher.exe`를 선택하세요. 서버 실행 파일은 자동으로 선택되며 별도 지정은 선택 사항입니다.
    CLI 경로 변경은 열린 터미널을 유지합니다. 앱 서버 파일을 직접 선택하면 안전 조건을
@@ -90,7 +92,7 @@ Windows CI에서 검사와 패키징을 수행하지만, 빌드 성공만으로 
 입증하지는 않습니다.
 
 과거 관측 자료와 그 범위는 [검증 안내](docs/development.md#verification)에서 확인할 수 있습니다.
-[문제 제보](https://github.com/jaeseongs95/opendiy-desktop/issues)에는 Desktop 버전, 선택한 CLI·서버 버전,
+[문제 제보](https://github.com/jaeseongs95/Arcvera-Studio/issues)에는 Desktop 버전, 선택한 CLI·서버 버전,
 재현 절차와 기대 결과·실제 결과를 적어 주세요. 인증 정보나 개인 대화 로그는 첨부하지 마세요.
 
 ## 라이선스와 방향
@@ -99,5 +101,5 @@ Windows CI에서 검사와 패키징을 수행하지만, 빌드 성공만으로 
 제품 참고로 삼았으며, 해당 프로젝트의 코드·에셋·브랜딩을 포함하지 않습니다.
 [참고 프로젝트의 라이선스](https://github.com/paulallington/Claudes/blob/v1.9.82/LICENSE)를 확인할 수 있습니다.
 
-장기 목표는 OpenDIY Desktop으로 ChatGPT 데스크톱 앱을 대체하는 것입니다.
+장기 목표는 Arcvera-Studio으로 ChatGPT 데스크톱 앱을 대체하는 것입니다.
 ChatGPT·Claude 데스크톱의 기능과 사용성을 참고하되, 현재 기능이 동등하다는 뜻은 아닙니다.

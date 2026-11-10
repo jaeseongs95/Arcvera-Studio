@@ -203,7 +203,7 @@ test('EL-12 main terminal-output → pointer → native opener → 실패 toast 
         if (command === 'plugin:event|listen') { listeners.set(args.event, callbacks.get(args.handler)!); return callback; }
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
+        if (command === 'set_ui_language') return { show: 'Arcvera-Studio 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_sessions') return [{ id: 'link-main', title: 'Link terminal', cwd: 'D:\\link-fixture', generation: 1, state: 'idle', active: true }];
         if (command === 'list_projects') return [];

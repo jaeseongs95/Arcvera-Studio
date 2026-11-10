@@ -825,7 +825,7 @@ pub fn run_codex_smoke() -> i32 {
 
 fn redact_terminal(text: &str) -> String {
     let mut redacted = text.to_owned();
-    for pattern in ["bearer ", "bearer\t", "sk-", "agent_grid_remote_token=", "token=", "token:", "token ", "api_key=", "api_key:", "apikey="] {
+    for pattern in ["bearer ", "bearer\t", "sk-", "arcvera_studio_remote_token=", "agent_grid_remote_token=", "token=", "token:", "token ", "api_key=", "api_key:", "apikey="] {
         let mut from = 0;
         while let Some(relative) = redacted[from..].to_ascii_lowercase().find(pattern) {
             let matched = from + relative;

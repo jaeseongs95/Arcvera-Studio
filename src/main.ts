@@ -95,7 +95,7 @@ if (native) $('#app').hidden = true;
 $('#app').setAttribute('aria-busy', 'true');
 $('#app').innerHTML = `
   <aside class="sidebar">
-    <a class="brand" href="#" aria-label="OpenDIY Desktop 홈"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span class="brand-name">OpenDIY <small>Desktop</small></span><span class="version">${version}</span></a>
+    <a class="brand" href="#" aria-label="Arcvera-Studio 홈"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span class="brand-name">Arcvera-Studio</span><span class="version">${version}</span></a>
     <div class="sidebar-lists">
       <section class="sidebar-projects" aria-labelledby="projects-heading">
         <div id="projects-heading" class="side-heading">프로젝트 <span id="project-count">0</span></div>
@@ -124,12 +124,12 @@ $('#app').innerHTML = `
   <dialog id="create-dialog"><form id="create-form"><div class="dialog-heading"><span class="eyebrow">NEW SESSION</span><button type="button" class="icon-button" data-close aria-label="닫기">×</button></div><h2>새 세션 만들기</h2><p>선택한 프로젝트에서 로컬 에이전트를 시작합니다.</p><label for="session-title">세션 이름</label><input id="session-title" name="title" placeholder="예: API 개선" required maxlength="120"/><label for="session-cwd">프로젝트 경로</label><input id="session-cwd" name="cwd" placeholder="C:\\work\\my-project" required/><small>실제로 존재하는 로컬 디렉터리의 절대 경로를 입력하세요.</small><label for="session-thread">이어갈 스레드 ID <span class="optional">선택</span></label><input id="session-thread" name="thread" placeholder="비워 두면 새 대화로 시작합니다"/><div id="create-error" class="inline-error" role="alert" hidden></div><div class="dialog-actions"><button type="button" class="quiet-button" data-close>취소</button><button id="create-submit" class="primary-button" type="submit">세션 시작 →</button></div></form></dialog>
   <dialog id="restore-dialog"><div class="dialog-heading"><span class="eyebrow">SAVED WORKSPACE</span><button class="icon-button" data-close aria-label="닫기">×</button></div><h2>저장된 세션</h2><p>이전에 실행 중이던 대화는 자동으로 연결합니다. 남은 항목은 선택해서 다시 연결할 수 있습니다.</p><div id="restore-list" class="restore-list"></div></dialog>
   <dialog id="external-dialog"><div class="dialog-heading"><span class="eyebrow">READ ONLY</span><button class="icon-button" data-close aria-label="닫기">×</button></div><h2>외부 세션</h2><p>다른 앱에서 발견한 기록입니다. 관측 정보이며 현재 실행 상태는 미확인입니다. 입력하거나 종료할 수 없습니다.</p><button id="external-refresh" class="quiet-button">새로 고침</button><div id="external-list" class="external-list"></div></dialog>
-  <dialog id="exit-dialog"><div class="dialog-heading"><span class="eyebrow">EXIT WORKSPACE</span><button class="icon-button" data-close aria-label="닫기">×</button></div><h2>OpenDIY Desktop를 종료할까요?</h2><p>앱이 소유한 모든 실행 세션이 종료됩니다. 다른 앱의 세션은 제어하지 않습니다. 창의 닫기 버튼은 트레이로 숨깁니다.</p><p id="unconfirmed-exit-warning" class="inline-error" role="alert" hidden>원격 작업의 중단을 확인하지 못했습니다. 앱을 닫아도 원격 작업이 계속 실행될 수 있습니다. 로컬 자원은 정리되었습니다.</p><div class="dialog-actions"><button class="quiet-button" data-close>계속 작업</button><button id="confirm-unconfirmed-exit" class="danger-button" aria-describedby="unconfirmed-exit-warning" hidden>중단 미확인 상태로 앱 닫기</button><button id="confirm-exit" class="danger-button">세션 종료 후 앱 닫기</button></div></dialog>
+  <dialog id="exit-dialog"><div class="dialog-heading"><span class="eyebrow">EXIT WORKSPACE</span><button class="icon-button" data-close aria-label="닫기">×</button></div><h2>Arcvera-Studio를 종료할까요?</h2><p>앱이 소유한 모든 실행 세션이 종료됩니다. 다른 앱의 세션은 제어하지 않습니다. 창의 닫기 버튼은 트레이로 숨깁니다.</p><p id="unconfirmed-exit-warning" class="inline-error" role="alert" hidden>원격 작업의 중단을 확인하지 못했습니다. 앱을 닫아도 원격 작업이 계속 실행될 수 있습니다. 로컬 자원은 정리되었습니다.</p><div class="dialog-actions"><button class="quiet-button" data-close>계속 작업</button><button id="confirm-unconfirmed-exit" class="danger-button" aria-describedby="unconfirmed-exit-warning" hidden>중단 미확인 상태로 앱 닫기</button><button id="confirm-exit" class="danger-button">세션 종료 후 앱 닫기</button></div></dialog>
 `;
 
 // Register only app-owned templates, before any terminal or user content is inserted.
 const markupLabels: Record<string, [string, string]> = {
-  "OpenDIY Desktop 홈": ["OpenDIY Desktop 홈", "OpenDIY Desktop home"],
+  "Arcvera-Studio 홈": ["Arcvera-Studio 홈", "Arcvera-Studio home"],
   "프로젝트": ["프로젝트", "Projects"],
   "+ 새 프로젝트": ["+ 새 프로젝트", "+ New project"],
   "+ 프로젝트 가져오기": ["+ 프로젝트 가져오기", "+ Import project"],
@@ -198,7 +198,7 @@ const markupLabels: Record<string, [string, string]> = {
   "알림": ["알림", "Notifications"],
   "새로운 알림이 없습니다.": ["새로운 알림이 없습니다.", "No new notifications."],
   "EXIT WORKSPACE": ["작업 공간 종료", "EXIT WORKSPACE"],
-  "OpenDIY Desktop를 종료할까요?": ["OpenDIY Desktop를 종료할까요?", "Exit OpenDIY Desktop?"],
+  "Arcvera-Studio를 종료할까요?": ["Arcvera-Studio를 종료할까요?", "Exit Arcvera-Studio?"],
   "앱이 소유한 모든 실행 세션이 종료됩니다. 다른 앱의 세션은 제어하지 않습니다. 창의 닫기 버튼은 트레이로 숨깁니다.": ["앱이 소유한 모든 실행 세션이 종료됩니다. 다른 앱의 세션은 제어하지 않습니다. 창의 닫기 버튼은 트레이로 숨깁니다.", "All running sessions owned by this app will stop. Sessions in other apps are unaffected. The window close button hides the app to the tray."],
   "계속 작업": ["계속 작업", "Keep working"],
   "세션 종료 후 앱 닫기": ["세션 종료 후 앱 닫기", "Stop sessions and exit"],
@@ -814,7 +814,7 @@ function renderSide() {
     if (project.id && native) {
       row.draggable = !exitInProgress;
       bindAttribute(row, 'aria-description', '드래그로 같은 그룹 안에서 프로젝트 순서 변경. 더보기 메뉴에서도 위아래로 이동할 수 있습니다.', 'Drag to reorder projects within the same group. The menu also has Move up and Move down.');
-      row.ondragstart = event => { if (exitInProgress || projectManager.reordering) { event.preventDefault(); return; } draggingProject = project.id!; rejectedProjectDrop = ''; projectDragClickUntil = performance.now() + 1000; event.dataTransfer!.effectAllowed = 'move'; event.dataTransfer!.setData('application/x-opendiy-project', project.id!); container.classList.add('dragging'); };
+      row.ondragstart = event => { if (exitInProgress || projectManager.reordering) { event.preventDefault(); return; } draggingProject = project.id!; rejectedProjectDrop = ''; projectDragClickUntil = performance.now() + 1000; event.dataTransfer!.effectAllowed = 'move'; event.dataTransfer!.setData('application/x-arcvera-studio-project', project.id!); container.classList.add('dragging'); };
       row.ondragend = () => { draggingProject = ''; projectDragClickUntil = performance.now() + 250; container.classList.remove('dragging'); for (const item of projectList.children) item.classList.remove('project-drop-before', 'project-drop-after'); };
       container.ondragover = event => {
         const source = importedProjects.find(item => item.id === draggingProject);
@@ -830,7 +830,7 @@ function renderSide() {
         if (!draggingProject || exitInProgress || projectManager.reordering) return;
         event.preventDefault(); const id = draggingProject; draggingProject = ''; projectDragClickUntil = performance.now() + 250;
         container.classList.remove('project-drop-before', 'project-drop-after');
-        if (event.dataTransfer?.getData('application/x-opendiy-project') !== id) return;
+        if (event.dataTransfer?.getData('application/x-arcvera-studio-project') !== id) return;
         const after = event.clientY >= container.getBoundingClientRect().top + container.getBoundingClientRect().height / 2;
         void projectManager.reorder(id, project.id!, after);
       };
@@ -1418,7 +1418,7 @@ document.addEventListener('keydown', event => {
 async function initialize() {
   if (!native) {
     bindText($('#mode-label'), demo ? '디자인 데모' : '브라우저 미리보기', demo ? 'DESIGN DEMO' : 'BROWSER PREVIEW'); $('#runtime-banner').hidden = false;
-    bindText($('#runtime-banner'), demo ? '디자인 데모 · 아래 터미널은 정적인 예시입니다. 실제 프로세스 실행·입력·전송은 지원하지 않습니다.' : '브라우저 미리보기입니다. 실제 세션 실행은 OpenDIY Desktop 앱에서 사용할 수 있습니다.', demo ? 'Design demo · These terminals are static examples. Process execution, input and sending are unavailable.' : 'Browser preview. Run real sessions in the OpenDIY Desktop app.');
+    bindText($('#runtime-banner'), demo ? '디자인 데모 · 아래 터미널은 정적인 예시입니다. 실제 프로세스 실행·입력·전송은 지원하지 않습니다.' : '브라우저 미리보기입니다. 실제 세션 실행은 Arcvera-Studio 앱에서 사용할 수 있습니다.', demo ? 'Design demo · These terminals are static examples. Process execution, input and sending are unavailable.' : 'Browser preview. Run real sessions in the Arcvera-Studio app.');
     bindText($('#save-status'), '미리보기 · 저장 안 함', 'Preview · not saved');
     if (demo) seedDemo(); renderAll(); $('#app').setAttribute('aria-busy', 'false'); return;
   }

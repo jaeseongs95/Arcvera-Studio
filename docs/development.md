@@ -30,7 +30,7 @@ remain separate from Desktop. The patched portable-pty dependency is kept under
 `src-tauri/vendor/portable-pty`.
 
 If Unicode workspace paths cause native tool failures, build in a separate
-checkout under `D:/codex/build/opendiy-desktop`.
+checkout under `D:/codex/build/arcvera-studio`.
 Generate third-party notices before native compilation; they are bundled
 with the installer and distributed alongside the portable executable.
 
@@ -57,8 +57,8 @@ build is not evidence of long-duration stability or complete CLI compatibility.
 The packaged executable provides separate diagnostic modes:
 
 ```powershell
-opendiy-desktop.exe --self-test --duration-seconds 60 --report D:/codex/build/pty-result.json
-opendiy-desktop.exe --codex-smoke --sessions 2 --cwd D:/projects/already-trusted --report D:/codex/build/codex-result.json
+arcvera-studio.exe --self-test --duration-seconds 60 --report D:/codex/build/pty-result.json
+arcvera-studio.exe --codex-smoke --sessions 2 --cwd D:/projects/already-trusted --report D:/codex/build/codex-result.json
 ```
 
 The first exercises real native PTYs with local shell fixtures, including

@@ -1,18 +1,20 @@
-# OpenDIY Desktop
+# Arcvera-Studio
 
 A Windows workspace for running Codex CLI sessions side by side. Group conversations
 by project, arrange terminals in a resizable grid and return to saved work.
 
 **English** | [한국어](README.ko.md)
 
-[Download](https://github.com/jaeseongs95/opendiy-desktop/releases/latest) ·
+[Download](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest) ·
 [Quick start](#quick-start) · [User guide](docs/user-guide.md) ·
 [Development](docs/development.md)
 
-![Switching projects and running sessions in OpenDIY Desktop](docs/loading-demo.gif)
+![Arcvera-Studio workspace design preview](docs/design-demo.png)
 
-*Recorded during real use on 2026-10-30, at the original playback speed.
-This is a usage example, not a performance comparison or a recording of the latest release.*
+*Design preview captured from an isolated browser fixture. The terminals contain
+sample output; this image does not demonstrate native runtime or performance.*
+
+See [rename compatibility](docs/rebranding.md) and [unreleased changes](docs/release-notes.md).
 
 ## Supported Codex runtimes
 
@@ -33,10 +35,10 @@ does not guarantee a feature. See [runtime selection and server transitions](doc
 1. **Install Codex and sign in.** Use one of the runtimes above. Desktop packages
    do not include or download Codex.
 2. **Install or extract Desktop.** Download the Windows x64 installer or portable
-   ZIP from [Releases](https://github.com/jaeseongs95/opendiy-desktop/releases/latest).
+   ZIP from [Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest).
    Windows and WebView2 are required; builds are unsigned. For the portable edition,
    extract the **whole ZIP**. Check the download against the release's `SHA256SUMS.txt`,
-   then launch the installed app or `opendiy-desktop.exe`.
+   then launch the installed app or `arcvera-studio.exe`.
 3. **Select your CLI.** Open **⚙ Settings → Executable settings** and choose the
    native `codex.exe` or installed `opendiy-codex-launcher.exe`. A server executable
    is selected automatically; specifying one separately is optional. Changing
@@ -97,7 +99,7 @@ build success alone does not prove GUI behavior or complete CLI compatibility.
 Historical observations and their scope are linked in the
 [verification notes](docs/development.md#verification). Please include the Desktop
 version, selected CLI/server versions, reproduction steps and expected/actual
-behavior in a [bug report](https://github.com/jaeseongs95/opendiy-desktop/issues).
+behavior in a [bug report](https://github.com/jaeseongs95/Arcvera-Studio/issues).
 Do not attach credentials or private conversation logs.
 
 ## License and direction
@@ -106,6 +108,6 @@ An independent [MIT-licensed](LICENSE) implementation. Claudes' multi-terminal
 workflow was a product reference; its code, assets and branding are not included.
 See its [reference license](https://github.com/paulallington/Claudes/blob/v1.9.82/LICENSE).
 
-The long-term goal is to replace the ChatGPT desktop app with OpenDIY Desktop,
+The long-term goal is to replace the ChatGPT desktop app with Arcvera-Studio,
 learning from ChatGPT and Claude desktop features and usability. That is future
 direction, not a claim of current feature parity.

@@ -16,7 +16,7 @@ async function workspace(page: Page, mode: 'normal' | 'deferred' | 'error' | 'ov
         state.storageCalls.push({ command, args });
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
+        if (command === 'set_ui_language') return { show: 'Arcvera-Studio 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (['list_projects', 'list_sessions', 'list_external'].includes(command)) return [];
         if (command === 'get_codex_settings') return { savedPath: null, resolvedPath: 'D:\\tools\\codex.exe', source: 'path', error: null };

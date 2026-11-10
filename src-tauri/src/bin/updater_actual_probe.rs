@@ -1,7 +1,7 @@
 // Deliberately console + argc1: libtest flags must never leak into NSIS /ARGS.
 fn main() {
     #[cfg(windows)]
-    if let Err(error) = agent_grid_lib::run_updater_actual_probe() {
+    if let Err(error) = arcvera_studio_lib::run_updater_actual_probe() {
         eprintln!("updater_actual_probe: {error}");
         std::process::exit(1);
     }

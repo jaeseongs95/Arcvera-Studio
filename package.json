@@ -1,6 +1,6 @@
 {
-  "name": "opendiy-desktop",
-  "version": "1.7.1",
+  "name": "arcvera-studio",
+  "version": "1.8.0",
   "private": true,
   "type": "module",
   "scripts": {

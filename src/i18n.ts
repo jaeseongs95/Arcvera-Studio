@@ -1,9 +1,10 @@
 export type Language = 'ko' | 'en';
 
-const storageKey = 'agent-grid-language';
+const storageKey = 'arcvera-studio-language';
+const legacyStorageKey = 'agent-grid-language';
 let language: Language = 'ko';
 let storageError: unknown;
-try { language = localStorage.getItem(storageKey) === 'en' ? 'en' : 'ko'; }
+try { language = (localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey)) === 'en' ? 'en' : 'ko'; }
 catch (error) { storageError = error; }
 if (typeof document !== 'undefined') document.documentElement.lang = language;
 

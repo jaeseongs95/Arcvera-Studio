@@ -53,7 +53,7 @@ async function workspace(page: Page, options: { capacity?: boolean } = {}) {
           return state.tabsFixture.contextSnapshots?.[args.id] ?? { revision: 0, connected: true, guiConnected: false, tokenUsageFresh: false, compacting: false, active: false, canCompact: false };
         }
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: args.language === 'en' ? 'Open OpenDIY Desktop' : 'OpenDIY Desktop 열기', exit: args.language === 'en' ? 'Exit…' : '종료…' };
+        if (command === 'set_ui_language') return { show: args.language === 'en' ? 'Open Arcvera-Studio' : 'Arcvera-Studio 열기', exit: args.language === 'en' ? 'Exit…' : '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: options.capacity ? [{ title: 'Pending slot 32', cwd: projects[0].cwd, threadId: 'pending-slot32' }] : [] };
         if (command === 'list_sessions') {
           if (ownershipReads++ > 0 && state.tabsFixture.holdOwnership) await new Promise<void>(resolve => { state.tabsFixture.releaseOwnership = resolve; });

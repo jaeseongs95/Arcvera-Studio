@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding=$OutputEncoding=[Text.UTF8Encoding]::new($false)
 if (-not [IO.Path]::IsPathRooted($ExpectedExecutable)) { throw 'Expected executable must be absolute' }
 $expectedExecutablePath = [IO.Path]::GetFullPath($ExpectedExecutable)
-if (-not (Test-Path -LiteralPath $expectedExecutablePath -PathType Leaf) -or [IO.Path]::GetFileName($expectedExecutablePath) -ne 'opendiy-desktop.exe') { throw 'Expected executable must be an existing opendiy-desktop.exe' }
+if (-not (Test-Path -LiteralPath $expectedExecutablePath -PathType Leaf) -or [IO.Path]::GetFileName($expectedExecutablePath) -ne 'arcvera-studio.exe') { throw 'Expected executable must be an existing arcvera-studio.exe' }
 if ($Mode -eq 'Select') {
     if (-not $ExpectedPath -or -not [IO.Path]::IsPathRooted($ExpectedPath) -or -not (Test-Path -LiteralPath $ExpectedPath -PathType Leaf)) { throw 'Select mode requires an existing absolute file' }
     $ExpectedPath = [IO.Path]::GetFullPath($ExpectedPath)
@@ -59,7 +59,7 @@ public static class AgentGridExecutablePickerProbe {
         EnumWindows(delegate(IntPtr hwnd,IntPtr unused) {
             if(!OwnedBy(hwnd,pid) || !IsWindowVisible(hwnd) || GetWindow(hwnd,4)!=IntPtr.Zero || WindowClass(hwnd)=="#32770") return true;
             var text=new StringBuilder(256); GetWindowTextW(hwnd,text,text.Capacity);
-            if(text.ToString()=="OpenDIY Desktop") matches.Add(hwnd);
+            if(text.ToString()=="Arcvera-Studio") matches.Add(hwnd);
             return true;
         },IntPtr.Zero);
         return matches.ToArray();
@@ -102,7 +102,7 @@ public static class AgentGridExecutablePickerProbe {
 '@
 
 $mainWindows = [AgentGridExecutablePickerProbe]::FindMainWindows($AppProcessId)
-if ($mainWindows.Length -ne 1) { throw 'Expected one owned OpenDIY Desktop main window; refusing ambiguous action' }
+if ($mainWindows.Length -ne 1) { throw 'Expected one owned Arcvera-Studio main window; refusing ambiguous action' }
 $mainWindow = $mainWindows[0]
 
 function Assert-ProcessIdentity {

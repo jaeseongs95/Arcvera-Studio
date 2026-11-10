@@ -102,7 +102,7 @@ mod tests {
             let request_line = request.split(|byte| *byte == b'\n').next().unwrap_or_default();
             let expected = format!("GET {target} HTTP/1.1\r");
             let matches = request_line == expected.as_bytes();
-            let body = if matches { "OpenDIY Desktop 외부 링크 시험을 확인했습니다. 이 탭은 직접 닫아도 됩니다." } else { "페이지를 찾을 수 없습니다." };
+            let body = if matches { "Arcvera-Studio 외부 링크 시험을 확인했습니다. 이 탭은 직접 닫아도 됩니다." } else { "페이지를 찾을 수 없습니다." };
             let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", if matches { "200 OK" } else { "404 Not Found" }, body.len());
             stream.write_all(response.as_bytes()).expect("자체 loopback HTTP 응답 실패");
             stream.flush().expect("자체 loopback HTTP 응답 flush 실패");

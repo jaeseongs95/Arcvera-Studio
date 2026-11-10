@@ -35,7 +35,7 @@ public static class AgentGridWindowProbe {
         EnumWindows(delegate(IntPtr hwnd,IntPtr unused) {
             if(!OwnedBy(hwnd,pid) || !IsWindowVisible(hwnd) || GetWindow(hwnd,4)!=IntPtr.Zero || WindowClass(hwnd)=="#32770") return true;
             var text=new StringBuilder(256); GetWindowTextW(hwnd,text,text.Capacity);
-            if(text.ToString()=="OpenDIY Desktop") matches.Add(hwnd);
+            if(text.ToString()=="Arcvera-Studio") matches.Add(hwnd);
             return true;
         },IntPtr.Zero);
         return matches.ToArray();
@@ -71,7 +71,7 @@ public static class AgentGridWindowProbe {
 '@
 
 $mainWindows = [AgentGridWindowProbe]::FindMainWindows($AppProcessId)
-if ($mainWindows.Length -ne 1) { throw 'Expected one owned OpenDIY Desktop main window; refusing ambiguous action' }
+if ($mainWindows.Length -ne 1) { throw 'Expected one owned Arcvera-Studio main window; refusing ambiguous action' }
 $windowHandle = $mainWindows[0]
 
 function Assert-TargetIdentity {

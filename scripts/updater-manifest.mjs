@@ -3,7 +3,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-const REPO = 'jaeseongs95/opendiy-desktop';
+const REPO = 'jaeseongs95/Arcvera-Studio';
+// Existing clients enforce this exact repository path before following GitHub's
+// verified repository-rename redirect. New clients keep their own strict path.
+const LEGACY_REPO = 'jaeseongs95/opendiy-desktop';
 
 export function prepareUpdaterArtifacts({ projectRoot = process.cwd(), bundleDirectory, outputDirectory }) {
   const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
@@ -25,16 +28,17 @@ export function prepareUpdaterArtifacts({ projectRoot = process.cwd(), bundleDir
   if (!signature || signatureBytes.length > 16 * 1024 || signature.includes('\0')) {
     throw new Error('Missing or invalid updater signature content');
   }
-  const name = `OpenDIYDesktop-${version}-windows-x64-setup.exe`;
-  const manifest = { version, platforms: { 'windows-x86_64': {
-    url: `https://github.com/${REPO}/releases/download/v${version}/${name}`, signature,
-  } } };
+  const name = `Arcvera-Studio-${version}-windows-x64-setup.exe`;
+  const manifest = repo => ({ version, platforms: { 'windows-x86_64': {
+    url: `https://github.com/${repo}/releases/download/v${version}/${name}`, signature,
+  } } });
   if (fs.existsSync(outputDirectory)) throw new Error('Updater output already exists; preserve it and use a fresh directory');
   fs.mkdirSync(outputDirectory, { recursive: true });
   fs.copyFileSync(installer, path.join(outputDirectory, name), fs.constants.COPYFILE_EXCL);
   fs.copyFileSync(signatureFile, path.join(outputDirectory, name + '.sig'), fs.constants.COPYFILE_EXCL);
-  fs.writeFileSync(path.join(outputDirectory, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
-  const sums = [name, name + '.sig', 'latest.json'].map(file => {
+  fs.writeFileSync(path.join(outputDirectory, 'arcvera-latest.json'), JSON.stringify(manifest(REPO), null, 2) + '\n', { flag: 'wx' });
+  fs.writeFileSync(path.join(outputDirectory, 'latest.json'), JSON.stringify(manifest(LEGACY_REPO), null, 2) + '\n', { flag: 'wx' });
+  const sums = [name, name + '.sig', 'arcvera-latest.json', 'latest.json'].map(file => {
     const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(outputDirectory, file))).digest('hex');
     return `${digest}  ${file}`;
   });

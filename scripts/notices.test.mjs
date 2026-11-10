@@ -48,4 +48,6 @@ test('notices include full vendored MIT/Apache license files with underscores', 
   assert.ok(notices.includes(mit), 'full MIT license text must be included');
   assert.ok(notices.includes(apache), 'full Apache license text must be included');
   assert.ok(notices.includes('fixture SPDX expression'));
+  const templateLicense = fs.readFileSync(new URL('../src-tauri/installer/TAURI-LICENSE-MIT', import.meta.url), 'utf8');
+  assert.ok(notices.includes(templateLicense), 'the bundled installer template license must be included');
 });

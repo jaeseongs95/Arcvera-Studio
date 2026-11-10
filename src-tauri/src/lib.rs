@@ -1,4 +1,5 @@
 mod codex;
+mod environment;
 mod codex_settings;
 mod conversation_attachments;
 mod executable_picker;
@@ -53,7 +54,7 @@ async fn set_ui_language(settings: State<'_, UiSettings>, engine: State<'_, Engi
     let engine = engine.inner().clone();
     native_worker(move || engine.set_ui_language(language)).await.map_err(|e| format!("Save app language worker: {e}"))??;
     // The store lock has been released before dispatching native menu updates.
-    settings.show.set_text(language.text("OpenDIY Desktop 열기", "Open OpenDIY Desktop")).map_err(|e| format!("Update tray open label: {e}"))?;
+    settings.show.set_text(language.text("Arcvera-Studio 열기", "Open Arcvera-Studio")).map_err(|e| format!("Update tray open label: {e}"))?;
     settings.exit.set_text(language.text("종료…", "Exit…")).map_err(|e| format!("Update tray exit label: {e}"))?;
     settings.english.store(language == ui_language::UiLanguage::En, Ordering::Release);
     Ok(serde_json::json!({
@@ -66,9 +67,9 @@ fn workspace_directory(default: std::path::PathBuf, override_path: Option<std::f
     match override_path {
         None => Ok(default),
         Some(path) => {
-            if path.is_empty() { return Err("AGENT_GRID_WORKSPACE_DIR is empty".into()); }
+            if path.is_empty() { return Err("ARCVERA_STUDIO_WORKSPACE_DIR (or legacy AGENT_GRID_WORKSPACE_DIR) is empty".into()); }
             let path = std::path::PathBuf::from(path);
-            if !path.is_absolute() { return Err("AGENT_GRID_WORKSPACE_DIR must be an absolute directory path".into()); }
+            if !path.is_absolute() { return Err("ARCVERA_STUDIO_WORKSPACE_DIR (or legacy AGENT_GRID_WORKSPACE_DIR) must be an absolute directory path".into()); }
             Ok(path)
         }
     }
@@ -394,7 +395,7 @@ fn show_main(app: &tauri::AppHandle) {
 pub fn run() {
     if let Err(error) = process_job::install_app_job() {
         // Fail closed: starting unowned background processes is never a fallback.
-        eprintln!("OpenDIY Desktop startup failed: {error}");
+        eprintln!("Arcvera-Studio startup failed: {error}");
         std::process::exit(1);
     }
     let result = tauri::Builder::default()
@@ -409,7 +410,7 @@ pub fn run() {
         .setup(|app| {
             // Process-scoped isolation for this app's metadata only. Codex's
             // home, credentials and configuration remain entirely unchanged.
-            let directory = workspace_directory(app.path().app_data_dir()?, std::env::var_os("AGENT_GRID_WORKSPACE_DIR"))
+            let directory = workspace_directory(app.path().app_data_dir()?, environment::setting("ARCVERA_STUDIO_WORKSPACE_DIR", "AGENT_GRID_WORKSPACE_DIR"))
                 .map_err(std::io::Error::other)?;
             std::fs::create_dir_all(&directory)?;
             let handle = app.handle().clone();
@@ -429,11 +430,11 @@ pub fn run() {
                 Ok(())
             });
             app.manage(Engine::new(&directory.join("workspace.sqlite3"), sink).map_err(std::io::Error::other)?);
-            let show = MenuItem::with_id(app, "show", "OpenDIY Desktop 열기", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Arcvera-Studio 열기", true, None::<&str>)?;
             let exit = MenuItem::with_id(app, "exit", "종료…", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &exit])?;
             app.manage(UiSettings { english: AtomicBool::new(false), show, exit });
-            let mut tray = TrayIconBuilder::new().tooltip("OpenDIY Desktop").menu(&menu).show_menu_on_left_click(false)
+            let mut tray = TrayIconBuilder::new().tooltip("Arcvera-Studio").menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
                     "exit" => { show_main(app); let _ = app.emit("exit-requested", ()); }
@@ -467,7 +468,7 @@ pub fn run() {
                 }
             }
         }),
-        Err(error) => { eprintln!("OpenDIY Desktop initialization failed: {error}"); std::process::exit(1); }
+        Err(error) => { eprintln!("Arcvera-Studio initialization failed: {error}"); std::process::exit(1); }
     }
 }
 

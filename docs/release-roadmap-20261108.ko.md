@@ -1,4 +1,4 @@
-# OpenDIY Desktop 버전별 미완료 작업 계획
+# Arcvera-Studio 버전별 미완료 작업 계획
 
 ## 현재 우선순위 — 원격 연동 먼저
 

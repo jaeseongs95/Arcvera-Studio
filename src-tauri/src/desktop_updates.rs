@@ -8,7 +8,7 @@ use std::{io::Read, sync::{Mutex, RwLock}, time::{Duration, Instant}};
 use tauri::State;
 use tauri_plugin_updater::UpdaterExt;
 
-const DESKTOP_REPO: &str = "jaeseongs95/opendiy-desktop";
+const DESKTOP_REPO: &str = "jaeseongs95/Arcvera-Studio";
 const CODEX_REPO: &str = "jaeseongs95/opendiy-codex";
 const METADATA_LIMIT: usize = 256 * 1024;
 const INSTALLER_LIMIT: usize = 512 * 1024 * 1024;
@@ -162,7 +162,7 @@ fn request_client() -> Result<Client, String> {
         // Another caller may win registration. Keep that process-wide provider.
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
-    Client::builder().user_agent(concat!("OpenDIY-Desktop/", env!("CARGO_PKG_VERSION")))
+    Client::builder().user_agent(concat!("Arcvera-Studio/", env!("CARGO_PKG_VERSION")))
         .timeout(REQUEST_LIMIT).connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             let url = attempt.url();
@@ -196,11 +196,12 @@ fn release(client: &Client, repo: &str, deadline: Instant) -> Result<(String, Ve
 
 fn public_key() -> Option<&'static str> {
     // Only a build-time public key is accepted. No runtime secret/config discovery.
-    option_env!("OPENDIY_UPDATER_PUBLIC_KEY").map(str::trim).filter(|key| !key.is_empty())
+    option_env!("ARCVERA_STUDIO_UPDATER_PUBLIC_KEY").or(option_env!("OPENDIY_UPDATER_PUBLIC_KEY"))
+        .map(str::trim).filter(|key| !key.is_empty())
 }
 
 fn manifest(client: &Client, tag: &str, version: &Version, deadline: Instant) -> Result<Value, String> {
-    let bytes = get_bytes(client, &format!("https://github.com/{DESKTOP_REPO}/releases/download/{tag}/latest.json"), METADATA_LIMIT, deadline)?;
+    let bytes = get_bytes(client, &format!("https://github.com/{DESKTOP_REPO}/releases/download/{tag}/arcvera-latest.json"), METADATA_LIMIT, deadline)?;
     validate_manifest(&bytes, tag, version)
 }
 
@@ -432,6 +433,8 @@ pub(crate) mod actual_probe {
             require(std::env::var(name).ok().as_deref() == Some(own.as_str()), "own environment binding missing")?;
             no_reparse(Path::new(&own), true)?;
         }
+        require(crate::environment::setting("ARCVERA_STUDIO_WORKSPACE_DIR", "AGENT_GRID_WORKSPACE_DIR")
+            == Some(root.join("workspace").into_os_string()), "effective workspace is outside the fixture")?;
         no_reparse(&root.join("install"), true)?;
         no_reparse(&root.join("evidence"), true)?;
         let raw = validate_package(&input)?;
@@ -454,7 +457,7 @@ pub(crate) mod actual_probe {
             if event(&mut hook_log, "before_exit", serde_json::json!({"calls":count})).is_err() { std::process::abort(); }
         });
         let update = app.updater_builder().pubkey(public.trim()).target("windows-x86_64")
-            .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/latest.json").parse().map_err(|e| format!("endpoint: {e}"))?]).map_err(|e| e.to_string())?
+            .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/arcvera-latest.json").parse().map_err(|e| format!("endpoint: {e}"))?]).map_err(|e| e.to_string())?
             .configure_client(|_| panic!("probe must reuse product get_bytes, never Update.download/check"))
             .clear_installer_args().installer_arg(nsis_install_arg(&input.fixture_root))
             .on_before_exit(move || match hook_log.lock() { Ok(mut hook) => hook(), Err(_) => std::process::abort() })
@@ -511,8 +514,8 @@ pub(crate) mod actual_probe {
             let mut input: Inputs = serde_json::from_value(serde_json::json!({
                 "schemaVersion":1,"nonce":"a".repeat(32),"fixtureRoot":format!("D:/codex/build/u-{}","a".repeat(32)),
                 "transportUrl":"https://artifact.example.invalid/parser-only.exe",
-                "mode":"tamper-only","version":"1.6.2","productName":"OpenDIY Desktop TEST","identifier":"io.agentgrid.desktop.test",
-                "mainBinary":"opendiy-desktop","installedExeSha256":"ab".repeat(32),"installer":pin,"signature":pin,"manifest":pin,
+                "mode":"tamper-only","version":"1.6.2","productName":"Arcvera-Studio TEST","identifier":"io.agentgrid.desktop.test",
+                "mainBinary":"arcvera-studio","installedExeSha256":"ab".repeat(32),"installer":pin,"signature":pin,"manifest":pin,
                 "publicKey":pin,"mergedConfig":pin,"packageReceipt":pin
             })).unwrap();
             assert_eq!(format!("{}/home/codex/app-server-control/app-server-control.sock", input.fixture_root).len(), 103);
@@ -544,7 +547,7 @@ pub(crate) mod actual_probe {
         fn probe_transport_observation_redacts_query_and_marks_component_boundary() {
             let raw = "https://artifact.example.invalid/a.exe?token=PARSER_ONLY_QUERY";
             let transport = validate_transport(raw).unwrap();
-            let metadata = Url::parse("https://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.6.2/a.exe").unwrap();
+            let metadata = Url::parse("https://github.com/jaeseongs95/Arcvera-Studio/releases/download/v1.6.2/a.exe").unwrap();
             let observed = transport_observation(raw, &transport, &metadata);
             assert_eq!(observed["componentOnly"], true);
             assert_eq!(observed["transportDiffersFromMetadata"], true);
@@ -560,7 +563,7 @@ pub(crate) mod actual_probe {
 fn restore(app: &tauri::AppHandle, raw: Value) -> Result<tauri_plugin_updater::Update, String> {
     let key = public_key().ok_or("업데이트 설치 미구성: 신뢰 공개 키가 지정되지 않았습니다.")?;
     app.updater_builder().pubkey(key).timeout(REQUEST_LIMIT)
-        .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/latest.json").parse().map_err(|_| "업데이트 주소 구성 오류")?])
+        .endpoints(vec![format!("https://github.com/{DESKTOP_REPO}/releases/latest/download/arcvera-latest.json").parse().map_err(|_| "업데이트 주소 구성 오류")?])
         .map_err(|_| "업데이트 설치 주소를 구성할 수 없습니다.")?
         .on_before_exit(preserve_app_before_installer_launch)
         .build().map_err(|_| "업데이트 설치 환경을 구성할 수 없습니다.")?
@@ -882,9 +885,9 @@ mod tests {
     fn desktop_updates_manifest_requires_same_release_and_signature() {
         let version = Version::new(1, 7, 0);
         let fixture = |url: &str, signature: &str, version: &str| serde_json::to_vec(&serde_json::json!({"version":version,"platforms":{"windows-x86_64":{"url":url,"signature":signature}}})).unwrap();
-        let own = "https://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.7.0/app.exe";
+        let own = "https://github.com/jaeseongs95/Arcvera-Studio/releases/download/v1.7.0/app.exe";
         assert!(validate_manifest(&fixture(own, "fixture-signature", "1.7.0"), "v1.7.0", &version).is_ok());
-        for url in ["http://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.7.0/app.exe", "https://example.com/app.exe", "https://github.com/other/repo/releases/download/v1.7.0/app.exe", "https://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.6.0/app.exe"] {
+        for url in ["http://github.com/jaeseongs95/Arcvera-Studio/releases/download/v1.7.0/app.exe", "https://example.com/app.exe", "https://github.com/other/repo/releases/download/v1.7.0/app.exe", "https://github.com/jaeseongs95/opendiy-desktop/releases/download/v1.7.0/app.exe", "https://github.com/jaeseongs95/Arcvera-Studio/releases/download/v1.6.0/app.exe"] {
             assert!(validate_manifest(&fixture(url, "fixture-signature", "1.7.0"), "v1.7.0", &version).is_err());
         }
         assert!(validate_manifest(&fixture(own, "", "1.7.0"), "v1.7.0", &version).is_err());

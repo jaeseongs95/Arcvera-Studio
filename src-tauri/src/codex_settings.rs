@@ -141,7 +141,7 @@ fn resolve_pair_with(saved_cli: Option<&str>, saved_server: Option<&str>, enviro
 }
 
 pub fn resolve_pair(saved_cli: Option<&str>, saved_server: Option<&str>) -> CodexSettings {
-    resolve_pair_with(saved_cli, saved_server, std::env::var_os("AGENT_GRID_CODEX").as_deref(), std::env::var_os("PATH").as_deref())
+    resolve_pair_with(saved_cli, saved_server, crate::environment::setting("ARCVERA_STUDIO_CODEX", "AGENT_GRID_CODEX").as_deref(), std::env::var_os("PATH").as_deref())
 }
 
 pub fn resolve(saved: Option<&str>) -> CodexSettings {

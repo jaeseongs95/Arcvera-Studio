@@ -12,7 +12,7 @@ async function workspace(page: Page) {
         const fixture = state.mobileFixture; fixture.calls.push({ command, args });
         if (command.startsWith('plugin:event|')) return callback;
         if (command === 'get_ui_language') return 'ko';
-        if (command === 'set_ui_language') return { show: 'OpenDIY Desktop 열기', exit: '종료…' };
+        if (command === 'set_ui_language') return { show: 'Arcvera-Studio 열기', exit: '종료…' };
         if (command === 'load_layout') return { version: 1, columns: 2, sessions: [] };
         if (command === 'list_projects') return [];
         if (command === 'list_sessions') return [

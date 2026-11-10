@@ -1,4 +1,4 @@
-# OpenDIY Desktop 사용 가이드
+# Arcvera-Studio 사용 가이드
 
 [처음으로](../README.ko.md) · [English](user-guide.md) · [개발 가이드](development.md)
 
@@ -8,10 +8,10 @@ Desktop 1.7.1의 서버 선택 변경 사항을 포함합니다. 처음 사용�
 
 ## 실행 파일과 공유 서버
 
-[Releases](https://github.com/jaeseongs95/opendiy-desktop/releases)에서 포터블 ZIP이나
+[Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases)에서 포터블 ZIP이나
 사용자 단위 설치 파일을 내려받으세요. Windows x64와 WebView2가 필요하며,
 실행 파일은 서명되지 않았습니다.
-포터블 ZIP 전체를 압축 해제한 뒤 `opendiy-desktop.exe`를 실행하세요.
+포터블 ZIP 전체를 압축 해제한 뒤 `arcvera-studio.exe`를 실행하세요.
 Desktop이 작업 프로세스를 직접 실행하고 Windows Job으로 소유·정리하므로 별도 Desktop
 helper 실행 파일은 필요하지 않습니다. Codex·셸·WebView2는 별도 프로세스로 실행됩니다.
 
@@ -26,7 +26,7 @@ helper 실행 파일은 필요하지 않습니다. Codex·셸·WebView2는 별�
 확인해 CLI와 자동 서버 후보를 함께 사용합니다. 열린 세션은 시작할 때 확정한 경로를 유지합니다.
 직접 지정한 서버는 그대로 사용하며, 런처 조회가 실패하면 다른 실행 파일로 대체하지 않고 오류를 알립니다.
 
-**자동 찾기**는 앱에 저장한 경로를 지우고 `AGENT_GRID_CODEX` 환경변수,
+**자동 찾기**는 앱에 저장한 경로를 지우고 `ARCVERA_STUDIO_CODEX` 환경변수(없으면 기존 `AGENT_GRID_CODEX`),
 `PATH` 순서로 실행 파일을 찾습니다. 직접 저장한 경로가 가장 우선합니다.
 경로가 잘못되면 오류를 표시하며 다른 실행 파일로 몰래 대체하지 않습니다.
 CLI는 `--remote`와 공유 서버·프록시 명령 또는 인증된 app-server WebSocket을 지원해야 합니다.
