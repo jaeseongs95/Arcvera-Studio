@@ -297,11 +297,13 @@ try {
     }
     try {
       await openSettings();
+      const legacyLanguageBefore = await page.evaluate(() => localStorage.getItem('agent-grid-language'));
       await page.locator('#language-select').selectOption('en');
       await until(() => page.locator('html').getAttribute('lang'), value => value === 'en', 'English language applied');
       assert.match((await page.locator('#new-session').textContent()) ?? '', /new session/i);
       assert.equal(await page.locator('#language-select').inputValue(), 'en');
-      assert.equal(await page.evaluate(() => localStorage.getItem('agent-grid-language')), 'en');
+      assert.equal(await page.evaluate(() => localStorage.getItem('arcvera-studio-language')), 'en');
+      assert.equal(await page.evaluate(() => localStorage.getItem('agent-grid-language')), legacyLanguageBefore, 'Language selection changed the legacy cache');
       const menu = await nativeCall('set_ui_language', { language: 'en' });
       assert.deepEqual(menu, { show: 'Open Arcvera-Studio', exit: 'Exit…' }, 'Native menu readback did not match English');
       let invalidRejected = false;
