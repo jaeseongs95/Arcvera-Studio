@@ -56,6 +56,7 @@ jobs:
         env:
           AGENT_GRID_BUNDLED_FRONTEND_TEST: '1'
           AGENT_GRID_TEST_OUTPUT: test-results-bundled
+          AGENT_GRID_NETWORK_DIAGNOSTICS: '1'
       - name: Resource snapshot frontend-after
         if: always()
         shell: pwsh
@@ -70,6 +71,7 @@ jobs:
           path: |
             test-results/
             test-results-bundled/
+            artifacts/frontend-network/
           if-no-files-found: warn
           retention-days: 14
   native:

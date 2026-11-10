@@ -1,5 +1,36 @@
 # CI 프런트엔드 시험 분리
 
+## 2026-11-10: bundled navigation observation / 번들 탐색 관측
+
+Candidate `4c687ad` / run `42747109440` retained 247 passes and one failure:
+the first document GET in `runtime-transition.spec.ts:65` failed before HTTP
+delivery with `ERR_NO_BUFFER_SPACE`. The before/after TCP samples do not establish
+the cause. An opt-in NetLog reporter now preserves that boundary without changing
+test assertions, browser features, retries or deadlines. A clean run does not
+prove that the earlier failure was fixed.
+
+후보 `4c687ad`의 CI는 247개 통과, 문서 GET 단계의 실패 1개를 보존한다.
+전후 TCP 표본만으로 원인을 확정하지 않는다. 아래 사례를 실행 전에 정했으며
+`AGENT_GRID_NETWORK_DIAGNOSTICS=1`인 격리 fixture에서만 관측을 켠다.
+
+| ID | 실행 경계 | 판정 |
+| --- | --- | --- |
+| NET-LOCAL | 기존 runtime-transition 번들 시험과 reporter | 기존 assertion·exit 유지, NetLog와 suite 상태 보존. 로컬 타 프로세스 조회 없음 |
+| NET-FAILURE | 예상 밖 시험 실패 직후 | 실패 NetLog 복사, 별도 Node HTTP GET, GitHub Windows runner만 TCP·메모리 표본. 계측 실패는 오류로 남김 |
+| NET-CI | 기존 전체 bundled suite | 사례 목록·oracle·재시도 0 유지, 근거 artifact 업로드. 재발하지 않으면 원인 미확정 유지 |
+
+서버 HTTP 응답과 Chromium socket 오류가 동시에 관측되면 브라우저/OS 연결
+경계를, 양쪽 모두 실패하면 서버/호스트 경계를 추가 조사한다. 실패 시 NetLog의
+`os_error`를 대조한다. 과거 PTY 실패와 동일 원인으로 합치지 않는다.
+
+The reporter's host snapshot runs only on disposable GitHub Windows runners.
+Local runs use loopback HTTP and the test browser only. No operating profile,
+credentials or session data are read. Measurement failure is explicit.
+
+계측은 [Chromium NetLog](https://www.chromium.org/developers/design-documents/network-stack/netlog/)
+인터페이스를 사용한다. [유사 상위 이슈](https://issuetracker.google.com/issues/572515601)는
+가설 자료이며 이 실행의 직접 원인 증거가 아니다. 해당 feature를 임의로 끄지 않는다.
+
 PR #4의 `f6eff70` push 실행 `42155183342`에서 화면 시험 1개가 초기화 전에 실패했다. 보존한 trace는 `/node_modules/.vite/deps/@xterm_xterm.js` 요청의 `net::ERR_NO_BUFFER_SPACE`를 기록한다. 전체 439개 사례는 437개 통과, 1개 실패, 1개 opt-in 제외였으며 Rust 검사는 통과했다. Windows 작업은 선행 프런트엔드 실패 때문에 패키징에 진입하지 않았다.
 
 제품 동작이나 assertion을 바꾸지 않고, 배포 번들로 실행할 수 있는 화면 시험과 소스 모듈 import·route 변조를 사용하는 fixture를 구분한다. 기존 실패는 보존한다. 이미 공개된 1.3.2 태그와 자산은 변경하지 않는다.
