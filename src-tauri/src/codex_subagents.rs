@@ -224,6 +224,14 @@ fn preview_delete<S: Read+Write>(state: &mut State,rpc: &mut Rpc<S>,parent: &str
     let snapshot=serde_json::to_string(&result["snapshot"]).map_err(|_|"삭제 확인 정보를 변환하지 못했습니다.")?;
     let value=cleanup_snapshot(&snapshot)?;
     if value["threadId"].as_str()!=Some(agent_id) { return Err("삭제 대상이 일치하지 않습니다.".into()); }
+    let runtime=value["runtimeId"].as_str().unwrap();
+    let same_generation=match expected_runtime {
+        Some(expected)=>runtime==expected,
+        None=>runtime.strip_prefix(&format!("stored-v1:{expected_parent}:"))
+            .is_some_and(|revision|revision.len()==40 && revision.bytes().all(|byte|byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+            && value["activityRevision"].as_u64()==Some(0),
+    };
+    if !same_generation { return Err("삭제 확인의 실행 세대가 목록에서 바뀌었습니다. 새 목록을 조회하세요.".into()); }
     state.delete_preview=Some((agent_id.into(),snapshot.clone()));
     Ok(json!({"eligible":true,"snapshot":snapshot}))
 }
