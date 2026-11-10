@@ -107,6 +107,7 @@ struct Harness {
     collector: Option<thread::JoinHandle<()>>,
     errors: Arc<Mutex<Vec<String>>>,
     cursor_reply_errors: Arc<Mutex<HashMap<(String, u64), String>>>,
+    cursor_reply_counts: Arc<Mutex<HashMap<(String, u64), (u64, u64)>>>,
     capture: mpsc::SyncSender<Capture>,
     sessions_started: Arc<AtomicU64>,
 }
@@ -134,7 +135,9 @@ impl Harness {
         let ack = Arc::new(AtomicBool::new(true));
         let errors = Arc::new(Mutex::new(Vec::new()));
         let cursor_reply_errors = Arc::new(Mutex::new(HashMap::new()));
+        let cursor_reply_counts = Arc::new(Mutex::new(HashMap::<(String,u64),(u64,u64)>::new()));
         let reply_errors = cursor_reply_errors.clone();
+        let reply_counts = cursor_reply_counts.clone();
         let collector_stop = Arc::new(AtomicBool::new(false));
         let (writing, bytes, frames, acknowledging, failures, stopping, backend) = (output.clone(), output_bytes.clone(), output_frames.clone(), ack.clone(), errors.clone(), collector_stop.clone(), engine.clone());
         let collector = thread::spawn(move || {
@@ -152,7 +155,11 @@ impl Harness {
                         let scan = tail.clone() + &event.data;
                         *tail = scan.chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
                         for _ in 0..scan.matches("\x1b[6n").count() {
-                            if let Err(error) = backend.write(&event.id, event.generation, "\x1b[1;1R") {
+                            let key=(event.id.clone(),event.generation);
+                            reply_counts.lock().unwrap().entry(key.clone()).or_default().0+=1;
+                            let reply=backend.write(&event.id, event.generation, "\x1b[1;1R");
+                            if reply.is_ok() {reply_counts.lock().unwrap().entry(key).or_default().1+=1;}
+                            if let Err(error) = reply {
                                 // A late query after stop may be discarded normally.
                                 // Preserve the first cause for this exact readiness
                                 // check without failing unrelated completed checks.
@@ -174,7 +181,7 @@ impl Harness {
                 }
             }
         });
-        Ok(Self { engine, output, output_bytes, output_frames, ack, collector_stop, collector: Some(collector), errors, cursor_reply_errors, capture: sender, sessions_started: Arc::new(AtomicU64::new(0)) })
+        Ok(Self { engine, output, output_bytes, output_frames, ack, collector_stop, collector: Some(collector), errors, cursor_reply_errors, cursor_reply_counts, capture: sender, sessions_started: Arc::new(AtomicU64::new(0)) })
     }
 
     fn start(&self, script: &str) -> Result<SessionInfo, String> {
@@ -201,7 +208,20 @@ impl Harness {
         // the renderer fixture consumed all earlier output before we inspect it.
         self.barrier()?;
         self.cursor_reply_errors.lock().unwrap().remove(&(info.id.clone(), info.generation));
+        self.cursor_reply_counts.lock().unwrap().remove(&(info.id.clone(), info.generation));
         Ok(self.output.lock().unwrap().remove(&info.id).unwrap_or_default())
+    }
+
+    // This Harness owns only an in-memory synthetic PTY engine. Never query
+    // operating application sessions or OS-wide processes for these details.
+    fn fixture_diagnostics(&self, info: &SessionInfo) -> String {
+        let drain=self.barrier();
+        let key=(info.id.clone(),info.generation);
+        let counts=self.cursor_reply_counts.lock().unwrap().get(&key).copied();
+        let reply_error=self.cursor_reply_errors.lock().unwrap().get(&key).cloned();
+        let state=self.engine.list().map(|sessions|sessions.into_iter().find(|session|session.id==info.id && session.generation==info.generation));
+        let tail=fixture_tail(self.output.lock().unwrap().get(&info.id).map(String::as_str).unwrap_or_default());
+        format!("fixture session={} generation={} collector={drain:?} DSR(query,write_all_ok)={counts:?} reply_error={reply_error:?} state={state:?} pure-fixture output tail={tail}",info.id,info.generation)
     }
 
     fn wait_output(&self, info: &SessionInfo, marker: &str, timeout: Duration) -> Result<(), String> {
@@ -209,10 +229,11 @@ impl Harness {
         loop {
             if self.output.lock().unwrap().get(&info.id).is_some_and(|text| text.contains(marker)) { return Ok(()); }
             if Instant::now() >= deadline {
+                let diagnostics=self.fixture_diagnostics(info);
                 self.barrier()?;
                 let reply_error = self.cursor_reply_errors.lock().unwrap().get(&(info.id.clone(), info.generation)).cloned();
                 let output = self.take_output(info)?;
-                return Err(format!("fixture readiness marker {marker:?} was not observed; pure-fixture output tail={}; fixture DSR reply failure: session={} generation={} error={reply_error:?}", fixture_tail(&output), info.id, info.generation));
+                return Err(format!("fixture readiness marker {marker:?} was not observed; pure-fixture output tail={}; fixture DSR reply failure: session={} generation={} error={reply_error:?}; {diagnostics}", fixture_tail(&output), info.id, info.generation));
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -230,8 +251,8 @@ impl Harness {
             markers.push(marker);
         }
         for session in &sessions {
-            resize_isolation_fixture(&self.engine, session)?;
-            self.engine.wait_for_exit(&session.id, session.generation, Duration::from_secs(30))?;
+            resize_isolation_fixture(&self.engine, session).map_err(|error|format!("isolation resize: {error}; {}",self.fixture_diagnostics(session)))?;
+            self.engine.wait_for_exit(&session.id, session.generation, Duration::from_secs(30)).map_err(|error|format!("isolation wait: {error}; {}",self.fixture_diagnostics(session)))?;
         }
         for (index, session) in sessions.iter().enumerate() {
             let output = self.take_output(session)?;
@@ -839,6 +860,8 @@ mod tests {
         assert!(error.contains("owned-tree-ready"), "{error}");
         assert!(error.contains("\\u001b[6n"), "{error}");
         assert!(error.contains("fixture DSR reply failure: session=dsr-reply-failure-fixture generation=17 error=Some(\"session not found\")"), "{error}");
+        assert!(error.contains("DSR(query,write_all_ok)=Some((1, 0))"), "{error}");
+        assert!(harness.cursor_reply_counts.lock().unwrap().is_empty(), "observations must be released with consumed fixture output");
     }
 
     #[test]
