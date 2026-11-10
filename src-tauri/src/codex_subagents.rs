@@ -469,6 +469,50 @@ mod tests {
         }
     }
     #[test]
+    fn subagents_delete_known_preservation_recovers_without_replaying_uncertain_results() {
+        for (outcome,expected) in [
+            ("reference_participants_unverified","notApplied"),
+            ("storage_rejected_before_deletion: fixture rejection","notApplied"),
+            ("storage_rejected_before_deletion_extra: fixture rejection","unknown"),
+            ("storage_unconfirmed_partial_deletion_possible: fixture failure","unknown"),
+            ("shutdown_unconfirmed","unknown"),
+            ("unconfirmed: fixture failure","unknown"),
+            ("future_cleanup_outcome","unknown"),
+        ] {
+            let mut state=State::default();let request=delete_request(prepare_cleanup_preview(&mut state));
+            let shared=Mutex::new(state);let (mut rpc,mut peer)=raw_rpc();
+            let server=thread::spawn(move|| {
+                initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));
+                let call=read(&mut peer);assert_eq!(call["method"],CLEANUP);
+                assert_eq!(call["params"]["selection"],json!([cleanup_test_snapshot()]));
+                reply(&mut peer,&call["id"],json!({"results":[{"threadId":CHILD,"outcome":outcome,"snapshot":null}]}));
+                if expected=="notApplied" {
+                    initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));
+                    let next=read(&mut peer);assert_eq!(next["method"],CONTROL);assert_eq!(next["params"]["action"],"send");
+                    reply(&mut peer,&next["id"],json!({"status":"applied"}));
+                }
+                assert!(peer.read().is_err(),"동일 삭제 요청을 재전송하면 안 됩니다: {outcome}");
+            });
+            let result=with_request(&shared,&request,|state|exchange(&connection().0,state,&mut rpc,PARENT,&request,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT)).unwrap();
+            assert_eq!(result["status"],expected,"{outcome}");
+            let repeated=with_request(&shared,&request,|state|Ok(state.previous(&request)?.unwrap())).unwrap();
+            assert_eq!(repeated["status"],expected,"{outcome}");
+            {
+                let mut state=shared.lock().unwrap();assert!(state.delete_preview.is_none());
+                let page=state.page(PARENT,terminal_page()).unwrap();assert_eq!(page["agents"].as_array().unwrap().len(),1);
+                assert_eq!(state.unresolved.as_deref(),if expected=="unknown" {Some(REQUEST)} else {None},"{outcome}");
+            }
+            let mut next=send();if let SubagentRequest::Send {request_id,..}=&mut next {*request_id=Uuid::new_v4().to_string();}
+            let followup=with_request(&shared,&next,|state| {
+                if let Some(previous)=state.previous(&next)? {return Ok(previous);}
+                exchange(&connection().0,state,&mut rpc,PARENT,&next,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT)
+            }).unwrap();
+            assert_eq!(followup["status"],if expected=="notApplied" {"applied"} else {"notApplied"},"{outcome}");
+            if expected=="unknown" {assert_eq!(shared.lock().unwrap().unresolved.as_deref(),Some(REQUEST));}
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
     fn subagents_delete_requires_preview_and_exact_target_generation() {
         for condition in ["no_preview","changed_snapshot","new_page","running","pending","unknown","active_turn","wrong_parent","stale_parent","stale_child"] {
             let mut state=State::default();let snapshot=prepare_cleanup_preview(&mut state);
