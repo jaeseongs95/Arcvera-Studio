@@ -60,7 +60,7 @@ Desktop과 Codex는 별도로 설치합니다. Desktop **1.2.0**의 문서상 �
 | 대화 보기에서 질문·승인에 답하기 | [대화 보기와 질문함](docs/user-guide.ko.md#conversation) |
 | 설치된 플러그인 관리, 새 플러그인 찾기, 스킬 관리 | [플러그인과 스킬](docs/user-guide.ko.md#extensions) |
 | Hook 조회, 사용 설정과 신뢰 검토 | [Hook](docs/user-guide.ko.md#hooks) |
-| 직접 생성한 서브에이전트 조회·관리 | [서브에이전트](docs/user-guide.ko.md#subagents) |
+| 직접 하위 에이전트 검색·상태 필터·작업 제어 및 완료 항목 삭제 확인 | [서브에이전트](docs/user-guide.ko.md#subagents) |
 | 사용량 확인, 특정 세션의 컨텍스트 크기 조절, 압축, 작업 예약 | [컨텍스트](docs/user-guide.ko.md#context) · [예약](docs/user-guide.ko.md#schedules) |
 | 실행 중인 세션을 휴대전화와 연결 | [모바일 원격 제어](docs/user-guide.ko.md#mobile) |
 | 주간 사용량과 첨부 이미지 저장 공간 확인 | [사용량](docs/user-guide.ko.md#usage) · [저장 공간](docs/user-guide.ko.md#storage) |

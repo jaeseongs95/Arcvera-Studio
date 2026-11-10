@@ -11,8 +11,9 @@ interface Agent {
 }
 interface List { supported: boolean; connected: boolean; parentRuntimeId?: string | null; agents: Agent[]; nextCursor?: string | null; mutationState?: 'clear' | 'unknown'; reconciledRequestId?: string | null }
 interface Reply { status: 'applied' | 'notApplied' | 'unknown' | 'unsupported' }
+interface DeletePreview { eligible: boolean; snapshot: string | null }
 interface Host { call<T>(command: string, args: Record<string, unknown>): Promise<T>; notify(ko: string, error?: boolean, en?: string): void }
-type Action = 'send' | 'interrupt' | 'close' | 'resume';
+type Action = 'send' | 'interrupt' | 'close' | 'resume' | 'delete';
 const LIMIT = 100;
 const states: Record<Agent['status'], [string, string]> = {
   pending: ['대기 중', 'Pending'], running: ['실행 중', 'Running'], idle: ['입력 대기', 'Idle'],
@@ -23,20 +24,26 @@ const validUuid = (value: unknown): value is string => typeof value === 'string'
 
 export function createSubagentManager(host: Host) {
   const dialog = document.createElement('dialog'); dialog.id = 'subagents-dialog'; dialog.className = 'subagent-dialog'; dialog.setAttribute('aria-labelledby', 'subagent-title');
-  dialog.innerHTML = `<div class="dialog-heading"><h2 id="subagent-title"></h2><button class="subagent-close icon-button" type="button">×</button></div>
-    <p class="subagent-session"></p><p class="subagent-help"></p>
-    <div class="subagent-toolbar"><button class="subagent-refresh quiet-button" type="button"></button><span class="subagent-status" role="status" aria-live="polite"></span></div>
-    <p class="subagent-error inline-error" role="alert" hidden></p><p class="subagent-unknown" role="status" hidden></p><p class="subagent-remote-unknown" role="status" hidden></p>
-    <div class="subagent-columns"><section class="subagent-browser"><label class="subagent-search-label"><span></span><input class="subagent-search" type="search" maxlength="512"></label>
-    <div class="subagent-list"></div><div class="subagent-pages"><button class="subagent-first quiet-button" type="button"></button><button class="subagent-next quiet-button" type="button"></button><span class="subagent-page"></span></div><p class="subagent-limit" hidden></p></section>
-    <section class="subagent-detail"><p class="subagent-empty-detail"></p><div class="subagent-fields" hidden><h3 class="subagent-name"></h3><p class="subagent-id"></p><dl></dl>
-    <form class="subagent-form"><label><span class="subagent-prompt-label"></span><textarea class="subagent-prompt" rows="4" maxlength="65536"></textarea></label><button class="subagent-send primary-button" type="submit"></button></form>
-    <div class="subagent-actions"><button class="subagent-interrupt quiet-button" type="button"></button><button class="subagent-resume quiet-button" type="button"></button><button class="subagent-end quiet-button" type="button"></button></div>
-    <div class="subagent-confirm" hidden><p></p><button class="subagent-confirm-end quiet-button" type="button"></button><button class="subagent-confirm-cancel quiet-button" type="button"></button></div></div></section></div>`;
+  dialog.innerHTML = `<header class="subagent-header"><div class="subagent-header-copy"><span class="subagent-eyebrow"></span><h2 id="subagent-title"></h2><p class="subagent-session"></p></div><button class="subagent-close icon-button" type="button">×</button></header>
+    <div class="subagent-overview"><p class="subagent-help"></p><div class="subagent-summary" aria-live="polite"></div></div>
+    <div class="subagent-toolbar"><span class="subagent-connection"></span><span class="subagent-status" role="status" aria-live="polite"></span><button class="subagent-refresh quiet-button" type="button"></button></div>
+    <div class="subagent-notices"><p class="subagent-error inline-error" role="alert" hidden></p><p class="subagent-unknown" role="status" hidden></p><p class="subagent-remote-unknown" role="status" hidden></p></div>
+    <div class="subagent-columns"><section class="subagent-browser" aria-labelledby="subagent-browser-title"><div class="subagent-section-heading"><h3 id="subagent-browser-title"></h3><span class="subagent-match-count"></span></div>
+    <label class="subagent-search-label"><span></span><input class="subagent-search" type="search" maxlength="512" autocomplete="off"></label>
+    <label class="subagent-filter-label"><span></span><select class="subagent-filter"><option value="all"></option><option value="running"></option><option value="idle"></option><option value="finished"></option></select></label>
+    <div class="subagent-list"></div><div class="subagent-pages"><span class="subagent-page"></span><button class="subagent-first quiet-button" type="button"></button><button class="subagent-next quiet-button" type="button"></button></div><p class="subagent-limit" hidden></p></section>
+    <section class="subagent-detail" aria-labelledby="subagent-detail-title"><h3 id="subagent-detail-title" class="subagent-section-label"></h3><p class="subagent-empty-detail"></p><div class="subagent-fields" hidden>
+    <div class="subagent-detail-heading"><h3 class="subagent-name"></h3><span class="subagent-state-badge"></span></div><p class="subagent-id"></p><dl></dl>
+    <section class="subagent-task-section"><h4 class="subagent-task-title"></h4><p class="subagent-task-help"></p><div class="subagent-actions"><button class="subagent-interrupt quiet-button" type="button"></button><button class="subagent-resume quiet-button" type="button"></button><button class="subagent-end quiet-button" type="button"></button></div>
+    <div class="subagent-confirm" hidden><p></p><button class="subagent-confirm-end quiet-button" type="button"></button><button class="subagent-confirm-cancel quiet-button" type="button"></button></div></section>
+    <form class="subagent-form"><label><span class="subagent-prompt-label"></span><textarea class="subagent-prompt" rows="4" maxlength="65536"></textarea></label><div class="subagent-compose-footer"><span class="subagent-compose-help"></span><button class="subagent-send primary-button" type="submit"></button></div></form>
+    <section class="subagent-delete-section"><div><h4 class="subagent-delete-title"></h4><p class="subagent-delete-help"></p></div><button class="subagent-delete quiet-button" type="button"></button></section>
+    <div class="subagent-delete-confirm" hidden role="group" aria-labelledby="subagent-delete-warning"><p id="subagent-delete-warning"></p><p class="subagent-delete-target"></p><div><button class="subagent-delete-cancel quiet-button" type="button"></button><button class="subagent-confirm-delete quiet-button" type="button"></button></div></div></div></section></div>`;
   document.body.append(dialog);
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   const prompt = $<HTMLTextAreaElement>('.subagent-prompt');
   const search = $<HTMLInputElement>('.subagent-search');
+  const filter = $<HTMLSelectElement>('.subagent-filter');
   const rows = new Map<string, { signature: string; node: HTMLButtonElement }>();
   // ponytail: 동시 요청은 팝업 전체에서 하나. 세션별 미확인 표식은 제한 수 이후 새 변경을 막아 상한을 유지한다.
   const unresolved = new Map<string, { requestId: string; expectedParentRuntimeId: string; expectedRuntimeId: string | null }>();
@@ -46,10 +53,13 @@ export function createSubagentManager(host: Host) {
   let visible = true; let exiting = false; let disposed = false; let epoch = 0;
   let request: Promise<void> | undefined; let reading = false; let timer: ReturnType<typeof setTimeout> | undefined;
   let cursor: string | null = null; let nextCursor: string | null = null; let page = 1; let overflow = false; let confirming = false;
+  let deleteSnapshot: string | undefined;
   const key = (session: Session) => JSON.stringify([session.id, session.generation, session.threadId ?? null]);
   const uncertain = () => !!selected && unresolved.has(key(selected));
   const live = (version: number) => !disposed && dialog.open && version === epoch && !!selected && available && visible && !document.hidden && !exiting;
   const currentAgent = () => agents.find(agent => agent.id === agentId);
+  const matchesFilter = (agent: Agent) => filter.value === 'all' || (filter.value === 'running' ? ['pending', 'running'] : filter.value === 'idle' ? ['idle'] : ['completed', 'errored', 'closed']).includes(agent.status);
+  const deletable = (agent: Agent | undefined) => !!agent && !['running', 'pending', 'unknown'].includes(agent.status) && !agent.activeTurnId;
   const rpc = <T>(session: Session, value: Record<string, unknown>) => host.call<T>('subagents_request', { id: session.id, generation: session.generation, request: value });
   function status(ko: string, en: string) { if ($('.subagent-status').textContent !== t(ko, en)) bindText($('.subagent-status'), ko, en); }
   function error(ko: string, en: string) { bindText($('.subagent-error'), ko, en); $('.subagent-error').hidden = false; }
@@ -57,49 +67,61 @@ export function createSubagentManager(host: Host) {
     const agent = currentAgent();
     const eligible = !!selected && live(epoch) && supported && connected && fresh && validUuid(parentRuntimeId) && !uncertain() && !remoteUnknown && unresolved.size < MAX_WORKSPACE_SESSIONS;
     const ready = eligible && !request;
-    prompt.disabled = !eligible || (!!request && !reading) || !agent?.capabilities.send;
-    $<HTMLButtonElement>('.subagent-send').disabled = !ready || !agent?.capabilities.send;
-    $<HTMLButtonElement>('.subagent-interrupt').disabled = !ready || !agent?.capabilities.interrupt || agent.status !== 'running' || !validText(agent.activeTurnId);
-    $<HTMLButtonElement>('.subagent-resume').disabled = !ready || !agent?.capabilities.resume;
-    $<HTMLButtonElement>('.subagent-end').disabled = !ready || !agent?.capabilities.close;
+    prompt.disabled = !eligible || (!!request && !reading) || !agent?.capabilities.send || !!deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-send').disabled = !ready || !agent?.capabilities.send || !!deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-interrupt').disabled = !ready || !agent?.capabilities.interrupt || agent.status !== 'running' || !validText(agent.activeTurnId) || !!deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-resume').disabled = !ready || !agent?.capabilities.resume || !!deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-end').disabled = !ready || !agent?.capabilities.close || !!deleteSnapshot;
     $<HTMLButtonElement>('.subagent-confirm-end').disabled = !ready || !agent?.capabilities.close;
+    $<HTMLButtonElement>('.subagent-delete').disabled = !ready || !deletable(agent) || !!deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-confirm-delete').disabled = !ready || !deletable(agent) || !deleteSnapshot;
+    $<HTMLButtonElement>('.subagent-delete-cancel').disabled = !!request;
     $<HTMLButtonElement>('.subagent-refresh').disabled = !selected || !live(epoch) || !!request;
     $<HTMLButtonElement>('.subagent-first').disabled = !readyToRead() || cursor === null;
     $<HTMLButtonElement>('.subagent-next').disabled = !readyToRead() || !fresh || !nextCursor;
     $('.subagent-unknown').hidden = !uncertain();
     $('.subagent-remote-unknown').hidden = !remoteUnknown;
     $('.subagent-confirm').hidden = !confirming || !agent;
+    $('.subagent-delete-confirm').hidden = !deleteSnapshot || !agent;
+    $('.subagent-delete-target').textContent = deleteSnapshot && agent ? `${agent.nickname || agent.id} · ${agent.id}` : '';
     dialog.setAttribute('aria-busy', String(!!request));
+    const connection = $('.subagent-connection'); connection.dataset.state = fresh && connected ? 'connected' : 'stale';
+    bindText(connection, fresh && connected ? '연결됨' : request ? '확인 중' : '상태 확인 필요', fresh && connected ? 'Connected' : request ? 'Checking' : 'Check status');
   }
   function readyToRead() { return live(epoch) && !request; }
   function render() {
     bindText($('.subagent-session'), selected ? `세션: ${selected.title}` : '', selected ? `Session: ${selected.title}` : '');
     const list = $('.subagent-list'); const query = search.value.trim().toLocaleLowerCase();
+    const summary = `${t('이 페이지', 'This page')} · ${t('전체', 'All')} ${agents.length} · ${t('실행 중', 'Running')} ${agents.filter(agent => agent.status === 'running').length} · ${t('완료', 'Finished')} ${agents.filter(agent => ['completed', 'errored', 'closed'].includes(agent.status)).length}`;
+    if ($('.subagent-summary').textContent !== summary) $('.subagent-summary').textContent = summary;
     const desired: HTMLElement[] = [];
     const ids = new Set(agents.map(agent => agent.id));
     for (const id of rows.keys()) if (!ids.has(id)) rows.delete(id);
     for (const agent of agents) {
-      if (query && ![agent.id, agent.nickname, agent.role, agent.status, ...states[agent.status]].some(value => value?.toLocaleLowerCase().includes(query))) continue;
+      if (!matchesFilter(agent) || (query && ![agent.id, agent.nickname, agent.role, agent.status, ...states[agent.status]].some(value => value?.toLocaleLowerCase().includes(query)))) continue;
       const signature = JSON.stringify([getLanguage(), agent]); let entry = rows.get(agent.id);
       if (!entry || entry.signature !== signature) {
-        const node = document.createElement('button'); node.type = 'button'; node.className = 'subagent-row'; node.dataset.agentId = agent.id;
-        const name = document.createElement('strong'); name.textContent = agent.nickname || agent.id;
+        const node = document.createElement('button'); node.type = 'button'; node.className = 'subagent-row'; node.dataset.agentId = agent.id; node.dataset.state = agent.status;
+        const name = document.createElement('strong'); name.textContent = agent.nickname || agent.id; name.title = name.textContent;
         const detail = document.createElement('small'); detail.textContent = `${t(...states[agent.status])}${agent.role ? ` · ${agent.role}` : ''}`;
-        node.append(name, detail); node.onclick = () => { agentId = agent.id; confirming = false; render(); };
+        node.append(name, detail); node.onclick = () => { agentId = agent.id; confirming = false; deleteSnapshot = undefined; render(); scheduleRefresh(); };
         entry = { signature, node }; rows.set(agent.id, entry);
       }
       entry.node.setAttribute('aria-pressed', String(agent.id === agentId)); desired.push(entry.node);
     }
     if (!desired.length) {
       const empty = document.createElement('p');
-      bindText(empty, query ? '현재 페이지에 검색 결과가 없습니다.' : knownList && fresh ? '이 세션의 직접 하위 에이전트가 없습니다.' : '하위 에이전트 목록을 아직 확인하지 못했습니다.', query ? 'No matches on this page.' : knownList && fresh ? 'This session has no direct subagents.' : 'The subagent list has not been confirmed.'); desired.push(empty);
+      empty.className = 'subagent-list-empty'; bindText(empty, query || filter.value !== 'all' ? '현재 페이지에 검색 결과가 없습니다.' : knownList && fresh ? '이 세션의 직접 하위 에이전트가 없습니다.' : '하위 에이전트 목록을 아직 확인하지 못했습니다.', query || filter.value !== 'all' ? 'No matches on this page.' : knownList && fresh ? 'This session has no direct subagents.' : 'The subagent list has not been confirmed.'); desired.push(empty);
     }
+    $('.subagent-match-count').textContent = `${desired.filter(node => node.classList.contains('subagent-row')).length} / ${agents.length}`;
     const retained = new Set<Node>(desired); for (const child of Array.from(list.childNodes)) if (!retained.has(child)) child.remove();
     let position = list.firstChild; for (const node of desired) { if (node !== position) list.insertBefore(node, position); position = node.nextSibling; }
     bindText($('.subagent-page'), `${page}쪽`, `Page ${page}`); $('.subagent-limit').hidden = !overflow;
     const agent = currentAgent(); $('.subagent-empty-detail').hidden = !!agent; $('.subagent-fields').hidden = !agent;
     if (agent) {
       $('.subagent-name').textContent = agent.nickname || agent.id; $('.subagent-id').textContent = agent.id;
+      $('.subagent-name').title = agent.nickname || agent.id;
+      $('.subagent-state-badge').textContent = t(...states[agent.status]); $('.subagent-state-badge').dataset.state = agent.status;
       const fields: [string, string, string][] = [['상태', 'Status', t(...states[agent.status])], ['역할', 'Role', agent.role || t('미확인', 'Unknown')], ['모델', 'Model', agent.model || t('미확인', 'Unknown')], ['추론 수준', 'Reasoning effort', agent.effort || t('미확인', 'Unknown')]];
       const detail = $('.subagent-fields dl'); const signature = JSON.stringify([getLanguage(), fields]);
       if (detail.dataset.signature !== signature) { detail.replaceChildren(); for (const [ko, en, value] of fields) { const label = document.createElement('dt'); label.textContent = t(ko, en); const text = document.createElement('dd'); text.textContent = value; detail.append(label, text); } detail.dataset.signature = signature; }
@@ -111,12 +133,12 @@ export function createSubagentManager(host: Host) {
     if ((value.supported || value.parentRuntimeId != null) && !validUuid(value.parentRuntimeId)) throw Error('부모 실행 세대 형식 불일치');
     const ids = new Set<string>();
     for (const agent of value.agents.slice(0, LIMIT)) {
-      if (!agent || !validText(agent.id) || ids.has(agent.id) || !validText(agent.parentThreadId) || !Object.hasOwn(states, agent.status) || !agent.capabilities || ['send', 'interrupt', 'close', 'resume'].some(action => typeof agent.capabilities[action as Action] !== 'boolean') || [agent.nickname, agent.role, agent.model, agent.effort, agent.activeTurnId].some(text => text != null && (typeof text !== 'string' || text.length > 1024 || text.includes('\0')))) throw Error('하위 에이전트 목록 형식 불일치');
+      if (!agent || !validText(agent.id) || ids.has(agent.id) || !validText(agent.parentThreadId) || !Object.hasOwn(states, agent.status) || !agent.capabilities || ['send', 'interrupt', 'close', 'resume'].some(action => typeof agent.capabilities[action as Exclude<Action, 'delete'>] !== 'boolean') || [agent.nickname, agent.role, agent.model, agent.effort, agent.activeTurnId].some(text => text != null && (typeof text !== 'string' || text.length > 1024 || text.includes('\0')))) throw Error('하위 에이전트 목록 형식 불일치');
       if (value.supported && (agent.runtimeId !== null && !validUuid(agent.runtimeId))) throw Error('하위 실행 세대 형식 불일치');
       ids.add(agent.id);
     }
   }
-  function scheduleRefresh() { clearTimeout(timer); if (live(epoch)) timer = setTimeout(() => void refresh(), 5000); }
+  function scheduleRefresh() { clearTimeout(timer); if (live(epoch) && !deleteSnapshot) timer = setTimeout(() => void refresh(), 5000); }
   function track(version: number, work: () => Promise<void>, read = false) {
     if (request || exiting || disposed) return Promise.resolve();
     clearTimeout(timer); reading = read;
@@ -130,6 +152,7 @@ export function createSubagentManager(host: Host) {
     if (!session || !live(version)) return Promise.resolve();
     return track(version, async () => {
       if (!live(version)) return;
+      deleteSnapshot = undefined; controls();
       try {
         const confirmedAgent = confirming && fresh ? currentAgent() : undefined;
         const confirmedParentRuntimeId = parentRuntimeId;
@@ -159,56 +182,91 @@ export function createSubagentManager(host: Host) {
       }
     }, true);
   }
+  function previewDelete() {
+    const session = selected; const agent = currentAgent(); const version = epoch; const expectedParentRuntimeId = parentRuntimeId;
+    if (!session || !agent || $<HTMLButtonElement>('.subagent-delete').disabled) return Promise.resolve();
+    deleteSnapshot = undefined; confirming = false;
+    return track(version, async () => {
+      if (!live(version)) return;
+      try {
+        const result = await rpc<DeletePreview>(session, { type: 'previewDelete', agentId: agent.id, expectedParentRuntimeId, expectedRuntimeId: agent.runtimeId });
+        if (!live(version) || agentId !== agent.id) return;
+        if (!result || typeof result.eligible !== 'boolean' || (result.eligible ? !validText(result.snapshot, 8192) : result.snapshot !== null)) throw Error('Invalid deletion preview');
+        $('.subagent-error').hidden = true;
+        if (result.eligible) {
+          deleteSnapshot = result.snapshot!; status('삭제 대상을 확인했습니다. 아래 내용을 확인한 뒤 삭제하세요.', 'Deletion preview confirmed. Review it before deleting.');
+          controls();
+          // track() enables the cancel button before the focus handoff below.
+        } else error('이 에이전트는 삭제할 수 없습니다. 완료 상태·대기 작업·서버 지원 여부를 확인하고 새로고침하세요.', 'This agent cannot be deleted. Check its completed state, pending work and server support, then refresh.');
+      } catch { if (live(version) && agentId === agent.id) error('삭제 가능 여부를 확인하지 못했습니다. 삭제하지 않았습니다. 연결과 서버 지원 여부를 확인하고 새로고침하세요.', 'Could not preview deletion. Nothing was deleted. Check the connection and server support, then refresh.'); }
+    }).then(() => { if (live(version) && deleteSnapshot) $<HTMLButtonElement>('.subagent-delete-cancel').focus(); });
+  }
   function mutate(type: Action) {
     const session = selected; const agent = currentAgent(); const version = epoch; const text = prompt.value;
     const expectedParentRuntimeId = parentRuntimeId;
-    if (!session || !agent || !live(version) || request || !fresh || !supported || !connected || uncertain() || remoteUnknown || unresolved.size >= MAX_WORKSPACE_SESSIONS || !agent.capabilities[type] || agent.parentThreadId !== session.threadId || !validUuid(expectedParentRuntimeId) || (agent.runtimeId !== null && !validUuid(agent.runtimeId))) return Promise.resolve();
+    if (!session || !agent || !live(version) || request || !fresh || !supported || !connected || uncertain() || remoteUnknown || unresolved.size >= MAX_WORKSPACE_SESSIONS || !(type === 'delete' ? deletable(agent) && !!deleteSnapshot : agent.capabilities[type]) || agent.parentThreadId !== session.threadId || !validUuid(expectedParentRuntimeId) || (agent.runtimeId !== null && !validUuid(agent.runtimeId))) return Promise.resolve();
+    if (type !== 'delete' && deleteSnapshot) return Promise.resolve();
     if (type === 'interrupt' && (agent.status !== 'running' || !validText(agent.activeTurnId))) return Promise.resolve();
     if (type === 'close' && !confirming) return Promise.resolve();
     if (type === 'send' && (!text.trim() || text.includes('\0') || new TextEncoder().encode(text).byteLength > 65536)) { error('보낼 내용을 입력하세요. UTF-8 기준 64 KiB까지 보낼 수 있습니다.', 'Enter a message, up to 64 KiB in UTF-8.'); return Promise.resolve(); }
     const requestId = crypto.randomUUID();
+    const expectedSnapshot = deleteSnapshot;
     return track(version, async () => {
       if (!live(version)) return;
       unresolved.set(key(session), { requestId, expectedParentRuntimeId, expectedRuntimeId: agent.runtimeId });
       try {
-        const result = await rpc<Reply>(session, { type, agentId: agent.id, requestId, expectedParentRuntimeId, expectedRuntimeId: agent.runtimeId, ...(type === 'send' ? { text } : {}), ...(type === 'interrupt' ? { expectedTurnId: agent.activeTurnId } : {}) });
+        const result = await rpc<Reply>(session, { type, agentId: agent.id, requestId, expectedParentRuntimeId, expectedRuntimeId: agent.runtimeId, ...(type === 'send' ? { text } : {}), ...(type === 'interrupt' ? { expectedTurnId: agent.activeTurnId } : {}), ...(type === 'delete' ? { expectedSnapshot } : {}) });
         if (!result || !['applied', 'notApplied', 'unsupported'].includes(result.status)) throw Error('하위 에이전트 변경 결과 미확인');
         unresolved.delete(key(session)); if (!live(version)) return;
-        fresh = false; confirming = false;
+        fresh = false; confirming = false; deleteSnapshot = undefined;
         if (result.status === 'applied') {
+          if (type === 'delete') {
+            agents = agents.filter(item => item.id !== agent.id); if (agentId === agent.id) agentId = undefined; render();
+            status('선택한 에이전트의 저장된 대화를 삭제했습니다.', 'The selected agent’s saved conversation was deleted.'); return;
+          }
           if (type === 'send' && agentId === agent.id && prompt.value === text) prompt.value = '';
           status(type === 'interrupt' ? '현재 작업 중단을 요청했습니다. 새로고침하여 종료 여부를 확인하세요.' : type === 'close' ? '에이전트 종료를 요청했습니다. 새로고침하여 상태를 확인하세요.' : '요청이 처리되었습니다. 새로고침하여 상태를 확인하세요.', type === 'interrupt' ? 'Current turn interruption requested. Refresh to confirm it ended.' : type === 'close' ? 'Agent closure requested. Refresh to check its state.' : 'Request applied. Refresh to check its state.');
         } else if (result.status === 'unsupported') status('이 연결에서는 해당 관리 작업을 지원하지 않습니다. 새로고침하여 지원 상태를 확인하세요.', 'This connection does not support that action. Refresh to check support.');
         else error('요청이 적용되지 않았습니다. 새로고침하여 상태를 확인하세요. 초안은 보존합니다.', 'The request was not applied. Refresh to check its state. Your draft is preserved.');
       } catch {
-        if (live(version)) { fresh = false; confirming = false; error('요청 결과를 확인하지 못했습니다. 자동으로 재전송하지 않습니다. 새로고침하여 원래 요청의 처리 여부를 확인하세요.', 'The request result is unknown. It will not be retried automatically. Refresh to reconcile the original request.'); }
+        if (live(version)) { fresh = false; confirming = false; deleteSnapshot = undefined; error(type === 'delete' ? '삭제 결과를 확인하지 못했습니다. 자동 재전송하지 않습니다. 목록과 서버를 확인하세요. 확인이 끝나지 않으면 세션을 다시 연결해야 합니다.' : '요청 결과를 확인하지 못했습니다. 자동으로 재전송하지 않습니다. 새로고침하여 원래 요청의 처리 여부를 확인하세요.', type === 'delete' ? 'Deletion outcome is unknown. It will not be retried. Check the list and server; reconnect the session if the outcome cannot be reconciled.' : 'The request result is unknown. It will not be retried automatically. Refresh to reconcile the original request.'); }
       }
     });
   }
   function clear() {
     epoch++; selected = undefined; agentId = undefined; parentRuntimeId = undefined; available = false; agents = []; rows.clear();
-    supported = false; connected = false; fresh = false; knownList = false; remoteUnknown = false; cursor = null; nextCursor = null; page = 1; overflow = false; confirming = false;
-    clearTimeout(timer); prompt.value = ''; search.value = ''; $('.subagent-error').hidden = true; status('', ''); render();
+    supported = false; connected = false; fresh = false; knownList = false; remoteUnknown = false; cursor = null; nextCursor = null; page = 1; overflow = false; confirming = false; deleteSnapshot = undefined;
+    clearTimeout(timer); prompt.value = ''; search.value = ''; filter.value = 'all'; $('.subagent-error').hidden = true; status('', ''); render();
   }
   const onClose = () => { if (!dialog.open) clear(); };
-  const visibilityChanged = () => { clearTimeout(timer); if (visible && !document.hidden && dialog.open) void refresh(); else { epoch++; controls(); } };
+  const visibilityChanged = () => { clearTimeout(timer); deleteSnapshot = undefined; if (visible && !document.hidden && dialog.open) void refresh(); else { epoch++; controls(); } };
   const onSubmit = (event: SubmitEvent) => { event.preventDefault(); void mutate('send'); };
   $('.subagent-close').onclick = () => { dialog.close(); clear(); }; dialog.addEventListener('close', onClose);
   $('.subagent-refresh').onclick = () => void refresh();
   $('.subagent-first').onclick = () => { if (readyToRead()) void refresh(null, 1); };
   $('.subagent-next').onclick = () => { if (readyToRead() && fresh && nextCursor) void refresh(nextCursor, page + 1); };
   search.oninput = render; $('.subagent-form').addEventListener('submit', onSubmit as EventListener);
+  filter.onchange = () => { deleteSnapshot = undefined; confirming = false; render(); scheduleRefresh(); };
   $('.subagent-interrupt').onclick = () => void mutate('interrupt'); $('.subagent-resume').onclick = () => void mutate('resume');
-  $('.subagent-end').onclick = () => { if (!$<HTMLButtonElement>('.subagent-end').disabled) { confirming = true; controls(); $<HTMLButtonElement>('.subagent-confirm-cancel').focus(); } };
+  $('.subagent-end').onclick = () => { if (!$<HTMLButtonElement>('.subagent-end').disabled) { deleteSnapshot = undefined; confirming = true; controls(); scheduleRefresh(); $<HTMLButtonElement>('.subagent-confirm-cancel').focus(); } };
   $('.subagent-confirm-end').onclick = () => void mutate('close'); $('.subagent-confirm-cancel').onclick = () => { confirming = false; controls(); };
+  $('.subagent-delete').onclick = () => void previewDelete();
+  $('.subagent-confirm-delete').onclick = () => void mutate('delete');
+  $('.subagent-delete-cancel').onclick = () => { deleteSnapshot = undefined; controls(); $<HTMLButtonElement>('.subagent-delete').focus(); scheduleRefresh(); };
   document.addEventListener('visibilitychange', visibilityChanged);
   const labels: [string, string, string][] = [
-    ['#subagent-title', '하위 에이전트', 'Subagents'], ['.subagent-help', '선택한 세션의 직접 하위 에이전트만 조회합니다. 전체 대화는 불러오지 않습니다.', 'View direct subagents of the selected session. Full conversations are not loaded.'],
+    ['.subagent-eyebrow', '에이전트 작업 공간', 'WORKSPACE / AGENTS'], ['#subagent-title', '서브에이전트 관리', 'Manage subagents'], ['.subagent-help', '선택한 세션의 직접 하위 에이전트만 조회합니다. 전체 대화는 불러오지 않습니다.', 'View direct subagents of the selected session. Full conversations are not loaded.'],
+    ['#subagent-browser-title', '에이전트 목록', 'Agents'], ['#subagent-detail-title', '선택한 에이전트', 'Selected agent'],
+    ['.subagent-filter-label span', '상태 필터', 'Filter by status'], ['.subagent-filter [value="all"]', '모든 상태', 'All states'], ['.subagent-filter [value="running"]', '실행·대기 중', 'Running / pending'], ['.subagent-filter [value="idle"]', '입력 대기', 'Idle'], ['.subagent-filter [value="finished"]', '완료·종료·오류', 'Finished / closed / errored'],
+    ['.subagent-task-title', '작업 제어', 'Task controls'], ['.subagent-task-help', '현재 작업만 중단하거나 에이전트를 종료·재개할 수 있습니다.', 'Interrupt the current turn, or close or resume this agent.'], ['.subagent-compose-help', '선택한 에이전트에게 전송 · 최대 64 KiB', 'Send to the selected agent · up to 64 KiB'], ['.subagent-delete-title', '에이전트 정리', 'Remove agent'],
     ['.subagent-refresh', '새로고침', 'Refresh'], ['.subagent-unknown', '이 세션에 결과 미확인 요청이 있습니다. 같은 요청의 처리 여부가 확인될 때까지 새 변경을 제한합니다.', 'This session has an unresolved request. New changes remain blocked until that request is reconciled.'],
     ['.subagent-remote-unknown', '다른 관리 요청의 결과를 확인하고 있습니다. 새로고침하여 확인이 끝난 뒤 변경할 수 있습니다.', 'Another management request is being checked. Refresh to confirm it has been resolved before making changes.'],
     ['.subagent-search-label span', '현재 페이지 검색', 'Search this page'], ['.subagent-first', '처음', 'First'], ['.subagent-next', '다음', 'Next'], ['.subagent-limit', '한 페이지에 최대 100개만 표시합니다.', 'At most 100 agents are displayed per page.'],
     ['.subagent-empty-detail', '목록에서 에이전트를 선택하세요.', 'Select an agent from the list.'], ['.subagent-prompt-label', '보낼 내용', 'Message'], ['.subagent-send', '보내기', 'Send'], ['.subagent-interrupt', '현재 작업 중단', 'Interrupt current turn'], ['.subagent-resume', '재개', 'Resume'], ['.subagent-end', '에이전트 종료', 'Close agent'],
     ['.subagent-confirm p', '이 에이전트와 하위 에이전트의 작업이 중단됩니다. 저장된 대화를 삭제하지 않습니다. 종료를 요청할까요?', 'This agent and its subagents will be interrupted. Saved conversations will not be deleted. Request closure?'], ['.subagent-confirm-end', '종료 요청 확인', 'Confirm closure'], ['.subagent-confirm-cancel', '취소', 'Cancel'],
+    ['.subagent-delete', '에이전트 삭제…', 'Delete agent…'], ['.subagent-delete-help', '완료 상태가 확인된 에이전트만 삭제할 수 있습니다. 실행 중·대기 중·미확인 상태는 보존합니다.', 'Only agents with a verified completed state can be deleted. Running, pending and unknown agents are preserved.'],
+    ['#subagent-delete-warning', '선택한 에이전트의 저장된 대화를 영구 삭제합니다. 복구할 수 없습니다. 상태가 바뀌거나 보존해야 할 작업이 있으면 삭제하지 않습니다.', 'Permanently delete the selected agent’s saved conversation. This cannot be undone. If its state changes or it has work that must be preserved, it will not be deleted.'],
+    ['.subagent-confirm-delete', '영구 삭제 확인', 'Confirm permanent deletion'], ['.subagent-delete-cancel', '취소', 'Cancel'],
   ];
   for (const [selector, ko, en] of labels) bindText($(selector), ko, en);
   bindAttribute($('.subagent-close'), 'aria-label', '하위 에이전트 창 닫기', 'Close subagents'); bindAttribute($('.subagent-list'), 'aria-label', '직접 하위 에이전트 목록', 'Direct subagent list');
@@ -221,9 +279,9 @@ export function createSubagentManager(host: Host) {
     },
     updateSessions(sessions: Session[]) {
       const current = selected && sessions.find(session => key(session) === key(selected!) && session.active);
-      if (selected && !current) { epoch++; available = false; fresh = false; remoteUnknown = false; confirming = false; agents = []; agentId = undefined; rows.clear(); clearTimeout(timer); status('원래 세션이 종료되거나 바뀌었습니다. 창을 다시 열어 현재 세션을 확인하세요.', 'The original session ended or changed. Reopen to select the current session.'); render(); }
+      if (selected && !current) { epoch++; available = false; fresh = false; remoteUnknown = false; confirming = false; deleteSnapshot = undefined; agents = []; agentId = undefined; rows.clear(); clearTimeout(timer); status('원래 세션이 종료되거나 바뀌었습니다. 창을 다시 열어 현재 세션을 확인하세요.', 'The original session ended or changed. Reopen to select the current session.'); render(); }
     },
-    setVisible(value: boolean) { if (visible === value || disposed) return; visible = value; epoch++; clearTimeout(timer); controls(); if (visible && dialog.open && !document.hidden) void refresh(); },
+    setVisible(value: boolean) { if (visible === value || disposed) return; visible = value; epoch++; deleteSnapshot = undefined; clearTimeout(timer); controls(); if (visible && dialog.open && !document.hidden) void refresh(); },
     async beginExit() { exiting = true; if (dialog.open) dialog.close(); clear(); await request; controls(); },
     cancelExit() { if (!disposed) { exiting = false; controls(); } },
     dispose() { if (disposed) return; disposed = true; exiting = true; if (dialog.open) dialog.close(); clear(); document.removeEventListener('visibilitychange', visibilityChanged); dialog.removeEventListener('close', onClose); removeLanguageListener(); dialog.remove(); unresolved.clear(); },

@@ -212,16 +212,33 @@ every running conversation has reloaded it.
 ## Subagents
 
 Use **Manage subagents** in a running session header to view its direct subagents.
-Search the current page on the left and inspect status, role, model and reasoning
-effort on the right. Send instructions, interrupt the observed turn, close an
+The page summary shows counts for the loaded page. Search and filter its agents
+by state on the left; inspect status, role, model and reasoning effort on the right.
+Task controls, the message composer and permanent deletion are separate sections.
+Send instructions, interrupt the observed turn, close an
 agent or resume it. Closing requires confirmation, also stops its descendants
 and preserves saved conversations.
+
+**Delete agent…** first checks eligibility using the server's read-only
+`thread/cleanupCompleted` preview. Confirming permanent deletion sends only the
+selected agent's exact preview snapshot. This cannot be undone. Running, pending
+and unknown agents are protected; the server also preserves changed agents,
+agents with descendants, pending work, references or unfinished goals. Delete
+eligible descendants individually before their parent. A compatible server is
+required; older servers can retain management support without supporting deletion.
+Automatic refresh pauses while deletion confirmation is visible. Changing the
+selection, manually refreshing or hiding the window cancels that confirmation.
+No conversations are deleted by opening the popup or previewing eligibility.
 
 The connected server must advertise `supportsSubagentManagement`. Unsupported
 runtimes receive no management requests. Lists use pages of up to 100 metadata
 entries, refresh every five seconds while the popup is visible and never fetch
 conversation bodies. An uncertain mutation is reconciled by its original request
-ID rather than automatically sent again.
+ID rather than automatically sent again for existing management commands.
+The cleanup API does not provide request-ID reconciliation: an unconfirmed deletion
+is never retried and blocks further changes in that session connection. Inspect
+the list and server state, then reconnect the session if it cannot be reconciled.
+An absent item on a single page alone is not proof that deletion succeeded.
 
 The connected shared server must also support this feature, even when the selected
 CLI is newer. Selecting an executable or restarting the desktop app does not update

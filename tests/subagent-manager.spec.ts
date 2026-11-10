@@ -17,6 +17,7 @@ async function fixture(page: Page, options: { unsupported?: boolean; count?: num
     const data = state.subagentFixture = {
       session: { id: 'session-a', generation: 9, title: '에이전트 세션 A', active: true, threadId: 'thread-a' },
       calls: [] as any[], notices: [] as any[], completed: 0, reply: 'applied',
+      deletePreview: { eligible: true, snapshot: '{"threadId":"agent-1","runtimeId":"fixture","activityRevision":9007199254740993,"lastTurnId":"turn-1","terminalStatus":"completed"}' },
       holdRead: false, holdMutation: false, failRead: false, failMutation: false,
       releaseRead: () => {}, releaseMutation: () => {},
       snapshot: {
@@ -35,7 +36,7 @@ async function fixture(page: Page, options: { unsupported?: boolean; count?: num
         if (command !== 'subagents_request') throw Error('허용 범위 밖 호출');
         data.calls.push(structuredClone({ command, ...args }));
         const reading = args.request.type === 'list';
-        const result = reading ? structuredClone(data.snapshot) : { status: data.reply };
+        const result = reading ? structuredClone(data.snapshot) : args.request.type === 'previewDelete' ? structuredClone(data.deletePreview) : { status: data.reply };
         const failure = reading ? data.failRead : data.failMutation;
         try {
           if (reading && data.holdRead) { data.holdRead = false; await new Promise<void>(resolve => { data.releaseRead = resolve; }); }
@@ -54,8 +55,101 @@ async function refresh(page: Page) {
   await page.locator('.subagent-refresh').click();
   await expect(page.locator('#subagents-dialog')).toHaveAttribute('aria-busy', 'false');
 }
-async function mutations(page: Page) { return page.evaluate(() => (window as any).subagentFixture.calls.filter((call: any) => call.request.type !== 'list')); }
+async function mutations(page: Page) { return page.evaluate(() => (window as any).subagentFixture.calls.filter((call: any) => !['list', 'previewDelete'].includes(call.request.type))); }
 async function submit(page: Page) { await page.locator('.subagent-form').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); }
+
+async function completedAgent(page: Page, count = 1) {
+  await fixture(page, { count });
+  await page.evaluate(() => Object.assign((window as any).subagentFixture.snapshot.agents[0], { status: 'completed', activeTurnId: null }));
+  await refresh(page);
+}
+
+test('삭제는 미리보기 후 이름과 복구 불가를 확인하고 취소할 수 있다', async ({ page }) => {
+  await completedAgent(page); await page.locator('.subagent-prompt').fill('보존할 초안'); await page.locator('.subagent-delete').click();
+  await expect(page.locator('.subagent-delete-confirm')).toBeVisible();
+  await expect(page.locator('.subagent-delete-target')).toContainText('조사 담당 1');
+  await expect(page.locator('#subagent-delete-warning')).toContainText('복구할 수 없습니다');
+  await expect(page.locator('.subagent-delete-cancel')).toBeFocused(); await expect(page.locator('.subagent-send')).toBeDisabled();
+  expect(await mutations(page)).toEqual([]); await page.locator('.subagent-delete-cancel').click();
+  await expect(page.locator('.subagent-delete-confirm')).toBeHidden(); await expect(page.locator('.subagent-delete')).toBeFocused();
+  await expect(page.locator('.subagent-prompt')).toHaveValue('보존할 초안'); expect(await mutations(page)).toEqual([]);
+});
+
+test('삭제 확인은 원 snapshot을 정밀도 손실 없이 한 번 전송하고 성공한 항목만 제거한다', async ({ page }) => {
+  await completedAgent(page, 2); await page.locator('.subagent-delete').click();
+  await page.evaluate(() => { (window as any).subagentFixture.holdMutation = true; }); await page.locator('.subagent-confirm-delete').click();
+  await expect(page.locator('#subagents-dialog')).toHaveAttribute('aria-busy', 'true');
+  await page.locator('.subagent-confirm-delete').evaluate((button: HTMLButtonElement) => button.click());
+  const calls = await mutations(page); expect(calls).toHaveLength(1);
+  expect(calls[0].request).toMatchObject({ type: 'delete', agentId: 'agent-1', expectedParentRuntimeId: '11111111-1111-4111-8111-111111111111', expectedRuntimeId: '22222222-2222-4222-8222-000000000001' });
+  expect(calls[0].request.expectedSnapshot).toContain('9007199254740993');
+  expect(calls[0].request.expectedSnapshot).toBe(await page.evaluate(() => (window as any).subagentFixture.deletePreview.snapshot));
+  await page.evaluate(() => (window as any).subagentFixture.releaseMutation());
+  await expect(page.locator('.subagent-status')).toContainText('저장된 대화를 삭제했습니다');
+  await expect(page.locator('.subagent-row[data-agent-id="agent-1"]')).toHaveCount(0); await expect(page.locator('.subagent-row[data-agent-id="agent-2"]')).toHaveCount(1);
+});
+
+for (const state of ['running', 'pending', 'unknown']) test(`실행·미확인 상태는 삭제하지 않는다: ${state}`, async ({ page }) => {
+  await completedAgent(page); await page.evaluate(state => { (window as any).subagentFixture.snapshot.agents[0].status = state; }, state); await refresh(page);
+  await expect(page.locator('.subagent-delete')).toBeDisabled();
+  await page.locator('.subagent-delete').evaluate((button: HTMLButtonElement) => button.click());
+  await page.locator('.subagent-confirm-delete').evaluate((button: HTMLButtonElement) => button.click()); expect(await mutations(page)).toEqual([]);
+});
+
+test('삭제 미리보기 거부·실패는 삭제하지 않으며 초안과 목록을 보존한다', async ({ page }) => {
+  await completedAgent(page); await page.locator('.subagent-prompt').fill('남길 초안');
+  for (const preview of [{ eligible: false, snapshot: null }, { eligible: true, snapshot: 42 }]) {
+    await page.evaluate(preview => { (window as any).subagentFixture.deletePreview = preview; }, preview);
+    await page.locator('.subagent-delete').click(); await expect(page.locator('.subagent-error')).toBeVisible();
+    await expect(page.locator('.subagent-delete-confirm')).toBeHidden(); await expect(page.locator('.subagent-prompt')).toHaveValue('남길 초안');
+  }
+  expect(await mutations(page)).toEqual([]); await expect(page.locator('.subagent-row')).toHaveCount(1);
+});
+
+test('삭제 확인 중 자동 조회를 멈추고 수동 갱신·대상 변경은 확인을 철회한다', async ({ page }) => {
+  await completedAgent(page, 2); await page.locator('.subagent-delete').click();
+  const calls = await page.evaluate(() => (window as any).subagentFixture.calls.length);
+  await page.clock.fastForward(15000); await expect(page.locator('.subagent-delete-confirm')).toBeVisible();
+  expect(await page.evaluate(() => (window as any).subagentFixture.calls.length)).toBe(calls);
+  await refresh(page); await expect(page.locator('.subagent-delete-confirm')).toBeHidden();
+  await page.locator('.subagent-delete').click(); await page.locator('.subagent-row[data-agent-id="agent-2"]').click();
+  await expect(page.locator('.subagent-delete-confirm')).toBeHidden();
+  await page.locator('.subagent-confirm-delete').evaluate((button: HTMLButtonElement) => button.click()); expect(await mutations(page)).toEqual([]);
+});
+
+for (const result of ['notApplied', 'unknown', 'lost']) test(`삭제 결과 미확인 시 목록·초안 보존 및 자동 재전송 금지: ${result}`, async ({ page }) => {
+  await completedAgent(page); await page.locator('.subagent-prompt').fill('삭제 실패시 보존'); await page.locator('.subagent-delete').click();
+  await page.evaluate(result => { const f = (window as any).subagentFixture; f.reply = result; f.failMutation = result === 'lost'; }, result);
+  await page.locator('.subagent-confirm-delete').click(); await expect(page.locator('.subagent-error')).toBeVisible();
+  await expect(page.locator('.subagent-row')).toHaveCount(1); await expect(page.locator('.subagent-prompt')).toHaveValue('삭제 실패시 보존');
+  await page.clock.fastForward(15000); expect(await mutations(page)).toHaveLength(1);
+  if (result !== 'notApplied') { await expect(page.locator('.subagent-unknown')).toBeVisible(); await expect(page.locator('.subagent-delete')).toBeDisabled(); }
+});
+
+test('새 팝업은 페이지 상태 요약·검색·필터를 조합하고 키보드 선택을 보존한다', async ({ page }) => {
+  await completedAgent(page, 3); await expect(page.locator('#subagent-title')).toHaveText('서브에이전트 관리');
+  await expect(page.locator('.subagent-summary')).toContainText('전체 3'); await expect(page.locator('.subagent-summary')).toContainText('실행 중 2');
+  await page.getByLabel('상태 필터').selectOption('finished'); await expect(page.locator('.subagent-row')).toHaveCount(1);
+  await page.getByLabel('현재 페이지 검색').fill('없는 이름'); await expect(page.locator('.subagent-list')).toContainText('검색 결과가 없습니다');
+  await page.getByLabel('현재 페이지 검색').fill('조사 담당 1'); await expect(page.locator('.subagent-row')).toHaveCount(1);
+  await page.locator('.subagent-row').focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('.subagent-row')).toBeFocused(); await expect(page.locator('.subagent-row')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.subagent-state-badge')).toHaveText('완료됨');
+});
+
+test('좁은 창·긴 이름에서 팝업과 삭제 확인에 가로 넘침이 없다', async ({ page }, testInfo) => {
+  await completedAgent(page); await page.evaluate(() => { (window as any).subagentFixture.snapshot.agents[0].nickname = '긴 에이전트 이름 '.repeat(15); }); await refresh(page);
+  await page.setViewportSize({ width: 560, height: 820 }); await page.locator('.subagent-delete').click();
+  await expect(page.locator('.subagent-delete-confirm')).toBeVisible();
+  expect(await page.locator('#subagents-dialog').evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  await page.locator('.subagent-confirm-delete').scrollIntoViewIfNeeded(); await expect(page.locator('.subagent-confirm-delete')).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath('subagent-redesign-narrow.png') });
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.evaluate(() => { (window as any).subagentFixture.snapshot.agents[0].nickname = '검증 담당'; }); await refresh(page); await page.locator('.subagent-delete').click();
+  expect(await page.locator('#subagents-dialog').evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(1000);
+  await page.locator('#subagents-dialog').evaluate(node => node.scrollTop = 0);
+  await page.screenshot({ path: testInfo.outputPath('subagent-redesign-desktop.png') });
+});
 
 test('미지원은 빈 목록과 구별하고 관리 요청을 차단한다', async ({ page }) => {
   await fixture(page, { unsupported: true });
@@ -416,7 +510,7 @@ test('숨김·닫힘·종료·폐기는 목록 조회와 행 참조를 정리한
 test('언어 전환은 관리 라벨을 바꾸고 초안을 보존한다', async ({ page }) => {
   await fixture(page); await page.locator('.subagent-prompt').fill('작성 중');
   await page.evaluate(async () => { const { setLanguage } = await import('/src/i18n.ts'); setLanguage('en'); });
-  await expect(page.locator('#subagent-title')).toHaveText('Subagents'); await expect(page.locator('.subagent-row small')).toContainText('Running'); await expect(page.locator('.subagent-send')).toHaveText('Send');
+  await expect(page.locator('#subagent-title')).toHaveText('Manage subagents'); await expect(page.locator('.subagent-row small')).toContainText('Running'); await expect(page.locator('.subagent-send')).toHaveText('Send');
   await expect(page.locator('.subagent-prompt')).toHaveValue('작성 중');
   await page.evaluate(async () => { const { setLanguage } = await import('/src/i18n.ts'); setLanguage('ko'); });
   await expect(page.locator('.subagent-send')).toHaveText('보내기');

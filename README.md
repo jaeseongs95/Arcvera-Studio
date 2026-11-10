@@ -63,7 +63,7 @@ system labels keep their own language.
 | Use conversation view and answer questions or approvals | [Conversation and question inbox](docs/user-guide.md#conversation) |
 | Manage installed plugins, find a plugin or manage skills | [Plugins and skills](docs/user-guide.md#extensions) |
 | Inspect hooks, change activation or review trust | [Hooks](docs/user-guide.md#hooks) |
-| Inspect and control direct subagents | [Subagents](docs/user-guide.md#subagents) |
+| Search, filter and control direct subagents; confirm deletion of eligible completed agents | [Subagents](docs/user-guide.md#subagents) |
 | Inspect usage, adjust one session's context size, compact or schedule work | [Context](docs/user-guide.md#context) · [Schedules](docs/user-guide.md#schedules) |
 | Pair a phone with a running session | [Mobile remote control](docs/user-guide.md#mobile) |
 | Check weekly usage or stored attachments | [Usage](docs/user-guide.md#usage) · [Storage](docs/user-guide.md#storage) |

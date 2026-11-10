@@ -3,6 +3,7 @@ use super::*;
 
 const LIST: &str = "thread/subagents/list";
 const CONTROL: &str = "thread/subagents/control";
+const CLEANUP: &str = "thread/cleanupCompleted";
 const RECEIPTS: usize = 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -13,12 +14,20 @@ pub enum SubagentRequest {
     Interrupt { agent_id: String, request_id: String, expected_turn_id: String, expected_parent_runtime_id: String, #[serde(deserialize_with="nullable_runtime")] expected_runtime_id: Option<String> },
     Close { agent_id: String, request_id: String, expected_parent_runtime_id: String, #[serde(deserialize_with="nullable_runtime")] expected_runtime_id: Option<String> },
     Resume { agent_id: String, request_id: String, expected_parent_runtime_id: String, #[serde(deserialize_with="nullable_runtime")] expected_runtime_id: Option<String> },
+    PreviewDelete { agent_id: String, expected_parent_runtime_id: String, #[serde(deserialize_with="nullable_runtime")] expected_runtime_id: Option<String> },
+    Delete { agent_id: String, request_id: String, expected_parent_runtime_id: String, #[serde(deserialize_with="nullable_runtime")] expected_runtime_id: Option<String>, expected_snapshot: String },
 }
 impl SubagentRequest {
     pub(crate) fn receipt_identity(&self) -> Result<Option<(String,[u8;32])>,String> {
         self.mutation().map(|(_,id,_)| {uuid(id)?;digest(self).map(|digest|(id.to_owned(),digest))}).transpose()
     }
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Self::PreviewDelete { agent_id, expected_parent_runtime_id, expected_runtime_id } = self {
+            uuid(agent_id)?; uuid(expected_parent_runtime_id)?;
+            if let Some(runtime) = expected_runtime_id { uuid(runtime)?; }
+            return Ok(());
+        }
+        if let Self::Delete { expected_snapshot, .. } = self { cleanup_snapshot(expected_snapshot)?; }
         match self {
             Self::List { cursor } => return valid_cursor(cursor),
             Self::Send { text, .. } if text.trim().is_empty() || text.len() > 64 * 1024 || text.contains('\0') =>
@@ -34,19 +43,22 @@ impl SubagentRequest {
     fn mutation(&self) -> Option<(&str, &str, &'static str)> {
         match self {
             Self::List { .. } => None,
+            Self::PreviewDelete { .. } => None,
             Self::Send { agent_id, request_id, .. } => Some((agent_id,request_id,"send")),
             Self::Interrupt { agent_id, request_id, .. } => Some((agent_id,request_id,"interrupt")),
             Self::Close { agent_id, request_id, .. } => Some((agent_id,request_id,"close")),
             Self::Resume { agent_id, request_id, .. } => Some((agent_id,request_id,"resume")),
+            Self::Delete { agent_id, request_id, .. } => Some((agent_id,request_id,"delete")),
         }
     }
     fn expected_runtime(&self) -> Option<(&str,Option<&str>)> {
         match self {
             Self::List {..}=>None,
-            Self::Send {expected_parent_runtime_id,expected_runtime_id,..}|Self::Interrupt {expected_parent_runtime_id,expected_runtime_id,..}|Self::Close {expected_parent_runtime_id,expected_runtime_id,..}|Self::Resume {expected_parent_runtime_id,expected_runtime_id,..}=>Some((expected_parent_runtime_id,expected_runtime_id.as_deref())),
+            Self::Send {expected_parent_runtime_id,expected_runtime_id,..}|Self::Interrupt {expected_parent_runtime_id,expected_runtime_id,..}|Self::Close {expected_parent_runtime_id,expected_runtime_id,..}|Self::Resume {expected_parent_runtime_id,expected_runtime_id,..}|Self::PreviewDelete {expected_parent_runtime_id,expected_runtime_id,..}|Self::Delete {expected_parent_runtime_id,expected_runtime_id,..}=>Some((expected_parent_runtime_id,expected_runtime_id.as_deref())),
         }
     }
     fn unsupported(&self) -> Value {
+        if matches!(self, Self::PreviewDelete { .. }) { return json!({"eligible":false,"snapshot":null}); }
         if self.mutation().is_none() {
             json!({"supported":false,"connected":false,"parentRuntimeId":null,"agents":[],"nextCursor":null,"mutationState":"clear","reconciledRequestId":null,"reason":"unsupported"})
         } else { json!({"status":"unsupported","reason":"unsupported"}) }
@@ -73,6 +85,7 @@ fn valid_cursor(cursor: &Option<String>) -> Result<(),String> {
 
 #[derive(Default)]
 pub(super) struct State {
+    delete_preview: Option<(String, String)>,
     parent: Option<String>,
     parent_runtime: Option<String>,
     agents: HashMap<String, Agent>,
@@ -127,6 +140,7 @@ impl State {
         Ok(None)
     }
     fn page(&mut self, thread_id: &str, value: Value) -> Result<Value,String> {
+        self.delete_preview = None;
         let page: Page = serde_json::from_value(value).map_err(|_|"하위 에이전트 목록의 필드·자료형이 올바르지 않습니다.")?;
         if page.parent_thread_id!=thread_id || page.agents.len()>100 {return Err("하위 에이전트 목록의 부모 또는 개수 상한이 올바르지 않습니다.".into());}
         uuid(&page.parent_runtime_id)?;
@@ -162,6 +176,56 @@ impl State {
 fn digest(request: &SubagentRequest) -> Result<[u8;32],String> {
     let bytes=serde_json::to_vec(request).map_err(|_|"하위 에이전트 요청을 변환할 수 없습니다.")?;
     Ok(Sha256::digest(bytes).into())
+}
+
+fn cleanup_snapshot(text: &str) -> Result<Value,String> {
+    if text.len() > 8192 { return Err("삭제 확인 정보가 너무 큽니다.".into()); }
+    let value: Value = serde_json::from_str(text).map_err(|_|"삭제 확인 정보가 올바르지 않습니다.")?;
+    let fields = ["threadId", "runtimeId", "activityRevision", "lastTurnId", "terminalStatus"];
+    if value.as_object().is_none_or(|object| object.len()!=fields.len() || fields.iter().any(|field|!object.contains_key(*field)))
+        || value["activityRevision"].as_u64().is_none()
+        || !matches!(value["terminalStatus"].as_str(),Some("completed"|"failed"|"cancelled")) {
+        return Err("삭제 확인 정보의 필드·상태가 올바르지 않습니다.".into());
+    }
+    uuid(value["threadId"].as_str().ok_or("삭제 대상 식별자가 없습니다.")?)?;
+    for field in ["runtimeId", "lastTurnId"] { turn_id(value[field].as_str().ok_or("삭제 확인 정보가 없습니다.")?)?; }
+    Ok(value)
+}
+
+fn cleanup_result(response: &Value, agent_id: &str) -> Result<Value,String> {
+    let results = response["results"].as_array().ok_or("삭제 응답 형식이 올바르지 않습니다.")?;
+    let mut matches = results.iter().filter(|item|item["threadId"].as_str()==Some(agent_id));
+    let result = matches.next().cloned().ok_or("삭제 대상의 상태를 확인하지 못했습니다.")?;
+    if matches.next().is_some() { return Err("삭제 응답에 대상이 중복됐습니다.".into()); }
+    Ok(result)
+}
+
+fn cleanup_allowed(state: &State, parent: &str, agent_id: &str, expected_parent: &str, expected_runtime: Option<&str>) -> Result<(),String> {
+    let agent = state.agents.get(agent_id).ok_or("목록에서 직접 확인한 하위 에이전트만 삭제할 수 있습니다.")?;
+    if agent_id==parent || agent.parent_thread_id!=parent || state.parent_runtime.as_deref()!=Some(expected_parent)
+        || agent.runtime_id.as_deref()!=expected_runtime || matches!(agent.status,Status::Running|Status::Pending|Status::Unknown)
+        || agent.active_turn_id.is_some() {
+        return Err("삭제 대상이 실행 중이거나 마지막으로 확인한 부모·실행 세대와 다릅니다. 새 목록을 조회하세요.".into());
+    }
+    Ok(())
+}
+
+fn preview_delete<S: Read+Write>(state: &mut State,rpc: &mut Rpc<S>,parent: &str,agent_id: &str,expected_parent: &str,expected_runtime: Option<&str>) -> Result<Value,String> {
+    state.delete_preview=None;
+    cleanup_allowed(state,parent,agent_id,expected_parent,expected_runtime)?;
+    // The runtime-bound cursor also works when the selected agent is on a later page.
+    let check=rpc.call(LIST,json!({"parentThreadId":parent,"cursor":format!("{expected_parent}:{agent_id}"),"limit":1,"reconcileRequestId":null}))?;
+    if check["parentRuntimeId"].as_str()!=Some(expected_parent) || check["parentThreadId"].as_str()!=Some(parent)
+        || check["mutationState"]!="clear" { return Err("부모 실행 세대 또는 변경 상태가 바뀌었습니다.".into()); }
+    let response=rpc.call(CLEANUP,json!({"parentThreadId":parent,"currentThreadId":parent,"confirmed":false,"selection":[]}))?;
+    let result=cleanup_result(&response,agent_id)?;
+    if result["outcome"]!="eligible" { return Ok(json!({"eligible":false,"snapshot":null})); }
+    // Keep the u64 revision in Rust; JavaScript only echoes an opaque string.
+    let snapshot=serde_json::to_string(&result["snapshot"]).map_err(|_|"삭제 확인 정보를 변환하지 못했습니다.")?;
+    let value=cleanup_snapshot(&snapshot)?;
+    if value["threadId"].as_str()!=Some(agent_id) { return Err("삭제 대상이 일치하지 않습니다.".into()); }
+    state.delete_preview=Some((agent_id.into(),snapshot.clone()));
+    Ok(json!({"eligible":true,"snapshot":snapshot}))
 }
 
 // 공유 잠금은 인계·복원 때만 잡는다. 바깥 상태에는 진행 중 식별자와 기존
@@ -256,16 +320,40 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
         live(control,cancelled)?;
         return state.page(parent,page);
     }
+    if let SubagentRequest::PreviewDelete { agent_id, expected_parent_runtime_id, expected_runtime_id }=request {
+        if state.unresolved.is_some() || state.remote_unknown { return Err("결과 미확인 요청을 먼저 확인하세요.".into()); }
+        return preview_delete(state,rpc,parent,agent_id,expected_parent_runtime_id,expected_runtime_id.as_deref());
+    }
     let (agent_id,request_id,action)=request.mutation().unwrap();
     let agent=state.agents.get(agent_id).ok_or("목록에서 직접 확인한 하위 에이전트만 변경할 수 있습니다. 먼저 목록을 조회하세요.")?;
     let (expected_parent_runtime,expected_runtime)=request.expected_runtime().unwrap();
     if state.parent_runtime.as_deref()!=Some(expected_parent_runtime) || agent.runtime_id.as_deref()!=expected_runtime {return Err("하위 에이전트 또는 부모 실행 세대가 마지막 목록과 다릅니다. 새 목록을 조회하세요.".into());}
-    let permitted=match action {"send"=>agent.capabilities.send,"interrupt"=>agent.capabilities.interrupt,"close"=>agent.capabilities.close,"resume"=>agent.capabilities.resume,_=>false};
+    let permitted=match action {"send"=>agent.capabilities.send,"interrupt"=>agent.capabilities.interrupt,"close"=>agent.capabilities.close,"resume"=>agent.capabilities.resume,"delete"=>true,_=>false};
     if !permitted {return Err("해당 하위 에이전트가 요청한 관리 동작을 지원하지 않습니다.".into());}
     if let SubagentRequest::Interrupt { expected_turn_id,.. }=request {
         if agent.active_turn_id.as_deref()!=Some(expected_turn_id) {return Err("중단 대상 작업이 마지막으로 확인한 하위 에이전트 작업과 다릅니다.".into());}
     }
     let mut params=json!({"parentThreadId":parent,"agentId":agent_id,"action":action,"requestId":request_id,"expectedParentRuntimeId":expected_parent_runtime,"expectedRuntimeId":expected_runtime});
+    if let SubagentRequest::Delete { expected_snapshot, .. }=request {
+        cleanup_allowed(state,parent,agent_id,expected_parent_runtime,expected_runtime)?;
+        if state.delete_preview.as_ref()!=Some(&(agent_id.to_owned(),expected_snapshot.clone())) { return Err("삭제 대상을 다시 미리 보고 확인하세요.".into()); }
+        let snapshot=cleanup_snapshot(expected_snapshot)?;
+        let receipt=Receipt {digest:digest(request)?,status:"unknown"};
+        let response=mutation_call(control,rpc,CLEANUP,json!({"parentThreadId":parent,"currentThreadId":parent,"confirmed":true,"selection":[snapshot]}),cancelled,deadline,|| {
+            state.delete_preview=None;
+            state.receipts.insert(request_id.into(),receipt);state.unresolved=Some(request_id.into());state.unresolved_runtime=Some(expected_parent_runtime.into());
+        })?;
+        live(control,cancelled)?;
+        if response["results"].as_array().is_none_or(|results|results.len()!=1) { return Err("단일 삭제 결과를 확인하지 못했습니다.".into()); }
+        let result=cleanup_result(&response,agent_id)?;
+        let status=match result["outcome"].as_str() {
+            Some("deleted")=>"applied",
+            Some("preserved"|"changed"|"protected"|"not_found"|"busy"|"pending_user_queue"|"unfinished_goal"|"has_descendants"|"writer_owned"|"reference_publication_busy"|"unsupported_store"|"persistent_graph_unavailable"|"pending_agent_mail"|"ownership_unverified"|"runtime_busy"|"runtime_not_terminal"|"terminal_turn_unverified"|"terminal_turn_mismatch"|"terminal_turn_in_progress")=>"notApplied",
+            _=>return Err("삭제 처리 결과를 확인하지 못했습니다.".into()),
+        };
+        state.receipts.get_mut(request_id).unwrap().status=status;state.unresolved=None;state.unresolved_runtime=None;
+        return Ok(json!({"status":status}));
+    }
     match request {SubagentRequest::Send { text,.. }=>params["text"]=json!(text),SubagentRequest::Interrupt { expected_turn_id,.. }=>params["expectedTurnId"]=json!(expected_turn_id),_=>{}}
     let receipt=Receipt {digest:digest(request)?,status:"unknown"};
     let response=control_call(control,rpc,params,cancelled,deadline,|| {
@@ -287,9 +375,12 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
 }
 
 fn control_call<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,params: Value,cancelled: &AtomicBool,overall_deadline: Instant,before_send: impl FnOnce()) -> Result<Value,String> {
+    mutation_call(control,rpc,CONTROL,params,cancelled,overall_deadline,before_send)
+}
+fn mutation_call<S: Read+Write>(control: &Control,rpc: &mut Rpc<S>,method: &str,params: Value,cancelled: &AtomicBool,overall_deadline: Instant,before_send: impl FnOnce()) -> Result<Value,String> {
     let deadline=rpc.deadline.map_or(overall_deadline,|deadline|deadline.min(overall_deadline));
     rpc.next_id+=1;let id=rpc.next_id;
-    let message=Message::Text(json!({"id":id,"method":CONTROL,"params":params}).to_string().into());
+    let message=Message::Text(json!({"id":id,"method":method,"params":params}).to_string().into());
     live(control,cancelled)?;
     check_cancelled(rpc.cancelled.as_ref())?;
     if Instant::now()>=deadline {return Err("하위 에이전트 요청 기한이 지나 변경을 보내지 않았습니다.".into());}
@@ -323,6 +414,91 @@ mod tests {
             "nextCursor":null,"mutationState":"clear","reconciledRequestId":null})
     }
     fn send() -> SubagentRequest {SubagentRequest::Send {expected_parent_runtime_id:PARENT_RUNTIME.into(),expected_runtime_id:Some(RUNTIME.into()),agent_id:CHILD.into(),request_id:REQUEST.into(),text:"확인할 내용".into()}}
+    fn terminal_page() -> Value {
+        let mut value=page();value["agents"][0]["status"]=json!("completed");value["agents"][0]["activeTurnId"]=Value::Null;value
+    }
+    fn cleanup_test_snapshot() -> Value {
+        json!({"threadId":CHILD,"runtimeId":RUNTIME,"activityRevision":u64::MAX,"lastTurnId":TURN,"terminalStatus":"completed"})
+    }
+    fn prepare_cleanup_preview(state: &mut State) -> String {
+        state.page(PARENT,terminal_page()).unwrap();
+        let (mut rpc,mut peer)=raw_rpc();
+        let server=thread::spawn(move|| {
+            initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));
+            let check=read(&mut peer);assert_eq!(check["method"],LIST);assert_eq!(check["params"]["cursor"],format!("{PARENT_RUNTIME}:{CHILD}"));
+            reply(&mut peer,&check["id"],json!({"parentThreadId":PARENT,"parentRuntimeId":PARENT_RUNTIME,"mutationState":"clear"}));
+            let preview=read(&mut peer);assert_eq!(preview["method"],CLEANUP);
+            assert_eq!(preview["params"],json!({"parentThreadId":PARENT,"currentThreadId":PARENT,"confirmed":false,"selection":[]}));
+            reply(&mut peer,&preview["id"],json!({"results":[{"threadId":CHILD,"outcome":"eligible","reason":"loaded_terminal","snapshot":cleanup_test_snapshot()}]}));
+        });
+        let request=SubagentRequest::PreviewDelete {agent_id:CHILD.into(),expected_parent_runtime_id:PARENT_RUNTIME.into(),expected_runtime_id:Some(RUNTIME.into())};
+        request.validate().unwrap();assert!(request.receipt_identity().unwrap().is_none());
+        let result=exchange(&connection().0,state,&mut rpc,PARENT,&request,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT).unwrap();
+        drop(rpc);server.join().unwrap();assert_eq!(result["eligible"],true);assert!(state.receipts.is_empty());
+        result["snapshot"].as_str().unwrap().to_owned()
+    }
+    fn delete_request(snapshot: String) -> SubagentRequest {
+        SubagentRequest::Delete {agent_id:CHILD.into(),request_id:REQUEST.into(),expected_parent_runtime_id:PARENT_RUNTIME.into(),expected_runtime_id:Some(RUNTIME.into()),expected_snapshot:snapshot}
+    }
+    #[test]
+    fn subagents_delete_echoes_exact_preview_and_keeps_u64_revision() {
+        for outcome in ["deleted","changed","has_descendants","pending_user_queue","unfinished_goal","unconfirmed: storage failure"] {
+            let mut state=State::default();let snapshot=prepare_cleanup_preview(&mut state);
+            assert!(snapshot.contains("18446744073709551615"));
+            let request=delete_request(snapshot);request.validate().unwrap();
+            let (mut rpc,mut peer)=raw_rpc();
+            let server=thread::spawn(move|| {
+                initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));
+                let call=read(&mut peer);assert_eq!(call["method"],CLEANUP);
+                assert_eq!(call["params"],json!({"parentThreadId":PARENT,"currentThreadId":PARENT,"confirmed":true,"selection":[cleanup_test_snapshot()]}));
+                reply(&mut peer,&call["id"],json!({"results":[{"threadId":CHILD,"outcome":outcome,"snapshot":null}]}));
+            });
+            let result=exchange(&connection().0,&mut state,&mut rpc,PARENT,&request,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT);
+            drop(rpc);server.join().unwrap();
+            let expected=if outcome=="deleted" {"applied"} else if outcome.starts_with("unconfirmed") {"unknown"} else {"notApplied"};
+            if expected=="unknown" {assert!(result.is_err());} else {assert_eq!(result.unwrap()["status"],expected);}
+            assert_eq!(state.previous(&request).unwrap().unwrap()["status"],expected);assert!(state.delete_preview.is_none());
+        }
+    }
+    #[test]
+    fn subagents_delete_requires_preview_and_exact_target_generation() {
+        for condition in ["no_preview","changed_snapshot","new_page","running","pending","unknown","active_turn","wrong_parent","stale_parent","stale_child"] {
+            let mut state=State::default();let snapshot=prepare_cleanup_preview(&mut state);
+            match condition {
+                "no_preview"=>state.delete_preview=None,
+                "changed_snapshot"=>state.delete_preview=Some((CHILD.into(),"different".into())),
+                "new_page"=>{state.page(PARENT,terminal_page()).unwrap();},
+                "running"=>state.agents.get_mut(CHILD).unwrap().status=Status::Running,
+                "pending"=>state.agents.get_mut(CHILD).unwrap().status=Status::Pending,
+                "unknown"=>state.agents.get_mut(CHILD).unwrap().status=Status::Unknown,
+                "active_turn"=>state.agents.get_mut(CHILD).unwrap().active_turn_id=Some(TURN.into()),
+                "wrong_parent"=>state.agents.get_mut(CHILD).unwrap().parent_thread_id=CHILD.into(),
+                "stale_parent"=>state.parent_runtime=Some(RUNTIME.into()),
+                "stale_child"=>state.agents.get_mut(CHILD).unwrap().runtime_id=None,
+                _=>unreachable!(),
+            }
+            let (mut rpc,mut peer)=raw_rpc();
+            let server=thread::spawn(move|| {initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));assert!(peer.read().is_err());});
+            assert!(exchange(&connection().0,&mut state,&mut rpc,PARENT,&delete_request(snapshot),&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT).is_err(),"{condition}");
+            assert!(state.receipts.is_empty(),"{condition}");drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn subagents_delete_lost_reply_stays_unknown_without_replaying() {
+        let mut state=State::default();let request=delete_request(prepare_cleanup_preview(&mut state));
+        let shared=Mutex::new(state);let (mut rpc,mut peer)=raw_rpc();
+        let server=thread::spawn(move|| {initialize_peer(&mut peer,json!({"supportsSubagentManagement":true}));let call=read(&mut peer);assert_eq!(call["method"],CLEANUP);});
+        let result=with_request(&shared,&request,|state|exchange(&connection().0,state,&mut rpc,PARENT,&request,&Arc::new(AtomicBool::new(false)),Instant::now()+RPC_TIMEOUT)).unwrap();
+        assert_eq!(result["status"],"unknown");drop(rpc);server.join().unwrap();
+        let repeated=with_request(&shared,&request,|state|Ok(state.previous(&request)?.unwrap())).unwrap();assert_eq!(repeated["status"],"unknown");
+        let state=shared.lock().unwrap();assert_eq!(state.unresolved.as_deref(),Some(REQUEST));assert!(state.delete_preview.is_none());
+    }
+    #[test]
+    fn subagents_delete_rejects_invalid_preview_shapes_before_transport() {
+        for value in [Value::Null,json!({}),json!({"threadId":CHILD,"runtimeId":RUNTIME,"activityRevision":-1,"lastTurnId":TURN,"terminalStatus":"completed"}),json!({"threadId":CHILD,"runtimeId":RUNTIME,"activityRevision":1,"lastTurnId":TURN,"terminalStatus":"running"})] {
+            assert!(delete_request(value.to_string()).validate().is_err());
+        }
+    }
     fn raw_rpc() -> (Rpc<TcpStream>,WebSocket<TcpStream>) {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();
         let stream=TcpStream::connect(listener.local_addr().unwrap()).unwrap();
