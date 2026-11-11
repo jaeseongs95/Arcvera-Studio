@@ -1,0 +1,60 @@
+name: Conversation resource lifetime observations
+on:
+  push:
+    branches: [feat/181-resource-lifetime]
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Sustained Chromium duration in seconds (10..14400); not native T62 acceptance'
+        type: number
+        default: 1800
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 260
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install chromium
+      - name: Lifecycle control and sustained observations
+        run: npx playwright test tests/conversation-resource.spec.ts
+        env:
+          CI: 'true'
+          AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
+          AGENT_GRID_TEST_OUTPUT: test-results-resource-control
+          RESOURCE_LIFETIME_SOAK_SECONDS: ${{ inputs.seconds || 30 }}
+      - name: Confirm omitted unsubscribe is detected by identical collection assertion
+        shell: pwsh
+        run: |
+          $env:RESOURCE_LIFETIME_MUTATION = 'listener'
+          $env:AGENT_GRID_TEST_OUTPUT = 'test-results-resource-mutation'
+          $env:PLAYWRIGHT_JSON_OUTPUT_NAME = 'test-results-resource-mutation/result.json'
+          npx playwright test tests/conversation-resource.spec.ts --grep CR02 --reporter=json
+          $resultCode = $LASTEXITCODE
+          if ($resultCode -ne 1) { throw "Expected assertion failure exit1, observed $resultCode" }
+          $report = Get-Content -LiteralPath 'test-results-resource-mutation/result.json' -Raw | ConvertFrom-Json
+          if ($report.stats.unexpected -ne 1 -or $report.stats.expected -ne 0 -or $report.stats.skipped -ne 0) { throw 'Mutation was not exactly one failed collection case' }
+          $collection = @(Get-ChildItem -LiteralPath 'test-results-resource-mutation' -Filter collection.json -Recurse)
+          if ($collection.Count -ne 1) { throw 'Missing collection assertion observations' }
+          $observed = Get-Content -LiteralPath $collection[0].FullName -Raw | ConvertFrom-Json
+          if ($observed.retained -le 0) { throw 'Mutation did not retain actual disposed references' }
+          exit 0
+        env:
+          CI: 'true'
+          AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resource-lifetime-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            test-results-resource-control/
+            test-results-resource-mutation/
+          if-no-files-found: error
+          retention-days: 14
