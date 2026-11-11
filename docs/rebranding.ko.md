@@ -24,8 +24,10 @@ NSIS 템플릿은 `OpenDIY Desktop`으로 끝나는 기존 제거 프로그램 �
 
 OpenDIY Codex와 OpenDIY Remote는 별도 제품입니다. 실행파일명·capability·`opendiy/asyncQuestion`·TUI 파이프 접두사·launcher 조회 플래그·relay 헤더는 외부 계약을 유지합니다. 버전이 붙은 진단 schema, 소유권 marker, 시험 환경변수와 과거 검증 문서는 기존 수집기·안전 검사를 위해 원래 이름을 유지합니다. 첨부 캐시의 기존 폴더도 유지합니다. 이 값들은 호환 식별자이며 현재 제품 표시명이 아닙니다.
 
-설치 템플릿은 [Tauri CLI 2.12.4](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi)를 기반으로 하며 MIT 라이선스는 `src-tauri/installer/TAURI-LICENSE-MIT`에 있습니다. 변경 부분은 업그레이드 기록 보존과 실행 중 앱을 종료하지 않는 검사입니다. 고정 CLI 버전을 바꿀 때 공식 템플릿과 다시 대조해야 합니다.
+설치 템플릿은 [Tauri CLI 2.12.4](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi)를 기반으로 하며 MIT 라이선스는 `src-tauri/installer/TAURI-LICENSE-MIT`에 있습니다. 변경 부분은 업그레이드 기록 보존, 실행 중 앱을 종료하지 않는 검사, 목적지가 없을 때만 바로가기를 생성하는 처리입니다. 생성 단계는 읽을 수 없는 링크를 포함한 기존 링크를 보존하며, 해당 설치 소유의 이전 실행파일 대상은 계속 이전할 수 있습니다. 고정 CLI 버전을 바꿀 때 공식 템플릿과 다시 대조해야 합니다.
 
 ## 검증 범위
 
 Node 패키징 시험은 합성 설치파일·서명 bytes를 사용하고 브라우저 시험은 native bridge를 대체합니다. Windows 컴파일과 headless PTY 검사는 CI에서 수행합니다. 실제 설치·운영 WebView·실제 CLI 대화 삭제·물리 휴대전화 제어·장시간 안정성을 검증하지는 않습니다. 과거 PTY 실패는 별도 조사 대상으로 유지하며 후속 빌드 성공으로 해결됐다고 보지 않습니다.
+
+Windows CI 바로가기 회귀시험은 임시 폴더의 실제 COM 바로가기에 제품 NSIS 함수 본문과 이전 훅을 실행합니다. 목적지 없음·설치 소유·다른 설치 대상·손상된 링크·두 이름 공존, 시작 메뉴 루트·지정 폴더, 완료 페이지·passive·update·no-shortcuts·WiX 모드의 80개 사례를 확인합니다. 세 생성 보호문을 제거한 변이는 동일한 바이트 보존 assertion에서 실패해야 합니다. 셸 폴더 변수는 임시 경로로 바꾸며 전체 설치기·MUI 화면은 실행하지 않습니다. 검사 직후 목적지를 적대적으로 교체하는 동시성은 검증 범위에 포함하지 않습니다.

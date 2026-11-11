@@ -233,6 +233,15 @@ jobs:
           if ($buildExit -ne 0) { exit $buildExit }
           # Tauri 2.12.4 warns on a mismatched key pair; this packaging mode must fail instead.
           if (($updaterBuildLog -join "`n").Contains('does not match the public key')) { throw 'Updater signing key pair does not match; no updater assets will be prepared' }
+      - name: NSIS shortcut preservation and mutation sensitivity
+        run: node scripts/installer-shortcut-sensitivity.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-shortcut-evidence
+          path: artifacts/installer-shortcuts/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Prepare portable executable and checksums
         shell: pwsh
         run: |

@@ -27,6 +27,21 @@
 
 ; Rename a legacy shortcut only if its target belongs to this installation.
 ; Leave a conflicting user-created destination shortcut untouched.
+; The template also calls this before POSTINSTALL and from the finish page.
+; Existing owned links have already been retargeted by its migration checks.
+!macro ArcveraCreateShortcutIfAbsent shortcut
+  ${If} ${FileExists} "${shortcut}"
+    DetailPrint "Existing shortcut retained: ${shortcut}"
+  ${Else}
+    ClearErrors
+    CreateShortcut "${shortcut}" "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${If} ${Errors}
+      Abort "Could not create the workspace shortcut. Installation files are present; repair the shortcut before launching."
+    ${EndIf}
+    !insertmacro SetLnkAppUserModelId "${shortcut}"
+  ${EndIf}
+!macroend
+
 !macro ArcveraMigrateShortcut legacy current
   !insertmacro IsShortcutTarget "${legacy}" "$INSTDIR\opendiy-desktop.exe"
   Pop $R8
