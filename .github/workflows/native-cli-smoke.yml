@@ -22,7 +22,7 @@ jobs:
       - name: Obtain pinned test dependency in disposable workspace
         run: npm install --prefix artifacts/cli-dependency --ignore-scripts --no-audit --no-fund @openai/codex@0.166.0
       - name: Observe actual startup without authentication
-        run: ./scripts/observe-native-cli.ps1
+        run: ./scripts/observe-native-cli.ps1 -DiagnoseStartup
       - name: Preserve complete and partial evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -31,6 +31,7 @@ jobs:
           path: |
             artifacts/native-cli/observation.json
             artifacts/native-cli/smoke.json
+            artifacts/native-cli/startup-signals.json
             artifacts/native-cli/*.stdout.txt
             artifacts/native-cli/*.stderr.txt
           if-no-files-found: error

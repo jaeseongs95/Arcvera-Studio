@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = 'artifacts/native-cli')
+param([string]$OutputDirectory = 'artifacts/native-cli', [switch]$DiagnoseStartup)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -62,7 +62,29 @@ try {
   $help=Run-Owned $cli @('app-server','daemon','start','--help') 'daemon-help' 20
   if ($help -match '--existing-installation|--first-installation') { throw 'Unexpected shared-daemon capability; startup not authorized by this case.' }
   $reportPath=Join-Path $root 'smoke.json'
-  $null=Run-Owned $exe @('--codex-smoke','--sessions','1','--report',$reportPath) 'smoke' 150
+  $smokeArguments=@('--codex-smoke','--sessions','1','--report',$reportPath)
+  if ($DiagnoseStartup) { $smokeArguments += '--diagnostic-terminal' }
+  try { $null=Run-Owned $exe $smokeArguments 'smoke' 150 }
+  finally {
+    if ($DiagnoseStartup -and (Test-Path -LiteralPath $reportPath)) {
+      # Inspect only this invocation's fresh diagnostic. Never upload terminal text.
+      $partial=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+      $expectedDirectory=Join-Path $root ('agent-grid-codex-smoke-*')
+      $directory=[IO.Path]::GetFullPath($partial.testDirectory)
+      if ((Split-Path -Parent $directory) -ne $root -or $directory -notlike $expectedDirectory) { throw 'Diagnostic directory is outside this invocation.' }
+      $signals=@()
+      foreach ($session in $partial.sessions) {
+        $sessionId=[Guid]::Parse($session.sessionId).ToString()
+        $diagnostic=Join-Path $directory ('startup-terminal-'+$sessionId+'.json')
+        if (!(Test-Path -LiteralPath $diagnostic)) { continue }
+        $content=Get-Content -LiteralPath $diagnostic -Raw | ConvertFrom-Json
+        if ($content.sessionId -ne $sessionId) { throw 'Diagnostic session identity mismatch.' }
+        $prefix=[string]$content.redactedStartupPrefix
+        $signals += [ordered]@{sessionId=$sessionId; diagnosticSha256=(Get-FileHash -LiteralPath $diagnostic -Algorithm SHA256).Hash.ToLowerInvariant(); authenticationPrompt=($prefix -match '(?i)sign in|log in|login|API key|authenticate'); trustPrompt=($prefix -match '(?i)trust this|trust the|trust.*folder|trust.*directory'); welcome=($prefix -match '(?i)welcome to'); terminalError=($prefix -match '(?i)terminal.*(error|unsupported)|cursor position.*could not'); errorWord=($prefix -match '(?i)\berror\b'); prefixCharacters=$prefix.Length}
+      }
+      Write-Json (Join-Path $root 'startup-signals.json') $signals
+    }
+  }
   $report=Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
   if ($report.schema -cne 'agent-grid-codex-smoke-v1' -or !$report.pass -or $report.startupMode -cne 'isolated-fresh-cwd-startup' -or $report.errors.Count -ne 0 -or $report.sessions.Count -ne 1) { throw 'Smoke report did not satisfy NC04.' }
   $session=$report.sessions[0]; $thread=[Guid]::Empty
