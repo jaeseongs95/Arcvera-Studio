@@ -14,7 +14,10 @@ by project, arrange terminals in a resizable grid and return to saved work.
 *Design preview captured from an isolated browser fixture. The terminals contain
 sample output; this image does not demonstrate native runtime or performance.*
 
-See [rename compatibility](docs/rebranding.md) and [unreleased changes](docs/release-notes.md).
+Version **1.8.0** introduces the Arcvera-Studio name and a redesigned subagent
+manager with search, status filters, details and confirmed deletion of eligible
+completed subagents. Deletion requires support from the selected runtime.
+See [rename compatibility](docs/rebranding.md) and [release notes](docs/release-notes.md).
 
 ## Supported Codex runtimes
 
