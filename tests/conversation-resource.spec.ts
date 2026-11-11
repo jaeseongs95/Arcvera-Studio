@@ -73,7 +73,7 @@ test('CR02 disposed controllers and hosts are collected and polling stops', asyn
     await page.route('**/src/conversation.ts*', async route => {
       const response = await route.fetch(); const source = await response.text();
       // Require the actual production dispose boundary, never a test-only fake.
-      const marker = 'abort.abort(); unlanguage();';
+      const marker = /abort\.abort\(\);\s*unlanguage\(\);/g;
       expect(source.split(marker)).toHaveLength(2);
       await route.fulfill({ response, body: source.replace(marker, 'abort.abort(); /* sensitivity: omit language unsubscribe */') });
     });
@@ -91,7 +91,7 @@ test('CR02 disposed controllers and hosts are collected and polling stops', asyn
   // Every deref occurs in a later JS task than GC; WeakRef keep-alive does not
   // accidentally keep the target alive through the collection request.
   const retained = await page.evaluate(() => (window as any).resourceFixture.retired.filter((ref: WeakRef<object>) => ref.deref() !== undefined).length);
-  await writeFileSync(testInfo.outputPath('collection.json'), JSON.stringify({ disposed: 16, expectedCollectedReferences: 32, retained }, null, 2));
+  writeFileSync(testInfo.outputPath('collection.json'), JSON.stringify({ disposed: 16, expectedCollectedReferences: 32, retained }, null, 2));
   expect(retained, 'disposed controller/host retention').toBe(0);
   const polls = await page.evaluate(() => (window as any).resourceFixture.polls);
   // One full production polling period plus scheduling margin observes whether
