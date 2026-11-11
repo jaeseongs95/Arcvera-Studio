@@ -1,0 +1,33 @@
+name: Native PTY resource observation
+on:
+  push:
+    branches: [feat/181-native-observation]
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Headless PTY observation duration (30..14400 seconds)
+        default: '1800'
+        required: true
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: windows-latest
+    timeout-minutes: 260
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Observe hash-pinned public executable without installation
+        env:
+          OBSERVATION_SECONDS: ${{ inputs.seconds || '1800' }}
+        run: ./scripts/observe-native-resource.ps1 -Seconds ([int]$env:OBSERVATION_SECONDS)
+      - name: Preserve complete and partial native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-resource-${{ github.sha }}-${{ github.run_id }}
+          path: artifacts/native-resource/
+          if-no-files-found: error
+          retention-days: 14
