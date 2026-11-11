@@ -24,7 +24,11 @@ test('SC-ALL: actual NSIS shortcut functions preserve collisions and migration m
   const compiler = [path.join(nsisRoot, 'makensis.exe'), path.join(nsisRoot, 'Bin', 'makensis.exe')].find(fs.existsSync);
   assert.ok(compiler, 'Use the verified NSIS toolchain from the package build');
   const utils = path.join(repository, 'src-tauri', 'target', 'release', 'nsis', 'x64', 'utils.nsh');
-  assert.equal(hash(fs.readFileSync(utils)), '78272bd40b8a783c0ab94e4bcb400fd947ba306a7575f2bbbbccb7478f40447f', 'Pinned Tauri 2.12.4 utils');
+  fs.copyFileSync(utils, path.join(evidence, 'utils.nsh'));
+  // Tauri's Windows CLI embeds CRLF source and write_utf8_with_bom adds EF BB BF.
+  // Official LF source SHA256: 78272bd40b8a783c0ab94e4bcb400fd947ba306a7575f2bbbbccb7478f40447f.
+  // nsis/mod.rs writes these include_bytes unchanged after the BOM.
+  assert.equal(hash(fs.readFileSync(utils)), '72cae7532ea22bd39b5433dfd8ac47975844defa916fc113880479dedfee54f6', 'Pinned Tauri 2.12.4 Windows generated utils (BOM + CRLF)');
   const template = fs.readFileSync(path.join(source, 'src-tauri/installer/installer.nsi'), 'utf8');
   const hooks = fs.readFileSync(path.join(source, 'src-tauri/installer/hooks.nsh'), 'utf8');
   const redirect = text => text.replaceAll('$SMPROGRAMS', '$FixtureStartMenu').replaceAll('$DESKTOP', '$FixtureDesktop');

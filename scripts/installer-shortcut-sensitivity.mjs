@@ -34,7 +34,9 @@ function run(label, source) {
   process.stdout.write(result.stdout || '');
   process.stderr.write(result.stderr || '');
   assert.ifError(result.error);
-  return { receipt, report: JSON.parse(fs.readFileSync(path.join(evidence, label, 'result.json'), 'utf8')) };
+  const reportPath = path.join(evidence, label, 'result.json');
+  assert.ok(fs.existsSync(reportPath), `${label}: scenario assertions were not reached; inspect the preserved execution receipt`);
+  return { receipt, report: JSON.parse(fs.readFileSync(reportPath, 'utf8')) };
 }
 const red = run('before', mutant);
 assert.equal(red.receipt.status, 1, 'The unguarded production mutation must fail');
