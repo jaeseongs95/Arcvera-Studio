@@ -241,6 +241,18 @@ jobs:
           if (($updaterBuildLog -join "`n").Contains('does not match the public key')) { throw 'Updater signing key pair does not match; no updater assets will be prepared' }
       - name: NSIS shortcut preservation and mutation sensitivity
         run: node scripts/installer-shortcut-sensitivity.mjs
+      - name: External Microsoft runtime policy and NSIS prerequisite boundaries
+        run: node --test scripts/external-runtime.test.mjs
+      - name: Preserve rendered installer runtime policy
+        shell: pwsh
+        run: |
+          $rendered = 'src-tauri/target/release/nsis/x64/installer.nsi'
+          if (!(Test-Path -LiteralPath $rendered -PathType Leaf)) { throw 'Rendered NSIS script required' }
+          $script = Get-Content -LiteralPath $rendered -Raw
+          if ($script -match 'NSISdl::download|MicrosoftEdgeWebview2Setup|MicrosoftEdgeWebView2RuntimeInstaller|ExecWait[^\r\n]*appguid=') { throw 'Microsoft runtime acquisition in rendered installer' }
+          if ($script -notmatch 'Call ArcveraRequireWebView2') { throw 'Rendered prerequisite gate required' }
+          New-Item -ItemType Directory -Path artifacts/external-runtime/rendered -Force | Out-Null
+          Copy-Item -LiteralPath $rendered -Destination artifacts/external-runtime/rendered/installer.nsi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -259,9 +271,11 @@ jobs:
           Copy-Item LICENSE-MIT-LEGACY artifacts/
           Copy-Item SOURCE.md artifacts/
           Copy-Item THIRD_PARTY_NOTICES.md artifacts/
+          Copy-Item src-tauri/installer/RUNTIME.md artifacts/
+          Copy-Item src-tauri/installer/RUNTIME.ko.md artifacts/
           Copy-Item src-tauri/Cargo.lock artifacts/Cargo.lock
           @{ commit = '${{ github.sha }}'; run = '${{ github.run_id }}'; platform = 'windows-x64'; signed = $false; license = 'AGPL-3.0-or-later'; sourceArchive = "arcvera-studio-$gridVersion-source.zip" } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM artifacts/build-info.json
-          Compress-Archive -Path artifacts/arcvera-studio.exe,artifacts/LICENSE,artifacts/LICENSE-MIT-LEGACY,artifacts/SOURCE.md,artifacts/THIRD_PARTY_NOTICES.md,artifacts/build-info.json -DestinationPath "artifacts/arcvera-studio-$gridVersion-windows-x64-portable.zip"
+          Compress-Archive -Path artifacts/arcvera-studio.exe,artifacts/LICENSE,artifacts/LICENSE-MIT-LEGACY,artifacts/SOURCE.md,artifacts/THIRD_PARTY_NOTICES.md,artifacts/RUNTIME.md,artifacts/RUNTIME.ko.md,artifacts/build-info.json -DestinationPath "artifacts/arcvera-studio-$gridVersion-windows-x64-portable.zip"
           $probeExe = (Resolve-Path 'artifacts/arcvera-studio.exe').Path
           $probeReport = Join-Path $PWD 'artifacts/self-test.json'
           $probeArgs = @('--self-test','--duration-seconds','60','--report',('"{0}"' -f $probeReport))

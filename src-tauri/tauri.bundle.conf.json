@@ -5,7 +5,9 @@
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../LICENSE": "LICENSE",
       "../LICENSE-MIT-LEGACY": "LICENSE-MIT-LEGACY",
-      "../SOURCE.md": "SOURCE.md"
+      "../SOURCE.md": "SOURCE.md",
+      "installer/RUNTIME.md": "RUNTIME.md",
+      "installer/RUNTIME.ko.md": "RUNTIME.ko.md"
     }
   }
 }

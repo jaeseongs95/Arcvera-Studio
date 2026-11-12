@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "OPENDIY_DESKTOP-T-0079-external-runtime",
+  "contractDigest": "sha256:b4f99d64216f46c24c74afdf4173b82f22b30b7b5150a2e0d103c9e56fe68bf2",
+  "requirements": ["EXT-001", "EXT-002"],
+  "scopeFiles": ["src-tauri/tauri.conf.json", "src-tauri/tauri.bundle.conf.json", "src-tauri/installer/installer.nsi", "scripts/external-runtime.test.mjs"],
+  "runner": "Existing node:test; pinned NSIS compiler for a silent isolated function harness",
+  "environment": "This Windows PC D:/codex/build only. No actual installer, registry writes, runtime download/installation, GUI, authentication or existing process changes. NSIS harness substitutes only registry reads; it does not prove clean-host detection or full installation.",
+  "cases": [
+    {
+      "id": "EXT-POLICY",
+      "requirementIds": ["EXT-001"],
+      "scenario": "Check effective Tauri runtime policy, remove all NSIS Microsoft acquisition/update commands, check prerequisite gate precedes installation changes",
+      "entryPoint": "Actual Tauri configuration and NSIS .onInit",
+      "level": "static",
+      "expectedBehavior": "skip; no embedded/download/offline/updater execution; prerequisite checked before SetContext",
+      "oracle": "User direct Core policy instruction; no Microsoft runtime distribution or automatic acquisition/installation",
+      "testFiles": ["scripts/external-runtime.test.mjs"],
+      "required": true,
+      "sensitivity": "red-green",
+      "sensitivityReason": "Run identical policy assertions against the saved pre-change source and fixed source; keep the original failure output.",
+      "argv": ["node", "--test", "scripts/external-runtime.test.mjs"]
+    },
+    {
+      "id": "EXT-BOUNDARY",
+      "requirementIds": ["EXT-002"],
+      "scenario": "Run exact production prerequisite function with absent, zero-version, machine-installed, user-installed, below-minimum and supported versions; missing/update/passive must also abort",
+      "entryPoint": "NSIS ArcveraRequireWebView2 from installer.nsi, invoked by silent isolated .onInit harness",
+      "level": "integration",
+      "expectedBehavior": "Absent/zero/old runtime exits nonzero before marker; supported runtime exits zero and writes fixture-owned marker; official EN/KO instructions bundled",
+      "oracle": "Predeclared input/version table and process exit/marker, not the production decision duplicated in JavaScript",
+      "testFiles": ["scripts/external-runtime.test.mjs"],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "New gate; exact NSIS control flow executed with explicit fixture registry inputs. GUI and real missing-runtime host NOT_RUN; static policy has a before/fixed failure pair.",
+      "argv": ["node", "--test", "scripts/external-runtime.test.mjs"]
+    }
+  ],
+  "exclusions": ["Actual installer/clean host/GUI NOT_RUN", "Core helper actual voice/audio and >=14.50 CRT NOT_RUN", "Historical scope BLOCKED and sensitivity INCOMPLETE remain unchanged"]
+}

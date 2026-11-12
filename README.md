@@ -33,7 +33,10 @@ Existing settings, authentication and conversations are retained. If you previou
    Desktop packages do not include or download Core.
 2. **Install or extract Desktop.** Download the Windows x64 installer or portable
    ZIP from [Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest).
-   Windows and WebView2 are required; builds are unsigned. For the portable edition,
+   Windows and WebView2 are required; builds are unsigned. Microsoft runtime DLLs
+   and installers are not bundled or automatically downloaded/installed. Obtain
+   prerequisites directly from Microsoft; see [Windows prerequisites](src-tauri/installer/RUNTIME.md).
+   For the portable edition,
    extract the **whole ZIP**. Check the download against the release's `SHA256SUMS.txt`,
    then launch the installed app or `arcvera-studio.exe`.
 3. **Select your CLI.** Open **⚙ Settings → Executable settings** and choose the

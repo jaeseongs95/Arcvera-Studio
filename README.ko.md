@@ -33,6 +33,8 @@ Core 1.x 정식 버전에는 공유 서버의 `daemon`·`proxy` 명령과 보호
 2. **Desktop을 설치하거나 압축을 풉니다.**
    [릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest)에서 Windows x64 설치 파일이나
    포터블 ZIP을 받으세요. Windows와 WebView2가 필요하며, 실행 파일은 서명되어 있지 않습니다.
+   Microsoft 런타임 DLL·설치기를 동봉하거나 자동 다운로드·설치하지 않습니다.
+   필요한 구성 요소는 Microsoft에서 직접 설치하세요. [Windows 필수 구성 요소](src-tauri/installer/RUNTIME.ko.md)를 참고하세요.
    포터블은 **ZIP 전체를 풀어** 사용하세요.
    릴리스의 `SHA256SUMS.txt`와 다운로드한 파일의 해시를 대조할 수 있습니다.
    설치한 앱 또는 `arcvera-studio.exe`를 실행하세요.

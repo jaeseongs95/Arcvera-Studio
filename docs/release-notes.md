@@ -4,6 +4,13 @@
 
 ### English
 
+Microsoft runtime DLLs and installers are no longer bundled, downloaded or installed
+by Desktop. Missing or outdated WebView2 stops the installer before installation
+changes, including during updates. Obtain prerequisites directly from Microsoft;
+see [Windows prerequisites](../src-tauri/installer/RUNTIME.md). Core's separate
+package documents the Visual C++ runtime needed by its voice helper. Existing
+open-source dependencies and notices are retained.
+
 Version 2.0.0 and every subsequent version use AGPL-3.0-or-later. The earlier
 MIT notice and third-party licenses are preserved. Settings includes the
 license text and a link to the matching release's free Corresponding Source.
@@ -39,6 +46,13 @@ opt-in network diagnostics on failure. The v1.8.0 official-CLI startup observer
 remains a manual historical diagnostic and does not validate Desktop 2.0.
 
 ### 한국어
+
+Desktop은 Microsoft 런타임 DLL·설치기를 동봉하거나 자동으로 다운로드·설치하지
+않습니다. WebView2가 없거나 오래된 경우 업데이트를 포함해 설치 변경 전에
+중단합니다. 필요한 구성 요소는 Microsoft에서 직접 설치하세요.
+[Windows 필수 구성 요소](../src-tauri/installer/RUNTIME.ko.md)를 참고하세요. Core 음성
+도우미에 필요한 Visual C++ 런타임은 별도 Core 패키지의 안내를 따릅니다.
+기존 오픈소스 의존성과 고지는 유지합니다.
 
 2.0.0과 이후 모든 버전에는 AGPL-3.0-or-later를 적용합니다. 기존 MIT 고지와
 타사 라이선스는 보존합니다. 설정에서 라이선스 전문을 읽고 동일 버전의 무료
