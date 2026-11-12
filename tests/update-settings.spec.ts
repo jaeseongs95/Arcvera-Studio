@@ -101,7 +101,7 @@ test('US08 simultaneous product offers are queued without installing either prod
   await expect(page.locator('.update-confirmation')).toContainText('Arcvera-Studio');
   await expect.poll(() => page.evaluate(() => (window as any).updateCalls.filter((c: any) => c.command.startsWith('check_')).length)).toBe(2);
   await page.getByRole('button', { name: '아니오', exact: true }).click();
-  await expect(page.locator('.update-confirmation')).toContainText('OpenDIY Codex');
+  await expect(page.locator('.update-confirmation')).toContainText('Arcvera Core');
   await page.getByRole('button', { name: '아니오', exact: true }).click();
   await expect(page.locator('.update-confirmation')).not.toBeVisible();
   expect(await page.evaluate(() => (window as any).updateCalls.filter((c: any) => c.command.startsWith('install_')))).toEqual([]);

@@ -1,6 +1,6 @@
 # Arcvera-Studio
 
-A Windows workspace for running Codex CLI sessions side by side. Group conversations
+A Windows workspace for running Arcvera Core sessions side by side. Group conversations
 by project, arrange terminals in a resizable grid and return to saved work.
 
 **English** | [한국어](README.ko.md)
@@ -14,28 +14,22 @@ by project, arrange terminals in a resizable grid and return to saved work.
 *Design preview captured from an isolated browser fixture. The terminals contain
 sample output; this image does not demonstrate native runtime or performance.*
 
-Version **1.8.0** introduces the Arcvera-Studio name and a redesigned subagent
-manager with search, status filters, details and confirmed deletion of eligible
-completed subagents. Deletion requires support from the selected runtime.
+Version **2.0.0** requires a stable Arcvera Core 1.x release. Official Codex and earlier Core
+runtimes are no longer supported. Existing settings, authentication and
+conversations are retained.
 See [rename compatibility](docs/rebranding.md) and [release notes](docs/release-notes.md).
 
-## Supported Codex runtimes
+## Supported runtime
 
-Desktop and Codex are installed separately. The documented runtime baseline for
-Desktop **1.2.0** is:
+Desktop supports only stable [Arcvera Core](https://github.com/jaeseongs95/opendiy-codex) 1.x CLI and app servers. Install Core separately. Official Codex CLI support and the per-session server path have been removed.
 
-| Runtime | Support scope |
-| --- | --- |
-| [OpenDIY Codex](https://github.com/jaeseongs95/opendiy-codex) R36 CLI with its R36 app-server | Basic terminal and session workflow, plus extensions when their required capabilities are available. Earlier OpenDIY builds, including R28, are outside the support policy. |
-| [Official Codex CLI](https://github.com/openai/codex) 0.166.0 | Basic terminal and session workflow. OpenDIY extensions are not assumed to be available. |
+Stable Core 1.x must provide shared-server `daemon` and `proxy` commands and the protected startup options `--existing-installation` and `--first-installation`. Each connection sends the full validated version of the connected server in the Core initialization contract. Explicit server replacement separately checks that the selected CLI and server package match. Feature controls depend on the connected server.
 
-Extension controls depend on the actual support provided by the selected CLI and
-connected server, as well as connection and task state. A version number alone
-does not guarantee a feature. See [runtime selection and server transitions](docs/user-guide.md#runtime).
+Existing settings, authentication and conversations are retained. If you previously used official Codex CLI, choose Core CLI and its matching server under **Executable settings**. See [runtime selection and server transitions](docs/user-guide.md#runtime).
 
 ## Quick start
 
-1. **Install Codex and sign in.** Use one of the runtimes above. Desktop packages
+1. **Install Arcvera Core and sign in.** Use the matching CLI/server package. Desktop packages
    do not include or download Codex.
 2. **Install or extract Desktop.** Download the Windows x64 installer or portable
    ZIP from [Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest).

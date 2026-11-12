@@ -4,8 +4,8 @@ use std::net::TcpListener;
 fn fixture() -> (ConversationConnection,Rpc<TcpStream>,TcpListener) {
     let listener=TcpListener::bind("127.0.0.1:0").unwrap();
     let stream=TcpStream::connect(listener.local_addr().unwrap()).unwrap();stream.set_read_timeout(Some(Duration::from_millis(30))).unwrap();
-    let control=ConversationConnection::new(Endpoint::Owned{address:String::new(),token:String::new(),job:Weak::new()},Arc::new(AtomicBool::new(false)));
-    (control,Rpc{ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:None},listener)
+    let control=ConversationConnection::new(Endpoint::Unavailable,Arc::new(AtomicBool::new(false)));
+    (control,Rpc{core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:None},listener)
 }
 fn request(socket: &mut WebSocket<TcpStream>) -> Value {loop {if let Message::Text(text)=socket.read().unwrap() {return serde_json::from_str(&text).unwrap();}}}
 fn reply(socket: &mut WebSocket<TcpStream>,request: &Value,result: Value) {socket.send(Message::Text(json!({"id":request["id"],"result":result}).to_string().into())).unwrap();}

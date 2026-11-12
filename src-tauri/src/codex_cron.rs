@@ -216,8 +216,8 @@ mod tests {
             assert!(!error.contains("전송하면 안 되는 원문"));
         }
     }
-    fn fixture(socket: Option<TcpStream>) -> CodexSession {
-        CodexSession {command:CommandBuilder::new("예약-미송신-시험"),server:None,job:None,stopped:Arc::new(AtomicBool::new(false)),socket,observer:None,mobile:None,shared:None,proxy_job:None,conversation:None}
+    fn fixture() -> CodexSession {
+        CodexSession {command:CommandBuilder::new_with_process_env("예약-미송신-시험"),stopped:Arc::new(AtomicBool::new(false)),observer:None,mobile:None,shared:None,proxy_job:None,conversation:None}
     }
     #[test]
     fn cron_requests_reject_unknown_fields_wrong_shapes_and_missing_mutation_identity() {
@@ -254,27 +254,23 @@ mod tests {
         assert!(!valid(add(json!({"type":"every","seconds":10,"unexpected":true}),"작업".into())));
     }
     #[test]
-    fn cron_unsupported_is_distinct_from_empty_list_and_never_sends_to_the_existing_socket() {
-        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
-        let socket=TcpStream::connect(listener.local_addr().unwrap()).unwrap();let(mut server,_)=listener.accept().unwrap();
-        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();let adapter=fixture(Some(socket));let thread_id=Uuid::new_v4().to_string();
+    fn cron_unsupported_is_distinct_from_empty_list() {
+        let adapter=fixture();let thread_id=Uuid::new_v4().to_string();
         let list=adapter.cron_request(&thread_id,CronRequest::List{}).unwrap();
         assert_eq!(list["supported"],false);assert_eq!(list["connected"],false);assert_eq!(list["scope"],"cliLifetime");assert_eq!(list["reason"],"unsupported");assert_eq!(list["jobs"],json!([]));assert_eq!(list["hasMore"],false);assert!(list.get("mutationState").is_none());
         let mut requests=vec![decode(add(json!({"type":"every","seconds":10}),"원래 프롬프트".into())).unwrap()];
         for action in ["pause","resume","remove","cancel"] {requests.push(decode(json!({"type":action,"requestId":Uuid::new_v4().to_string(),"jobId":"1"})).unwrap());}
         for request in requests {let response=adapter.cron_request(&thread_id,request).unwrap();assert_eq!(response,json!({"status":"unsupported","reason":"unsupported"}));assert!(response.get("mutationState").is_none());}
         assert!(!adapter.stopped.load(Ordering::Acquire));drop(adapter);
-        let read=server.read(&mut[0u8;1]);
-        let closed=match &read {Ok(0)=>true,Err(error)=>matches!(error.kind(),io::ErrorKind::ConnectionAborted|io::ErrorKind::ConnectionReset),_=>false};
-        assert!(closed,"미지원 예약은 기존 소켓·PTY에 바이트를 쓰지 않아야 한다. 시간 초과는 종료 근거가 아니다: {read:?}");
+
     }
     #[test]
     fn cron_rejects_stopped_deleted_or_invalid_thread_without_creating_a_transport() {
-        let adapter=fixture(None);assert!(adapter.cron_request("잘못된 대화",CronRequest::List{}).is_err());
-        adapter.stopped.store(true,Ordering::Release);assert!(adapter.cron_request(&Uuid::new_v4().to_string(),CronRequest::List{}).is_err());assert!(adapter.socket.is_none());
-        let mut deleted=fixture(None);let thread_id=Uuid::new_v4().to_string();
-        let connection=ConversationConnection::new(conversation::Endpoint::Owned{address:String::new(),token:String::new(),job:std::sync::Weak::new()},Arc::new(AtomicBool::new(false)));
+        let adapter=fixture();assert!(adapter.cron_request("잘못된 대화",CronRequest::List{}).is_err());
+        adapter.stopped.store(true,Ordering::Release);assert!(adapter.cron_request(&Uuid::new_v4().to_string(),CronRequest::List{}).is_err());assert!(adapter.shared.is_none());
+        let mut deleted=fixture();let thread_id=Uuid::new_v4().to_string();
+        let connection=ConversationConnection::new(conversation::Endpoint::Unavailable,Arc::new(AtomicBool::new(false)));
         assert!(connection.observer_message(&thread_id,json!({"method":"thread/deleted","params":{"threadId":thread_id}})).is_err());
-        deleted.conversation=Some(connection);assert!(deleted.cron_request(&thread_id,CronRequest::List{}).unwrap_err().contains("삭제"));assert!(deleted.socket.is_none());
+        deleted.conversation=Some(connection);assert!(deleted.cron_request(&thread_id,CronRequest::List{}).unwrap_err().contains("삭제"));assert!(deleted.shared.is_none());
     }
 }

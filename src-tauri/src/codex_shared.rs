@@ -23,10 +23,9 @@ pub(super) fn prepare_runtime(exe: &OsString, cwd: &Path, cancelled: &Arc<Atomic
         |mode| extensions::start_daemon_stdout_until(exe, cwd, mode, deadline, Some(cancelled)),
         |path| fs::symlink_metadata(path),
     )?;
-    let Some(value) = value else { return Ok(()); }; // 공유 lifecycle을 위임하지 않는 공식 CLI는 개별 서버 경로 사용.
     check_cancelled(Some(cancelled))?;
     let socket = lifecycle_socket(&value)?;
-    let endpoint = SharedEndpoint { exe: exe.clone(), stamp: socket_stamp(&socket)?, socket };
+    let endpoint = SharedEndpoint { exe: exe.clone(), stamp: socket_stamp(&socket)?, socket, core_version: lifecycle_version(&value)? };
     let mut proxy = endpoint.open_until(Some(cancelled.clone()), Some(deadline))?;
     let ready = initialize_proxy(&mut proxy).and_then(|_| check_cancelled(Some(cancelled)));
     let cleanup = proxy.finish();
@@ -43,14 +42,14 @@ fn prepare_runtime_commands(
     mut query: impl FnMut(&[&str]) -> Result<Vec<u8>, String>,
     start: impl FnOnce(DaemonStart) -> Result<Vec<u8>, String>,
     mut metadata: impl FnMut(&Path) -> std::io::Result<fs::Metadata>,
-) -> Result<Option<Value>, String> {
-    if !supports_shared_management(&mut query)? { return Ok(None); }
+) -> Result<Value, String> {
+    supports_shared_management(&mut query)?;
     let version = ["app-server", "daemon", "version"];
     match query(&version) {
         Ok(bytes) => {
             let value = lifecycle_value(&bytes)?;
             lifecycle_socket(&value)?;
-            Ok(Some(value))
+            Ok(value)
         }
         Err(_) => {
             let mut preserve = true;
@@ -64,6 +63,9 @@ fn prepare_runtime_commands(
                 for key in ["managedCodexVersion", "appServerVersion"] {
                     if value.get(key).is_some_and(|v| !v.is_null() && !v.as_str().is_some_and(|s| !s.is_empty())) {
                         return Err(format!("공유 서버 상태 조회의 {key} 형식이 올바르지 않습니다."));
+                    }
+                    if let Some(version) = value.get(key).and_then(Value::as_str) {
+                        require_core_version(version)?;
                     }
                 }
                 preserve = !(value["status"] == "stopped"
@@ -84,36 +86,42 @@ fn prepare_runtime_commands(
             if lifecycle_socket(&ready)? != started_socket {
                 return Err("준비 중 공유 서버 연결 경로가 바뀌었습니다. 세션을 복원하지 않았습니다.".into());
             }
-            Ok(Some(ready))
+            Ok(ready)
         }
     }
 }
-// 공유 lifecycle은 두 보호 옵션을 모두 선언한 구현에만 맡긴다. 공식 CLI도
-// daemon 명령이 있지만 두 옵션이 없으므로 기존 개별 서버 adapter를 사용한다.
-fn supports_shared_management(mut query: impl FnMut(&[&str]) -> Result<Vec<u8>, String>) -> Result<bool, String> {
-    if !supports_shared(&query(&["app-server", "--help"])?)? { return Ok(false); }
-    let help = query(&["app-server", "daemon", "start", "--help"])
-        .map_err(|error| format!("공유 서버 시작 지원을 확인하지 못했습니다: {error}"))?;
-    let supported = ["--existing-installation", "--first-installation"].map(|option|
-        help_supports_option(&help, option)
-            .map_err(|error| format!("공유 서버 시작 도움말을 확인하지 못했습니다: {error}")));
-    match (supported[0].clone()?, supported[1].clone()?) {
-        (true, true) => Ok(true),
-        (false, false) => Ok(false),
-        (existing, _) => Err(format!("선택한 OpenDIY CLI에 {} 지원이 없습니다. Desktop 1.1.0은 R36 이상을 지원합니다.",
-            if existing { "--first-installation" } else { "--existing-installation" })),
+// Core must provide both guarded startup modes. Unsupported runtimes never get a fallback.
+pub(super) fn supports_shared_management(mut query: impl FnMut(&[&str]) -> Result<Vec<u8>, String>) -> Result<(), String> {
+    if !supports_shared(&query(&["app-server", "--help"])?)? {
+        return Err("Arcvera Core의 공유 서버 daemon/proxy 지원이 필요합니다. 공식 Codex는 지원하지 않습니다.".into());
     }
+    let help = query(&["app-server", "daemon", "start", "--help"])
+        .map_err(|error| format!("Core 공유 서버 시작 지원을 확인하지 못했습니다: {error}"))?;
+    for option in ["--existing-installation", "--first-installation"] {
+        if !help_supports_option(&help, option)? {
+            return Err(format!("선택한 실행 파일에 Arcvera Core 필수 옵션 {option} 지원이 없습니다. 공식 Codex는 지원하지 않습니다."));
+        }
+    }
+    executable_core_version(&query(&["--version"])?)?;
+    Ok(())
+}
+pub(super) fn executable_core_version(bytes: &[u8]) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "Core 버전 응답이 올바른 UTF-8이 아닙니다.")?;
+    let text = text.strip_suffix("\r\n").or_else(|| text.strip_suffix('\n')).unwrap_or(text);
+    let version = super::runtime_pair::normalized_version(text)?;
+    require_core_version(&version)?;
+    Ok(version)
 }
 // 조회는 서버를 설치하거나 시작하지 않으며 실패를 다른 adapter로 대체하지 않는다.
 fn existing_runtime_commands(
     mut query: impl FnMut(&[&str]) -> Result<Vec<u8>, String>,
-) -> Result<Option<Value>, String> {
-    if !supports_shared_management(&mut query)? { return Ok(None); }
+) -> Result<Value, String> {
+    supports_shared_management(&mut query)?;
     let bytes = query(&["app-server", "daemon", "version"]).map_err(|error|
         format!("기존 공유 Codex 서버에 연결할 수 없습니다. Codex에서 공유 서버의 실행 상태와 권한을 확인한 뒤 다시 시도하세요. 서버를 자동으로 설치하거나 시작하지 않았습니다. 원인: {error}"))?;
     let value = lifecycle_value(&bytes)?;
     lifecycle_socket(&value)?;
-    Ok(Some(value))
+    Ok(value)
 }
 fn first_installation(value: &Value, mut metadata: impl FnMut(&Path) -> std::io::Result<fs::Metadata>) -> bool {
     let path = |key| value.get(key).and_then(Value::as_str).filter(|text| !text.chars().any(char::is_control))
@@ -145,6 +153,7 @@ pub(super) fn lifecycle_value(bytes: &[u8]) -> Result<Value, String> {
 #[derive(Clone)]
 pub(super) struct SharedEndpoint {
     exe: OsString,
+    core_version: String,
     socket: PathBuf,
     stamp: SocketStamp,
 }
@@ -166,17 +175,17 @@ fn socket_stamp(path: &Path) -> Result<SocketStamp, String> {
     })
 }
 impl SharedEndpoint {
-    pub(super) fn existing(exe: &OsString, cwd: &Path, cancelled: Option<&Arc<AtomicBool>>) -> Result<Option<Self>, String> {
-        // 공식 CLI의 개별 서버 경로와 두 보호 옵션을 갖춘 공유 경로를 구분한다.
+    pub(super) fn existing(exe: &OsString, cwd: &Path, cancelled: Option<&Arc<AtomicBool>>) -> Result<Self, String> {
+        // 모든 연결은 Core의 보호된 공유 서버 계약을 확인한다.
         // 실행·권한·프로토콜 오류를 미지원으로 삼켜 다른 서버로 대체하지 않는다.
         let deadline = Instant::now() + HELP_TIMEOUT;
-        let Some(value) = existing_runtime_commands(|args| {
+        let value = existing_runtime_commands(|args| {
             extensions::command_stdout_until(exe, cwd, &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(), deadline, cancelled)
                 .map_err(|e| format!("Codex 공유 연결 지원을 확인할 수 없습니다: {e}"))
-        })? else { return Ok(None); };
+        })?;
         let socket = lifecycle_socket(&value)?;
         let stamp = socket_stamp(&socket)?;
-        Ok(Some(Self { exe:exe.clone(), socket, stamp }))
+        Ok(Self { exe:exe.clone(), socket, stamp, core_version:lifecycle_version(&value)? })
     }
     pub(super) fn open(&self, cancelled: Option<Arc<AtomicBool>>) -> Result<Proxy, String> {
         self.open_until(cancelled, None)
@@ -185,8 +194,9 @@ impl SharedEndpoint {
         self.verify()?;
         // 무인자 default proxy 분기의 private 디렉터리/비상승 상대 검사를 사용한다.
         // TUI는 같은 CLI의 daemon/version이 반환한 기본 소켓을 명시한다.
-        let proxy = Proxy::open_until(&self.exe, cancelled, deadline)?;
+        let mut proxy = Proxy::open_until(&self.exe, cancelled, deadline)?;
         if let Err(error)=self.verify() {return match proxy.finish(){Ok(())=>Err(error),Err(cleanup)=>Err(format!("{error}; 소유 proxy 정리 실패: {cleanup}"))};}
+        proxy.rpc.as_mut().expect("connected proxy").core_version = Some(self.core_version.clone());
         Ok(proxy)
     }
     fn verify(&self) -> Result<(), String> {
@@ -197,11 +207,11 @@ impl SharedEndpoint {
     }
     fn tui(&self, cwd: &Path, id: &str) -> Result<CommandBuilder, String> {
         let socket = self.socket.to_str().ok_or("공유 서버 소켓 경로가 유효한 문자열이 아닙니다.")?;
-        let mut command = CommandBuilder::new(&self.exe);
+        let mut command = CommandBuilder::new_with_process_env(&self.exe);
         command.args(["resume", id, "--remote", &format!("unix://{socket}"), "--cd"]);
         command.arg(cwd.as_os_str()); command.cwd(cwd);
         // unix 연결에는 WS 전용 토큰 옵션을 전달하지 않는다. 기본 daemon의 명시적
-        // endpoint이므로 공식 TUI가 private ACL을 확인하며 embedded 대체를 금지한다.
+        // endpoint이므로 Core TUI가 private ACL을 확인하며 개별 서버 대체를 금지한다.
         Ok(command)
     }
 }
@@ -222,10 +232,23 @@ pub(super) fn supports_shared(bytes: &[u8]) -> Result<bool, String> {
     let declared = |name: &str| lines.iter().any(|line| line.len() - line.trim_start().len() == column && line.split_ascii_whitespace().next() == Some(name));
     Ok(declared("daemon") && declared("proxy"))
 }
+pub(super) fn require_core_version(version: &str) -> Result<(), String> {
+    let parsed = semver::Version::parse(version).map_err(|_| "Arcvera Core 버전은 완전한 SemVer이어야 합니다.")?;
+    if parsed.major != 1 || !parsed.pre.is_empty() {
+        return Err("Desktop 2.0에는 Arcvera Core 1.x 정식 버전이 필요합니다. 공식 Codex와 이전 Core는 지원하지 않습니다.".into());
+    }
+    Ok(())
+}
+fn lifecycle_version(value: &Value) -> Result<String, String> {
+    let version = value["appServerVersion"].as_str().ok_or("Core 서버 버전이 누락되었습니다.")?;
+    require_core_version(version)?;
+    Ok(version.to_owned())
+}
 pub(super) fn lifecycle_socket(value: &Value) -> Result<PathBuf, String> {
-    if value["status"] != "running" || !value["appServerVersion"].as_str().is_some_and(|v| !v.is_empty()) {
+    if value["status"] != "running" {
         return Err("공유 서버의 실행 상태와 버전을 확인할 수 없습니다.".into());
     }
+    lifecycle_version(value)?;
     let socket = value["socketPath"].as_str().filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
         .ok_or("공유 서버 소켓 경로가 누락되었습니다.")?;
     let path = PathBuf::from(socket);
@@ -341,6 +364,27 @@ fn initialize_proxy(proxy: &mut Proxy) -> Result<Value, String> {
     Ok(initialized)
 }
 
+/// A bounded query owns only its proxy; it never starts, replaces or stops Core.
+pub(super) fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<ProxyStream>) -> Result<T, String>) -> Result<T, String> {
+    let endpoint = SharedEndpoint::existing(exe, cwd, None)?;
+    let deadline = Instant::now() + RPC_TIMEOUT;
+    let mut proxy = endpoint.open_until(None, Some(deadline))?;
+    let result = initialize_proxy(&mut proxy).and_then(|_| operation(proxy.rpc.as_mut().expect("initialized proxy")));
+    match (result, proxy.finish()) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; Core 연결 정리 실패: {cleanup}")),
+    }
+}
+
+#[cfg(test)]
+impl SharedEndpoint {
+    pub(super) fn test_fixture() -> Self {
+        Self { core_version:"1.0.0+fixture".into(), exe: "fixture-only".into(), socket: PathBuf::new(), stamp: SocketStamp { canonical: PathBuf::new(), created: None, modified: None } }
+    }
+}
+
 pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpoint,
     on_event: Arc<dyn Fn(CodexEvent) + Send + Sync>, cancelled: Arc<AtomicBool>) -> Result<CodexSession, String> {
     check_cancelled(Some(&cancelled))?;
@@ -353,7 +397,7 @@ pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpo
         let result = proxy.call("thread/start", json!({"cwd":cwd,"experimentalRawEvents":false,"persistExtendedHistory":false}))?;
         let thread = result["thread"].clone();
         // 빈 대화가 TUI 연결 전에 무구독 idle 정리로 사라지지 않도록 이 구독을
-        // 세션 수명 동안 유지한다. 관측자는 입력·승인 응답을 보내지 않으며 공식
+        // 세션 수명 동안 유지한다. 관측자는 입력·승인 응답을 보내지 않으며 Core
         // 서버의 일반 승인 요청은 TUI를 포함한 모든 구독자에게 전달된다.
         thread
     };
@@ -383,7 +427,7 @@ pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpo
         drop(rpc); // receiver를 먼저 닫아 bounded pipe reader의 send를 깨운다.
         drop(proxy);
     });
-    Ok(CodexSession { command,server:None,job:None,stopped,socket:None,observer:Some(observer),mobile:Some(mobile),shared:Some(control),proxy_job,conversation })
+    Ok(CodexSession { command,stopped,observer:Some(observer),mobile:Some(mobile),shared:Some(control),proxy_job,conversation })
 }
 
 #[cfg(test)]
@@ -443,7 +487,7 @@ mod expected_interrupt_tests {
             }
             received
         });
-        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(3))};
+        let mut rpc = Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(3))};
         let result = capture_supported_stop(&mut rpc, "selected-thread", &cwd)
             .and_then(|captured| interrupt_exact(&mut rpc, "selected-thread", &cwd, captured.as_deref()));
         drop(rpc);
@@ -475,7 +519,7 @@ mod expected_interrupt_tests {
             }
             received
         });
-        let mut rpc = Rpc { ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:None, deadline:Some(Instant::now()+Duration::from_secs(3)) };
+        let mut rpc = Rpc { core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:None, deadline:Some(Instant::now()+Duration::from_secs(3)) };
         let mut entered_cleanup = false;
         let result = capture_supported_idle_stop(&mut rpc, "selected-thread", &cwd).and_then(|()| { entered_cleanup = true; interrupt_exact(&mut rpc, "selected-thread", &cwd, None) });
         drop(rpc); (result, worker.join().unwrap(), entered_cleanup)

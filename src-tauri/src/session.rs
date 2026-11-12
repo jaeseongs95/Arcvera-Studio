@@ -827,10 +827,11 @@ impl Engine {
 
     fn codex_executable(&self) -> Result<std::ffi::OsString, String> {
         let executable = self.get_codex_settings()?.executable()?;
-        // Catalog and external-session queries use only the CLI. An unrelated
-        // invalid server choice must not prevent browsing existing sessions.
-        if !codex::is_runtime_launcher(&executable) { return Ok(executable); }
-        Ok(codex::resolve_runtime_source(&executable, &executable, "cli", false, &self.inner.exiting)?.executable)
+        let executable = if codex::is_runtime_launcher(&executable) {
+            codex::resolve_runtime_source(&executable, &executable, "cli", false, &self.inner.exiting)?.executable
+        } else { executable };
+        codex::validate_core_executable(&executable, &self.inner.exiting)?;
+        Ok(executable)
     }
 
     fn change_runtime_selection_with(&self, save: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -1450,14 +1451,14 @@ mod runtime_preparation_tests {
 
     #[cfg(windows)]
     #[test]
-    fn cli_only_browsing_does_not_depend_on_an_invalid_manual_server() {
+    fn unsupported_cli_is_rejected_before_an_invalid_manual_server() {
         let engine = engine();
         let cli = std::env::current_exe().unwrap();
         let cli = crate::codex_settings::validate(&cli).unwrap();
         engine.set_codex_executable(Some(&cli)).unwrap();
         engine.inner.store.lock().unwrap().set_app_server_executable(Some("Z:\\missing-server-fixture.exe")).unwrap();
         assert!(engine.get_codex_settings().unwrap().app_server.error.is_some());
-        assert_eq!(engine.codex_executable().unwrap(), std::ffi::OsString::from(cli));
+        assert!(engine.codex_executable().unwrap_err().contains("Arcvera Core"));
     }
 
     #[test]
@@ -1555,7 +1556,7 @@ mod runtime_preparation_tests {
 
     #[test]
     fn transition_never_starts_a_mismatched_or_unconfirmed_pair() {
-        let mut pairs: Vec<_> = ["mismatch", "unavailable", "embedded"].into_iter().map(transition_pair).collect();
+        let mut pairs: Vec<_> = ["mismatch", "unavailable", "unconfirmed"].into_iter().map(transition_pair).collect();
         for boundary in 0..3 {
             let mut pair = transition_pair("stopped");
             match boundary {
@@ -1582,7 +1583,7 @@ mod runtime_preparation_tests {
         assert_eq!((preparations, inspections), (1, 1));
 
         for observation in [Ok(transition_pair("mismatch")), Ok(transition_pair("stopped")),
-            Ok(transition_pair("embedded")), Err("시작 후 조회 실패".into())] {
+            Ok(transition_pair("unavailable")), Err("시작 후 조회 실패".into())] {
             let (reply, preparations, inspections) = finish_transition_fixture(updated_reply(),
                 vec![Ok(transition_pair("stopped")), observation], Ok(()));
             assert!(!reply.success, "시작 뒤 실제 matched 관측 없이 성공을 보고함");
@@ -1828,7 +1829,7 @@ mod lifecycle_tests {
                 assert_eq!(engine.list().unwrap()[0].state, "starting");
                 for event in receiver.try_iter() { if let BackendEvent::Changed(info) = event { assert_eq!(info.state, "starting"); } }
                 let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-                let mut command = CommandBuilder::new(shell);
+                let mut command = CommandBuilder::new_with_process_env(shell);
                 command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('PREPARING_PTY_READY'); Start-Sleep -Seconds 30"]);
                 let started = engine.launch(session.clone(), command, None, 80, 24).unwrap();
                 struct Cleanup(Engine, String, u64);
@@ -1892,7 +1893,7 @@ mod lifecycle_tests {
             session.observe(CodexEvent::ThreadId("late-thread".into()));
             assert_eq!(session.info().unwrap().state, "stopping");
             assert_eq!(persisted_preparing_metadata(database, &starting.id).state, "stopping");
-            assert!(engine.launch(session.clone(), CommandBuilder::new("must-not-launch-preparing-fixture"), None, 80, 24).unwrap_err().contains("stopped before launch"));
+            assert!(engine.launch(session.clone(), CommandBuilder::new_with_process_env("must-not-launch-preparing-fixture"), None, 80, 24).unwrap_err().contains("stopped before launch"));
             session.observe(CodexEvent::Status("waiting".into()));
             session.observe(CodexEvent::ThreadId("later-thread".into()));
             let stopped = engine.list().unwrap().pop().unwrap();
@@ -2155,7 +2156,7 @@ mod lifecycle_tests {
     fn resume_observation_error_keeps_real_pty_stoppable_until_reaped() {
         let engine = Engine::new(Path::new(":memory:"), Arc::new(|_| Ok(()))).unwrap();
         let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let mut command = CommandBuilder::new(shell);
+        let mut command = CommandBuilder::new_with_process_env(shell);
         command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
         let started = engine.start_fixture(request(), command).unwrap();
         let session = engine.lookup(&started.id, started.generation).unwrap();
@@ -2281,7 +2282,7 @@ mod lifecycle_tests {
         let mut start = request();
         start.project_id = Some(project.id.clone());
         let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let mut command = CommandBuilder::new(shell);
+        let mut command = CommandBuilder::new_with_process_env(shell);
         command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('PROJECT_MOVE_READY'); $line = [Console]::ReadLine(); if ($line -ne 'keep-running') { exit 3 }; [Console]::WriteLine('PROJECT_MOVE_DONE')"]);
         let started = engine.start_fixture(start, command).unwrap();
         struct Cleanup(Engine, String, u64);
@@ -2467,6 +2468,20 @@ mod input_tests;
 #[cfg(all(test, windows))]
 mod settings_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn terminal_environment_retains_process_snapshot_and_explicit_overrides() {
+        use std::ffi::OsStr;
+        let system_root = std::env::var_os("SystemRoot").expect("Windows system root");
+        let mut command = portable_pty::CommandBuilder::new_with_process_env("fixture.exe");
+        assert_eq!(command.get_env("systemroot"), Some(system_root.as_os_str()));
+        assert!(command.iter_extra_env_as_str().next().is_none());
+        command.env("SYSTEMROOT", "D:\\fixture-root");
+        assert_eq!(command.get_env("SystemRoot"), Some(OsStr::new("D:\\fixture-root")));
+        command.env_remove("systemROOT");
+        assert_eq!(command.get_env("SystemRoot"), None);
+        assert_eq!(std::env::var_os("SystemRoot"), Some(system_root));
+    }
     #[test]
     fn invalid_executable_save_preserves_value_and_reset_reports_status() {
         let directory = std::env::temp_dir().join(format!("agent-grid-setting-engine-{}", Uuid::new_v4()));
@@ -2476,15 +2491,15 @@ mod settings_tests {
         let executable = std::env::current_exe().unwrap();
         let saved = engine.set_codex_executable(Some(executable.to_str().unwrap())).unwrap();
         assert_eq!(saved.source, "saved");
-        let admitted = engine.codex_executable().unwrap();
+        assert!(engine.codex_executable().unwrap_err().contains("Arcvera Core"));
         assert!(engine.set_codex_executable(Some("relative.cmd")).is_err());
         assert_eq!(engine.get_codex_settings().unwrap().saved_path, saved.saved_path);
-        assert_eq!(engine.codex_executable().unwrap(), admitted);
+        assert!(engine.codex_executable().unwrap_err().contains("Arcvera Core"));
         let reset = engine.set_codex_executable(None).unwrap();
         assert!(reset.saved_path.is_none());
         // A missing fallback is status data; resetting a key still succeeded.
         if reset.resolved_path.is_none() { assert!(reset.error.is_some()); }
-        assert_eq!(admitted, saved.executable().unwrap());
+        assert_eq!(saved.executable().unwrap(), executable.into_os_string());
         drop(engine);
         let reopened = Engine::new(&database, Arc::new(|_| Ok(()))).unwrap();
         assert!(reopened.get_codex_settings().unwrap().saved_path.is_none());

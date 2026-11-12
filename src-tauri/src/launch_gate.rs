@@ -1,5 +1,44 @@
 //! Native suspended launch regression fixtures; production uses owned_process.
 #[cfg(all(test, windows))]
+pub(crate) fn current_parent_pid() -> u32 {
+    use std::ffi::c_void;
+    // Query this fixture only; never enumerate other OS processes.
+    // Layout/API: https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess
+    #[repr(C)]
+    struct BasicInformation {
+        exit_status: i32,
+        peb: *mut c_void,
+        affinity_mask: usize,
+        base_priority: i32,
+        process_id: usize,
+        parent_process_id: usize,
+    }
+    type Query = unsafe extern "system" fn(*mut c_void, i32, *mut c_void, u32, *mut u32) -> i32;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> Option<unsafe extern "system" fn() -> isize>;
+    }
+    let name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+    // ntdll is already loaded for this process; the borrowed module is not freed.
+    let module = unsafe { GetModuleHandleW(name.as_ptr()) };
+    assert!(!module.is_null(), "ntdll module unavailable");
+    let address = unsafe { GetProcAddress(module, b"NtQueryInformationProcess\0".as_ptr()) }.expect("NtQueryInformationProcess unavailable");
+    // The resolved export has the documented system ABI/signature above.
+    let query: Query = unsafe { std::mem::transmute(address) };
+    let mut information: BasicInformation = unsafe { std::mem::zeroed() };
+    let mut returned = 0;
+    let size = std::mem::size_of::<BasicInformation>() as u32;
+    let status = unsafe { query(windows_sys::Win32::System::Threading::GetCurrentProcess(), 0, (&mut information as *mut BasicInformation).cast(), size, &mut returned) };
+    assert!(status >= 0, "Current-process information query failed: {status:#x}");
+    assert_eq!(returned, size, "Unexpected process information layout");
+    assert_eq!(information.process_id, std::process::id() as usize, "Query returned a different process");
+    let parent = u32::try_from(information.parent_process_id).expect("Parent PID exceeds Windows PID width");
+    assert_ne!(parent, 0, "Fixture has no parent PID");
+    parent
+}
+
+#[cfg(all(test, windows))]
 mod tests {
     use crate::owned_process::{spawn_suspended, Child as NativeChild, Command as NativeCommand, ResumeToken, Stdio as NativeStdio};
     use crate::process_job::ProcessJob;
@@ -13,9 +52,8 @@ mod tests {
         time::{Duration, Instant},
     };
     use windows_sys::Win32::{
-        Foundation::{FILETIME, INVALID_HANDLE_VALUE},
-        System::{Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS},
-            JobObjects::IsProcessInJob, Threading::{CreateEventW, GetCurrentProcess, GetProcessTimes}},
+        Foundation::FILETIME,
+        System::{JobObjects::IsProcessInJob, Threading::{CreateEventW, GetCurrentProcess, GetProcessTimes}},
     };
 
     const FIXTURE: &str = "launch_gate::tests::environment_fixture_child";
@@ -36,17 +74,7 @@ mod tests {
         u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime)
     }
     fn parent_pid() -> u32 {
-        let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        assert_ne!(raw, INVALID_HANDLE_VALUE);
-        let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        entry.dwSize = std::mem::size_of_val(&entry) as u32;
-        let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
-        while found != 0 {
-            if entry.th32ProcessID == std::process::id() { return entry.th32ParentProcessID; }
-            found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
-        }
-        panic!("현재 fixture 프로세스의 부모 PID를 찾지 못했습니다.");
+        super::current_parent_pid()
     }
     fn assert_exact_job(child: &NativeChild, job: &ProcessJob) {
         let mut owned = 0;

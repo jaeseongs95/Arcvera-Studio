@@ -2,7 +2,7 @@
 
 [Home](../README.md) · [한국어](user-guide.ko.md) · [Development](development.md)
 
-This guide includes the server-selection changes in Desktop 1.7.1. Start with the [installation and support overview](../README.md).
+This guide describes Desktop 2.0.0. Start with the [installation and support overview](../README.md).
 
 <a id="runtime"></a>
 
@@ -15,7 +15,7 @@ Extract the whole portable ZIP and run `arcvera-studio.exe`. Desktop directly
 launches its work processes in Windows Jobs; no separate Desktop helper executable
 is required. Codex, shell and WebView2 processes still run separately.
 
-Install and sign in to OpenDIY Codex or a compatible official Codex CLI first. Desktop
+Install and sign in to Arcvera Core first. Official Codex CLI is not supported. Desktop
 packages do not bundle a CLI binary, and the app does not download one. Open **⚙ Settings**
 in the upper-right corner, choose **Executable settings** and select its native `codex.exe`;
 the app saves that path for future starts
@@ -33,15 +33,15 @@ Choose **Use automatic discovery** to clear the app's saved override. Resolution
 `ARCVERA_STUDIO_CODEX`, if set (or the legacy `AGENT_GRID_CODEX` alias), followed by the native executable on `PATH`.
 The saved app preference has priority over both. Missing or invalid executables
 are reported explicitly instead of silently using a different program.
-The CLI must support `--remote` and either the shared daemon/proxy commands or
-authenticated app-server WebSockets. Supported shared connections fail explicitly
+The CLI must support `--remote` and the shared daemon/proxy commands.
+Shared connections fail explicitly
 when unavailable; they are never silently replaced with a separate server.
 
-**Desktop 1.2.0 OpenDIY runtime baseline: OpenDIY Codex R36 CLI with its R36 app-server.** Earlier OpenDIY builds, including R28, are outside the support policy. Use the matching CLI/server package. Official Codex CLI **0.166.0** is supported separately for the basic terminal and session workflow; Extensions are enabled only when the selected CLI and connected server provide the support required by each feature. Schedule control checks the CLI declaration separately from server capabilities.
+**Only stable Arcvera Core 1.x CLI and app servers are supported.** The shared-server `daemon` and `proxy` commands and protected `--existing-installation` and `--first-installation` startup options are required. Official Codex CLI and per-session servers are unsupported. Existing settings, authentication and conversations are retained; previous official CLI users must choose a Core package under **Executable settings**. Extensions and schedule controls check actual CLI and connected-server support.
 
 Existing daemon data is preserved. Finish work in other Codex windows and on mobile before explicitly selecting a server package. Version numbers alone do not establish feature support; the app checks actual declarations.
 
-In **Settings → Executable settings**, choose the CLI; specifying an app-server separately is optional. Automatic server selection uses the CLI's sibling `codex-app-server.exe`, or the same CLI's built-in server when that sibling is absent. Changing only the CLI selection preserves open terminals. Explicitly choosing an app-server file replaces the managed server when the package and ownership checks permit it, including choosing the same path again. Eligible idle conversations reconnect to the same conversation and directory, preserving plain conversation drafts and the selected view. Work in progress, pending or uncertain operations, attachments and terminal input with unverified preservation block replacement. Finish the work and close the affected session yourself before selecting the server again. A canceled chooser or invalid file keeps the previous runtime usable. A failed or uncertain transition preserves drafts, reports recovery information and never automatically retries the replacement or resends a model request. Different version numbers alone do not block startup or restoration; connection failures explain their cause and recovery options. A first installation uses the selected CLI's preparation flow and does not automatically replace an existing server.
+In **Settings → Executable settings**, choose the CLI; specifying an app-server separately is optional. Automatic server selection uses the CLI's sibling `codex-app-server.exe`, or the same CLI's built-in server when that sibling is absent. Changing only the CLI selection preserves open terminals. Explicitly choosing an app-server file replaces the managed server when the package and ownership checks permit it, including choosing the same path again. Eligible idle conversations reconnect to the same conversation and directory, preserving plain conversation drafts and the selected view. Work in progress, pending or uncertain operations, attachments and terminal input with unverified preservation block replacement. Finish the work and close the affected session yourself before selecting the server again. A canceled chooser or invalid file keeps the previous runtime usable. A failed or uncertain transition preserves drafts, reports recovery information and never automatically retries the replacement or resends a model request. The CLI and connected server must each be a stable Core 1.x release. Each connection sends the connected server's validated full version, including build metadata, in the Core initialization contract. A missing or mismatched initialization contract prevents that connection. Selecting a different server package requires the separate replacement checks described below. A first installation uses the selected CLI's preparation flow and does not automatically replace an existing server.
 
 Structured conversation, subagent and manual-compaction controls follow each feature's actual support declaration. The schedule button remains available to manage Desktop definitions; CLI registration and execution controls require runtime support and connection. Support is separate from connection and task readiness. If conversation attachment fails, the app returns to the terminal only after safely releasing input ownership. An uncertain release preserves the draft and input ownership.
 
@@ -82,11 +82,12 @@ drafts are preserved; when switching through project tabs, focus stays on the se
 **Load sessions** opens a two-pane popup. Search session titles and filter by
 project on the left; inspect dates, the conversation ID and recent messages on
 the right before resuming. Already open conversations focus their existing
-terminal. Browsing uses read-only requests through a short-lived owned server,
-so it does not require an existing desktop daemon. Recent messages are fetched
+terminal. Browsing uses read-only requests through an app-owned proxy to the
+shared Core server. An unavailable shared server is reported without starting
+a per-session server. Recent messages are fetched
 in bounded pages and are not stored in Arcvera-Studio's database.
 
-Use **New session** to enter a directory directly. Use the official TUI to choose
+Use **New session** to enter a directory directly. Use the Core TUI to choose
 a model, sign in or answer permission prompts. Enter text directly in the terminal
 you want to control. Use **Shift+Enter** to insert a line break in the CLI prompt.
 
@@ -310,12 +311,8 @@ the installed daemon, then verifies its connection before restoring sessions. A
 failed start leaves saved sessions available for retry. Startup does not replace or
 stop the shared daemon. To change its version, explicitly select an app-server package under **Executable settings**, or use
 **Check server versions → Align server version…** with its separate confirmation.
-OpenDIY startup uses R36's `--existing-installation` and guarded `--first-installation`
+Core startup requires `--existing-installation` and guarded `--first-installation`
 options. Missing protection options are reported without an individual-server fallback.
-
-Official CLI uses an app-owned server. Mobile mutations require
-`--remote-control-client-name` to avoid replacing other registrations. Actions stay disabled until a status response confirms that
-mutations are allowed. The popup explains the connection scope and limitations.
 
 Stopping a shared session pins its original turn ID before closing its terminal;
 it never retargets a later mobile turn. Unconfirmed stops remain unknown and are
@@ -325,7 +322,7 @@ with unconfirmed remote stop** action becomes available only after all local res
 been reaped. Remote work may continue. This action neither marks it stopped nor
 resends the stop request.
 Pairing codes are not saved. Physical phone pairing and control remain unvalidated.
-Shared connections use the supported R36 CLI/server package. Check the release
+Shared connections require a matching Core CLI/server package. Check the release
 notes for the executable and checksum.
 A history-unavailable warning preserves live session input; it does not mean that
 all previous messages have loaded.
@@ -355,13 +352,13 @@ Use **Settings → Attachment storage** to inspect app-owned image usage and lim
 
 ## Codex and data
 
-Install and sign in to OpenDIY Codex or a compatible official Codex CLI separately. Arcvera-Studio uses
+Install and sign in to Arcvera Core separately. Arcvera-Studio uses
 your existing login and honors `CODEX_HOME`. Initial CLI installation and sign-in remain separate. Desktop never changes global permission settings; a server-package transition requires the separate confirmation described above. Model selection stays
 in Codex's own `/model` interface.
 
 Managed sessions use a normal Codex terminal with an explicit conversation ID.
-Shared lifecycle support is chosen by the required protection options, not merely a daemon command or CLI age. OpenDIY shared connections use their daemon; the official CLI uses an app-owned authenticated loopback server. External sessions are listed read-only through
-the official daemon proxy. An unavailable shared server or unknown status is
+Shared lifecycle support is chosen by the required protection options, not merely a daemon command or CLI age. Core connections use their shared daemon. Unsupported executables are rejected before a session starts. External sessions are listed read-only through
+the Core daemon proxy. An unavailable shared server or unknown status is
 reported explicitly, without starting another server.
 
 Closing the window hides it to the tray. Complete exit terminates owned

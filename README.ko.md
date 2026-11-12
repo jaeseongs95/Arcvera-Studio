@@ -1,6 +1,6 @@
 # Arcvera-Studio
 
-여러 Codex CLI 세션을 나란히 사용하는 Windows 작업 공간입니다.
+여러 Arcvera Core 세션을 나란히 사용하는 Windows 작업 공간입니다.
 대화를 프로젝트별로 묶고, 터미널 격자의 크기를 조절하고, 저장된 작업을 이어갈 수 있습니다.
 
 [English](README.md) | **한국어**
@@ -14,27 +14,21 @@
 *격리된 브라우저 시험 화면에서 촬영한 디자인 미리보기입니다. 터미널에는 예시 출력이
 표시되며, 네이티브 실행이나 성능 검증을 보여주는 이미지는 아닙니다.*
 
-**1.8.0**에서 제품 이름을 Arcvera-Studio로 변경하고, 서브에이전트 관리에 검색·상태
-필터·상세 보기와 삭제 가능한 완료 항목의 확인 절차를 추가했습니다. 삭제 기능은
-선택한 실행 환경이 지원할 때 사용할 수 있습니다.
+**2.0.0**부터 Arcvera Core 1.x 정식 버전이 필요합니다. 공식 Codex와 이전 Core는
+지원하지 않습니다. 기존 설정·인증·대화는 유지됩니다.
 [명칭 변경과 호환 안내](docs/rebranding.ko.md), [릴리스노트](docs/release-notes.md)를 참고하세요.
 
-## 지원하는 Codex
+## 지원하는 실행 환경
 
-Desktop과 Codex는 별도로 설치합니다. Desktop **1.2.0**의 문서상 지원 기준은 다음과 같습니다.
+Desktop은 [Arcvera Core](https://github.com/jaeseongs95/opendiy-codex) 1.x 정식 CLI와 앱 서버만 지원합니다. Core는 별도로 설치합니다. 공식 Codex CLI 지원과 개별 서버 실행 경로는 제거되었습니다.
 
-| 실행 환경 | 지원 범위 |
-| --- | --- |
-| [OpenDIY Codex](https://github.com/jaeseongs95/opendiy-codex) R36 CLI와 같은 패키지의 R36 앱 서버 | 기본 터미널·세션 기능과, 필요한 지원이 확인된 확장 기능. R28을 포함한 이전 OpenDIY 버전은 지원 대상에서 제외합니다. |
-| [공식 Codex CLI](https://github.com/openai/codex) 0.166.0 | 기본 터미널·세션 기능. OpenDIY 확장 기능의 지원을 전제하지 않습니다. |
+Core 1.x 정식 버전에는 공유 서버의 `daemon`·`proxy` 명령과 보호된 시작 옵션 `--existing-installation`·`--first-installation`이 필요합니다. 모든 연결은 실제 연결된 서버의 검증된 전체 버전을 Core 초기화 계약에 전달합니다. 서버를 직접 교체할 때는 선택한 CLI와 서버 패키지의 일치 여부를 별도로 검사합니다. 기능별 제어는 연결된 서버의 지원 여부에 따라 활성화됩니다.
 
-확장 기능은 선택한 CLI와 연결된 서버의 실제 지원 여부, 연결 상태와 작업 상태에 따라 활성화됩니다.
-버전 번호만으로 기능 지원을 보장하지 않습니다.
-[실행 파일 선택과 서버 전환](docs/user-guide.ko.md#runtime)에서 자세히 설명합니다.
+기존 설정·인증·대화는 유지됩니다. 이전에 공식 CLI를 사용했다면 **실행 파일 설정**에서 Core CLI와 같은 패키지의 서버를 선택하세요. [실행 파일 선택과 서버 전환](docs/user-guide.ko.md#runtime)을 참고하세요.
 
 ## 빠른 시작
 
-1. **Codex를 설치하고 로그인합니다.** 위 표의 실행 환경을 사용하세요.
+1. **Arcvera Core를 설치하고 로그인합니다.** CLI와 서버는 같은 패키지를 사용하세요.
    Desktop 배포 파일에는 Codex가 포함되어 있지 않으며, 앱이 내려받지도 않습니다.
 2. **Desktop을 설치하거나 압축을 풉니다.**
    [릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest)에서 Windows x64 설치 파일이나

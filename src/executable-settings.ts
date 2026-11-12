@@ -33,7 +33,7 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
     <label for="app-server-executable-path">직접 지정한 서버 파일</label>
     <input id="app-server-executable-path" readonly placeholder="CLI에 맞춰 자동 선택"/>
     <dl class="executable-details"><dt id="app-server-resolved-label">서버 후보 경로</dt><dd id="app-server-executable-resolved"></dd><dt id="app-server-source-label">선택 방식</dt><dd id="app-server-executable-source"></dd><dt id="app-server-kind-label">파일 형식</dt><dd id="app-server-executable-kind"></dd></dl>
-    <p id="app-server-discovery">자동 선택은 CLI와 같은 폴더의 짝 서버를 먼저 찾고, 없으면 CLI 내장 서버를 후보로 선택합니다.</p>
+    <p id="app-server-discovery">자동 선택은 Core CLI와 같은 폴더의 짝 서버를 먼저 찾고, 없으면 Core CLI의 app-server 명령을 검사합니다.</p>
     <div class="dialog-actions"><button id="app-server-executable-reset" class="quiet-button">서버 자동 선택</button><button id="app-server-executable-choose" class="primary-button">서버 파일 선택…</button></div>
     <p class="executable-help"><span id="codex-settings-scope">새 세션과 세션 조회부터 적용됩니다. 이미 열린 세션은 계속 유지됩니다.</span><br><span id="codex-settings-discovery">자동 찾기는 환경변수, PATH 순서로 실행 파일을 찾습니다.</span></p>
     <div id="codex-settings-status" role="status" aria-live="polite"></div>
@@ -62,14 +62,14 @@ export function createExecutableSettings(call: <T>(command: string, args?: Recor
   for (const [selector, ko, en] of [
     ['.eyebrow', '실행 파일', 'EXECUTABLE'],
     ['#codex-settings-title', '실행 파일 설정', 'Executable settings'],
-    ['#codex-settings-description', 'Codex CLI와 앱 서버를 선택하세요. 새 앱 서버를 선택하면 기존 공유 서버를 종료하고 선택한 서버로 교체합니다.', 'Choose the Codex CLI and app server. Selecting a new app server stops the existing shared server and replaces it with your selection.'],
-    ['#codex-cli-heading', 'Codex CLI', 'Codex CLI'],
+    ['#codex-settings-description', 'Arcvera Core CLI와 앱 서버를 선택하세요. 공식 Codex CLI는 지원하지 않습니다. 새 앱 서버를 선택하면 기존 공유 서버를 종료하고 선택한 서버로 교체합니다.', 'Choose Arcvera Core CLI and its app server. Official Codex CLI is not supported. Selecting a new app server stops the existing shared server and replaces it with your selection.'],
+    ['#codex-cli-heading', 'Arcvera Core CLI', 'Arcvera Core CLI'],
     ['#app-server-heading', '앱 서버', 'App server'],
     ['label[for="app-server-executable-path"]', '직접 지정한 서버 파일', 'Selected server file'],
     ['#app-server-resolved-label', '서버 후보 경로', 'Server candidate path'],
     ['#app-server-source-label', '선택 방식', 'Selection source'],
     ['#app-server-kind-label', '파일 형식', 'File type'],
-    ['#app-server-discovery', '자동 선택은 CLI와 같은 폴더의 짝 서버를 먼저 찾고, 없으면 CLI 내장 서버를 후보로 선택합니다.', 'Automatic selection first finds a matching server beside the CLI, then selects the CLI’s built-in server as the candidate if none is found.'],
+    ['#app-server-discovery', '자동 선택은 Core CLI와 같은 폴더의 짝 서버를 먼저 찾고, 없으면 Core CLI의 app-server 명령을 검사합니다.', 'Automatic selection first finds a matching server beside Core CLI, then checks the Core CLI app-server command if none is found.'],
     ['#app-server-executable-reset', '서버 자동 선택', 'Use automatic server'],
     ['#app-server-executable-choose', '서버 파일 선택…', 'Choose server executable…'],
     ['label[for="codex-executable-path"]', '직접 지정한 파일', 'Selected file'],

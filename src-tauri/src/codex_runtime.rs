@@ -64,14 +64,23 @@ pub(super) fn observed_capabilities(value: &Value) -> Result<RuntimeCapabilities
 // 명령 경계를 주입해 호환성 조회가 서버 초기화 명령을 실행하지 않음을 검사한다.
 fn inspect_commands(exe: &OsString, mut query: impl FnMut(&[&str]) -> Result<Vec<u8>, String>,
     observed: impl IntoIterator<Item = Result<Option<RuntimeCapabilities>, String>>) -> RuntimeCompatibility {
-    let cli = query(&["--version"]).and_then(|bytes| version_text(&bytes));
+    let cli = query(&["--version"]).and_then(|bytes| shared::executable_core_version(&bytes));
     let mut report = RuntimeCompatibility {
         executable: exe.to_string_lossy().into_owned(), cli_version: cli.as_ref().ok().cloned(), cli_error: cli.err(),
         server_state: "unavailable", server_version: None, selected_server_executable: None, selected_server_version: None, server_error: None,
         subagents: None, compact_if_idle: None, expected_turn_interrupt: None,
     };
     let server = (|| {
+        if let Some(error) = &report.cli_error {
+            report.server_state = "unsupported";
+            return Err(error.clone());
+        }
         if !shared::supports_shared(&query(&["app-server", "--help"])?)? { report.server_state = "unsupported"; return Ok(()); }
+        let guards = query(&["app-server", "daemon", "start", "--help"])?;
+        if !help_supports_option(&guards, "--existing-installation")? || !help_supports_option(&guards, "--first-installation")? {
+            report.server_state = "unsupported";
+            return Err("Arcvera Core 보호 시작 옵션이 필요합니다. 공식 Codex는 지원하지 않습니다.".into());
+        }
         // 진단을 위해 연결을 초기화하지 않는다. 기존 세션의 같은 서버 선언만 재사용한다.
         let mut snapshot: Option<RuntimeCapabilities> = None;
         for value in observed {
@@ -113,6 +122,21 @@ mod tests {
         b"Usage: fixture app-server [OPTIONS] [COMMAND]\n\nCommands:\n  daemon  Manage\n  proxy  Relay\n\nOptions:\n  -h, --help\n          Print help\n".to_vec()
     }
     #[test]
+    fn unsupported_cli_diagnostics_stop_before_help_and_observed_capabilities() {
+        for version in ["0.168.0", "1.0.0-rc.1", "2.0.0", "invalid"] {
+            let mut calls = Vec::new();
+            let report = inspect_commands(&OsString::from("fixture.exe"), |args| {
+                calls.push(args.join(" "));
+                assert_eq!(args, ["--version"]);
+                Ok(version.as_bytes().to_vec())
+            }, std::iter::once_with(|| panic!("unsupported runtime must not read capability observations")));
+            assert_eq!(calls, ["--version"]);
+            assert_eq!(report.server_state, "unsupported");
+            assert!(report.cli_version.is_none() && report.cli_error.is_some());
+            assert!(report.server_error.is_some() && report.subagents.is_none());
+        }
+    }
+    #[test]
     fn compatibility_only_runs_local_version_and_help_on_both_support_paths() {
         let legacy = b"Usage: fixture app-server [OPTIONS]\n\nOptions:\n  -h, --help\n          Print help\n".to_vec();
         for (help, expected) in [(shared_help(), "unavailable"), (legacy, "unsupported"), (b"bad help".to_vec(), "unavailable")] {
@@ -120,13 +144,16 @@ mod tests {
             let report = inspect_commands(&OsString::from("fixture.exe"), |args| {
                 calls.push(args.join(" "));
                 match args {
-                    ["--version"] => Ok(b"cli-v3".to_vec()),
+                    ["--version"] => Ok(b"1.0.0+fixture".to_vec()),
                     ["app-server", "--help"] => Ok(help.clone()),
+                    ["app-server", "daemon", "start", "--help"] => Ok(b"Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n      --first-installation\n  -h, --help\n".to_vec()),
                     _ => panic!("호환성 조회 중 서버 명령·연결·초기화 금지: {args:?}"),
                 }
             }, std::iter::empty());
-            assert_eq!(calls, ["--version", "app-server --help"]);
-            assert_eq!(report.cli_version.as_deref(), Some("cli-v3"));
+            let mut expected_calls = vec!["--version", "app-server --help"];
+            if help == shared_help() { expected_calls.push("app-server daemon start --help"); }
+            assert_eq!(calls, expected_calls);
+            assert_eq!(report.cli_version.as_deref(), Some("1.0.0+fixture"));
             assert_eq!(report.server_state, expected);
             assert!(report.server_version.is_none());
             assert!(report.selected_server_executable.is_none() && report.selected_server_version.is_none());
@@ -138,8 +165,9 @@ mod tests {
     fn compatibility_reports_existing_declarations_without_reconfirming_server_state() {
         let original = observed_capabilities(&json!({"userAgent":"any-origin/1.2.3 (Linux 6.8.0; x86_64) any-client/9.0","supportsSubagentManagement":true,"supportsExpectedTurnInterrupt":false})).unwrap();
         let inspect = |observed| inspect_commands(&OsString::from("fixture.exe"), |args| match args {
-            ["--version"] => Ok(b"cli-v3".to_vec()),
+            ["--version"] => Ok(b"1.0.0+fixture".to_vec()),
             ["app-server", "--help"] => Ok(shared_help()),
+            ["app-server", "daemon", "start", "--help"] => Ok(b"Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n      --first-installation\n  -h, --help\n".to_vec()),
             _ => panic!("서버 명령 금지: {args:?}"),
         }, observed);
         let report = inspect(vec![Ok(Some(original.clone())), Ok(None), Ok(Some(original.clone()))]);

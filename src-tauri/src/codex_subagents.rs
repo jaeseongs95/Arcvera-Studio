@@ -298,15 +298,8 @@ impl ConversationConnection {
                 let result=exchange(&self.0,state,proxy.rpc.as_mut().ok_or("하위 에이전트 연결을 찾을 수 없습니다.")?,thread_id,&request,&cancelled,deadline);
                 match (result,proxy.finish()) { (Ok(result),Ok(()))=>Ok(result),(Err(error),Ok(()))=>Err(error),(result,Err(error))=>Err(format!("{}; 하위 에이전트 연결 정리 실패: {error}",result.err().unwrap_or_default())) }
             },
-            Endpoint::Owned { address,token,job }=>{
-                let socket=address.trim_start_matches("ws://").parse().map_err(|_|"하위 에이전트 서버 주소가 올바르지 않습니다.")?;
-                let stream=TcpStream::connect_timeout(&socket,Duration::from_secs(2)).map_err(|error|format!("하위 에이전트 연결 실패: {error}"))?;
-                job.upgrade().ok_or("기존 대화 서버가 종료되었습니다.")?.verify_tcp_peer(&stream).map_err(|_|"하위 에이전트 서버의 연결 소유권을 확인할 수 없습니다.")?;
-                transport.lock().map_err(|_|"하위 에이전트 연결 정리 상태 오류")?.socket=Some(stream.try_clone().map_err(|error|error.to_string())?);
-                let mut rpc=authenticated_socket(address,token,stream)?;
-                let result=exchange(&self.0,state,&mut rpc,thread_id,&request,&cancelled,deadline);
-                let _=rpc.ws.get_ref().shutdown(Shutdown::Both); result
-            },
+            #[cfg(test)]
+            Endpoint::Unavailable => Err("Test fixture has no runtime endpoint".into()),
         }
         })
     }
@@ -415,7 +408,7 @@ mod tests {
     const RUNTIME: &str="00000000-0000-0000-0000-000000000006";
     const REQUEST: &str="00000000-0000-0000-0000-000000000004";
     fn connection() -> ConversationConnection {
-        ConversationConnection::new(Endpoint::Owned {address:String::new(),token:String::new(),job:Weak::new()},Arc::new(AtomicBool::new(false)))
+        ConversationConnection::new(Endpoint::Unavailable,Arc::new(AtomicBool::new(false)))
     }
     fn page() -> Value {
         json!({"parentThreadId":PARENT,"parentRuntimeId":PARENT_RUNTIME,"agents":[{"id":CHILD,"parentThreadId":PARENT,"runtimeId":RUNTIME,"nickname":"도우미","role":"검토","status":"idle",
@@ -592,7 +585,7 @@ mod tests {
         let (server,_)=listener.accept().unwrap();
         stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
         server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-        (Rpc {ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:None},
+        (Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None),next_id:0,cancelled:None,deadline:None},
             WebSocket::from_raw_socket(server,tungstenite::protocol::Role::Server,None))
     }
     fn read(ws: &mut WebSocket<TcpStream>) -> Value {
