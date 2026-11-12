@@ -19,8 +19,9 @@ for (const entry of manifest.dependencies) {
   verifyIntegrity(bytes, entry.integrity);
   const args = ['cache', 'add', file, '--offline', '--cache', '.source-npm-cache'];
   if (process.platform === 'win32') {
-    // Pass paths through environment variables; cmd must not interpret path text.
-    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', 'npm.cmd cache add "%ARCVERA_SOURCE_TARBALL%" --offline --cache .source-npm-cache'], { stdio: 'inherit', windowsHide: true, env: { ...process.env, ARCVERA_SOURCE_TARBALL: file } });
+    // The validated relative path contains no spaces or shell metacharacters.
+    // Passing quoted absolute paths through cmd can leave literal quotes in npm's argv.
+    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `npm.cmd cache add ${entry.file} --offline --cache .source-npm-cache`], { stdio: 'inherit', windowsHide: true });
   } else execFileSync('npm', args, { stdio: 'inherit' });
 }
 console.log(`Verified and cached ${locations.size} dependency sources for ${manifest.revision}`);
