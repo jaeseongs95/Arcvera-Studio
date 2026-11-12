@@ -25,12 +25,12 @@ Desktop supports only stable [Arcvera Core](https://github.com/jaeseongs95/opend
 
 Stable Core 1.x must provide shared-server `daemon` and `proxy` commands and the protected startup options `--existing-installation` and `--first-installation`. Each connection sends the full validated version of the connected server in the Core initialization contract. Explicit server replacement separately checks that the selected CLI and server package match. Feature controls depend on the connected server.
 
-Existing settings, authentication and conversations are retained. If you previously used official Codex CLI, choose Core CLI and its matching server under **Executable settings**. See [runtime selection and server transitions](docs/user-guide.md#runtime).
+Existing settings, authentication and conversations are retained. If you previously used official Codex CLI, choose Core CLI and a supported server under **Executable settings**. Each must be stable Core 1.x; their versions may differ. Explicit server replacement requires a matching package. See [runtime selection and server transitions](docs/user-guide.md#runtime).
 
 ## Quick start
 
-1. **Install Arcvera Core and sign in.** Use the matching CLI/server package. Desktop packages
-   do not include or download Codex.
+1. **Install Arcvera Core and sign in.** The CLI and connected server must each be stable Core 1.x.
+   Desktop packages do not include or download Core.
 2. **Install or extract Desktop.** Download the Windows x64 installer or portable
    ZIP from [Releases](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest).
    Windows and WebView2 are required; builds are unsigned. For the portable edition,

@@ -322,8 +322,9 @@ with unconfirmed remote stop** action becomes available only after all local res
 been reaped. Remote work may continue. This action neither marks it stopped nor
 resends the stop request.
 Pairing codes are not saved. Physical phone pairing and control remain unvalidated.
-Shared connections require a matching Core CLI/server package. Check the release
-notes for the executable and checksum.
+The CLI and connected server must each be stable Core 1.x; their versions may differ.
+Explicit server replacement requires a matching package. Check the release notes
+for the executable and checksum.
 A history-unavailable warning preserves live session input; it does not mean that
 all previous messages have loaded.
 

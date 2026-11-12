@@ -24,12 +24,12 @@ Desktop은 [Arcvera Core](https://github.com/jaeseongs95/opendiy-codex) 1.x 정�
 
 Core 1.x 정식 버전에는 공유 서버의 `daemon`·`proxy` 명령과 보호된 시작 옵션 `--existing-installation`·`--first-installation`이 필요합니다. 모든 연결은 실제 연결된 서버의 검증된 전체 버전을 Core 초기화 계약에 전달합니다. 서버를 직접 교체할 때는 선택한 CLI와 서버 패키지의 일치 여부를 별도로 검사합니다. 기능별 제어는 연결된 서버의 지원 여부에 따라 활성화됩니다.
 
-기존 설정·인증·대화는 유지됩니다. 이전에 공식 CLI를 사용했다면 **실행 파일 설정**에서 Core CLI와 같은 패키지의 서버를 선택하세요. [실행 파일 선택과 서버 전환](docs/user-guide.ko.md#runtime)을 참고하세요.
+기존 설정·인증·대화는 유지됩니다. 이전에 공식 CLI를 사용했다면 **실행 파일 설정**에서 Core CLI와 지원되는 서버를 선택하세요. 각각 Core 1.x 정식 버전이면 버전이 달라도 사용할 수 있습니다. 명시적으로 서버를 교체할 때는 같은 패키지가 필요합니다. [실행 파일 선택과 서버 전환](docs/user-guide.ko.md#runtime)을 참고하세요.
 
 ## 빠른 시작
 
-1. **Arcvera Core를 설치하고 로그인합니다.** CLI와 서버는 같은 패키지를 사용하세요.
-   Desktop 배포 파일에는 Codex가 포함되어 있지 않으며, 앱이 내려받지도 않습니다.
+1. **Arcvera Core를 설치하고 로그인합니다.** CLI와 연결된 서버는 각각 Core 1.x 정식 버전이어야 합니다.
+   Desktop 배포 파일에는 Core가 포함되어 있지 않으며, 앱이 내려받지도 않습니다.
 2. **Desktop을 설치하거나 압축을 풉니다.**
    [릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest)에서 Windows x64 설치 파일이나
    포터블 ZIP을 받으세요. Windows와 WebView2가 필요하며, 실행 파일은 서명되어 있지 않습니다.
