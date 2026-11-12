@@ -1,6 +1,6 @@
 # Release notes
 
-## 2.0.0 — Unreleased
+## 2.0.0 — 2026-11-12
 
 ### English
 
@@ -16,6 +16,21 @@ An unsupported saved path
 is reported without clearing it or starting a replacement server. Install Core
 separately before migrating; see the [user guide](user-guide.md#runtime).
 
+Validation on the local Windows PC includes four failing/passing regression pairs
+for initialization binding, rejection and deadlines, 482 native unit checks
+(seven existing opt-in checks remain ignored), and real PTY isolation and cleanup.
+The 60-second PTY workload passed 236 checks; the short entrypoint passed seven.
+These use isolated peers and local shell fixtures. Windows CI also passed the
+native integration harness and 591 browser fixture checks, with one existing
+opt-in browser check skipped.
+
+Native GUI, physical IME, authenticated model turns, physical phone control and
+long-duration T62 workloads remain unverified. The earlier CI
+`ERR_NO_BUFFER_SPACE` failures retain an unconfirmed cause; a subsequent clean
+run does not establish a fix. Source and bundled CI now preserve the existing
+opt-in network diagnostics on failure. The v1.8.0 official-CLI startup observer
+remains a manual historical diagnostic and does not validate Desktop 2.0.
+
 ### 한국어
 
 Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 Codex, 이전 Core 버전과
@@ -28,6 +43,19 @@ Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 C
 같은 패키지가 필요합니다. 저장된 경로가 미지원이면 경로를 지우거나 대체 서버를 실행하지
 않고 오류를 표시합니다. 전환 전에 Core를 별도로 설치하세요.
 [사용 가이드](user-guide.ko.md#runtime)를 참고하세요.
+
+이 PC의 Windows 환경에서 초기화 버전 바인딩·거절·기한에 대한 회귀 시험 네 쌍의
+수정 전 실패와 수정 후 통과, 네이티브 단위 검사 482개 통과를 확인했습니다.
+기존 opt-in 검사 7개는 제외 상태를 유지합니다. 실제 PTY의 격리·종료를 확인했으며,
+60초 부하는 236개, 짧은 진입점은 7개 검사를 통과했습니다. 이 시험에는 격리된
+통신 상대와 로컬 셸 fixture를 사용합니다. Windows CI에서도 네이티브 통합 harness와
+브라우저 fixture 검사 591개가 통과했고, 기존 opt-in 브라우저 검사 1개는 제외했습니다.
+
+네이티브 GUI, 실제 IME, 인증된 모델 요청, 실제 휴대전화 제어와 장시간 T62 부하는
+미검증입니다. 과거 CI의 `ERR_NO_BUFFER_SPACE` 실패 원인은 미확정이며, 후속 실행의
+통과를 원인 해결로 판단하지 않습니다. 소스·번들 CI는 실패 시 기존 opt-in 네트워크
+진단 자료를 보존합니다. v1.8.0 공식 CLI 시작 관측은 수동 역사 진단으로 유지하며,
+Desktop 2.0의 검증 근거로 사용하지 않습니다.
 
 ## 1.8.0 — 2026-11-11
 
