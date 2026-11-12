@@ -1,7 +1,7 @@
-name: Windows validation and package
+name: Arcvera-Studio 2.0 Windows validation and package
 on:
   push:
-    branches: [main, 'feat/**', 'fix/**']
+    branches: [main, develop]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -35,44 +35,33 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Updater manifest packaging regressions
+        if: ${{ matrix.suite == 'source-1' }}
         run: node --test scripts/rebrand.test.mjs scripts/updater-manifest.test.mjs scripts/notices.test.mjs
-      - run: npm test
-      - run: npm run build
+      - name: Model unit tests
+        if: ${{ matrix.suite == 'source-1' }}
+        run: npm test
+      - name: Build bundled frontend
+        if: ${{ matrix.suite == 'bundled' }}
+        run: npm run build
       - run: npx playwright install chromium
-      - name: Resource snapshot frontend-before
-        shell: pwsh
-        run: |
-          $sample = @{ phase = 'frontend-before'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
-          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
-          $sample | ConvertTo-Json -Depth 4 -Compress
       - name: Source module fixtures
         if: ${{ matrix.suite != 'bundled' }}
         run: npm run test:e2e -- --shard=${{ matrix.shard }}
         env:
           AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
-          AGENT_GRID_NETWORK_DIAGNOSTICS: '1'
       - name: Packaged application regressions
         if: ${{ matrix.suite == 'bundled' }}
         run: npm run test:e2e
         env:
           AGENT_GRID_BUNDLED_FRONTEND_TEST: '1'
           AGENT_GRID_TEST_OUTPUT: test-results-bundled
-          AGENT_GRID_NETWORK_DIAGNOSTICS: '1'
-      - name: Resource snapshot frontend-after
-        if: always()
-        shell: pwsh
-        run: |
-          $sample = @{ phase = 'frontend-after'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
-          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
-          $sample | ConvertTo-Json -Depth 4 -Compress
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: frontend-validation-evidence-${{ matrix.suite }}
           path: |
             test-results/
             test-results-bundled/
-            artifacts/frontend-network/
           if-no-files-found: warn
           retention-days: 14
   native:
@@ -99,12 +88,6 @@ jobs:
       - run: node scripts/check-license.mjs
       - run: node --test scripts/source-integrity.test.mjs
       - run: npm run build
-      - name: Resource snapshot native-before
-        shell: pwsh
-        run: |
-          $sample = @{ phase = 'native-before'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
-          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
-          $sample | ConvertTo-Json -Depth 4 -Compress
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --nocapture
       - run: cargo test --locked --manifest-path src-tauri/vendor/portable-pty/Cargo.toml --lib -- --nocapture
         env:
@@ -113,50 +96,6 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/vendor/tauri-plugin-updater/Cargo.toml --lib -- --nocapture
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
-      - name: Compile default-off actual updater helper and check its validators
-        shell: pwsh
-        env:
-          ARCVERA_STUDIO_UPDATER_PUBLIC_KEY: ${{ vars.ARCVERA_STUDIO_UPDATER_PUBLIC_KEY || vars.OPENDIY_UPDATER_PUBLIC_KEY }}
-        run: |
-          $ErrorActionPreference='Stop'
-          $out=Join-Path $env:RUNNER_TEMP 'updater-handoff-helper'
-          New-Item -ItemType Directory -Path $out | Out-Null
-          $key=[Text.Encoding]::UTF8.GetBytes($env:ARCVERA_STUDIO_UPDATER_PUBLIC_KEY)
-          $keySha=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($key)).ToLowerInvariant()
-          if($key.Length -ne 152 -or $keySha -ne 'a8c985f62b8182b7fc54d892fb36a27140c3f27e590ae5e891d42ff494b01803'){throw 'Exact existing public key required'}
-          cargo build --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --bin updater_actual_probe --message-format=json 1> "$out/build.jsonl" 2> "$out/build.stderr.txt"
-          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$out/build.stderr.txt";throw 'Actual helper compilation failed'}
-          $messages=@(Get-Content -LiteralPath "$out/build.jsonl"|ForEach-Object {$_|ConvertFrom-Json})
-          $helpers=@($messages|Where-Object {$_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'updater_actual_probe' -and $_.executable})
-          if($helpers.Count -ne 1){throw 'Exactly one helper artifact required'}
-          Copy-Item -LiteralPath $helpers[0].executable -Destination "$out/updater_actual_probe.exe"
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --features actual-updater-probe --lib desktop_updates::actual_probe::tests:: -- --nocapture --test-threads=1 1> "$out/unit.stdout.txt" 2> "$out/unit.stderr.txt"
-          if($LASTEXITCODE -ne 0){Get-Content -LiteralPath "$out/unit.stdout.txt";Get-Content -LiteralPath "$out/unit.stderr.txt";throw 'Actual helper validators failed'}
-          if((Get-Content -LiteralPath "$out/unit.stdout.txt" -Raw) -notmatch 'test result: ok\. 6 passed; 0 failed; 0 ignored;'){throw 'Six actual helper validator cases required'}
-          @{commit='${{ github.sha }}';profile='dev';helperSHA256=(Get-FileHash -LiteralPath "$out/updater_actual_probe.exe" -Algorithm SHA256).Hash.ToLowerInvariant();publicKeySHA256=$keySha;purePass=6;actualInstall='NOT_RUN';release='NOT_RUN'}|ConvertTo-Json|Set-Content -LiteralPath "$out/compile-result.json" -Encoding utf8NoBOM
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: updater-handoff-helper-${{ github.sha }}
-          path: ${{ runner.temp }}/updater-handoff-helper/
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Resource snapshot native-after
-        if: always()
-        shell: pwsh
-        run: |
-          $sample = @{ phase = 'native-after'; timeUtc = [DateTime]::UtcNow.ToString('o'); processes = @(Get-Process).Count }
-          try { $sample.tcp = @(Get-NetTCPConnection -ErrorAction Stop | Group-Object State | Select-Object Name, Count) } catch { $sample.measurementError = $_.Exception.Message }
-          $sample | ConvertTo-Json -Depth 4 -Compress
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: native-probe-executable
-          path: |
-            src-tauri/target/debug/arcvera-studio.exe
-            src-tauri/target/debug/deps/arcvera_studio_lib-*.exe
-          if-no-files-found: warn
-          retention-days: 14
   windows:
     needs: [frontend, native]
     if: ${{ always() }}

@@ -41,9 +41,11 @@ opt-in browser check skipped.
 Native GUI, physical IME, authenticated model turns, physical phone control and
 long-duration T62 workloads remain unverified. The earlier CI
 `ERR_NO_BUFFER_SPACE` failures retain an unconfirmed cause; a subsequent clean
-run does not establish a fix. Source and bundled CI now preserve the existing
-opt-in network diagnostics on failure. The v1.8.0 official-CLI startup observer
-remains a manual historical diagnostic and does not validate Desktop 2.0.
+run does not establish a fix. Version 2.0 CI retains the complete source and
+bundled browser suites and failure traces, runs shared unit checks once, and
+removes historical official-CLI/public-1.8.0 observation workflows, resource
+snapshots and debug-only executable uploads. PTY mutation sensitivity remains
+available manually. The clean-checkout NSIS fixture creates its output directory.
 
 ### 한국어
 
@@ -79,9 +81,11 @@ Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 C
 
 네이티브 GUI, 실제 IME, 인증된 모델 요청, 실제 휴대전화 제어와 장시간 T62 부하는
 미검증입니다. 과거 CI의 `ERR_NO_BUFFER_SPACE` 실패 원인은 미확정이며, 후속 실행의
-통과를 원인 해결로 판단하지 않습니다. 소스·번들 CI는 실패 시 기존 opt-in 네트워크
-진단 자료를 보존합니다. v1.8.0 공식 CLI 시작 관측은 수동 역사 진단으로 유지하며,
-Desktop 2.0의 검증 근거로 사용하지 않습니다.
+통과를 원인 해결로 판단하지 않습니다. 2.0 CI는 전체 소스·번들 브라우저 시험과
+실패 추적 자료를 유지하고 공통 단위 검사를 한 번만 실행합니다. 과거 공식 CLI·공개
+1.8.0 관측 워크플로, 자원 스냅샷과 디버그 전용 실행 파일 업로드는 제거합니다.
+PTY 변이 민감도 시험은 수동으로 실행할 수 있습니다. 깨끗한 체크아웃에서도 NSIS
+시험이 출력 디렉터리를 생성합니다.
 
 ## 1.8.0 — 2026-11-11
 

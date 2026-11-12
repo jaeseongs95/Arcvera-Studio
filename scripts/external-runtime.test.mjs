@@ -34,7 +34,9 @@ test('EXT-BOUNDARY: exact NSIS prerequisite logic with explicit registry fixture
   assert.ok(compiler, 'Verified NSIS compiler required');
   const matches = [...template.matchAll(/^Function ArcveraRequireWebView2\r?\n[\s\S]*?^FunctionEnd/gm)];
   assert.equal(matches.length, 1);
-  const output = fs.mkdtempSync(path.join(repository, 'artifacts/external-runtime/nsis-'));
+  const outputRoot = path.join(repository, 'artifacts/external-runtime');
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const output = fs.mkdtempSync(path.join(outputRoot, 'nsis-'));
   const cases = [
     { id: 'absent', machine: '', user: '', minimum: '', pass: false },
     { id: 'zero', machine: '0.0.0.0', user: '', minimum: '', pass: false },
@@ -96,6 +98,7 @@ SectionEnd
     assert.equal(run.status, item.pass ? 0 : 2, item.id);
     assert.equal(fs.existsSync(marker), item.pass, item.id);
     results.push({ ...item, exit: run.status, marker: fs.existsSync(marker) });
+    fs.rmSync(exe);
   }
   fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ cases: results, boundary: 'Exact production NSIS function; registry inputs substituted. Actual installation, registry detection on a missing-runtime host and GUI NOT_RUN.' }, null, 2));
   for (const file of ['RUNTIME.md', 'RUNTIME.ko.md']) {

@@ -3,6 +3,8 @@
 [English home](../README.md) · [한국어 처음으로](../README.ko.md) ·
 [User guide](user-guide.md) · [사용 가이드](user-guide.ko.md)
 
+[한국어](development.ko.md)
+
 Read [AGENTS.md](../AGENTS.md) before changing the repository.
 
 ## Build on Windows
@@ -24,7 +26,7 @@ Package the desktop bundle:
 npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
 ```
 
-Desktop 1.2.0 launches work processes directly in Windows Jobs. There is no
+Desktop 2.0.0 launches work processes directly in Windows Jobs. There is no
 separate Desktop helper binary to build or distribute. Codex and shell processes
 remain separate from Desktop. The patched portable-pty dependency is kept under
 `src-tauri/vendor/portable-pty`.
@@ -47,7 +49,21 @@ external conversations and in-progress work. UI limits must not truncate model c
 
 ## Validation and releases
 
-Windows CI runs frontend checks, Rust tests and packaging. Releases include
+The Windows workflow validates 2.0.0 with two source-fixture shards and one
+bundled browser suite, native and vendored PTY/updater tests, source/license
+checks, NSIS prerequisite/shortcut checks and the packaged PTY self-test.
+Shared model and packaging unit tests run once; only the bundled browser job
+builds the frontend. Browser failure traces are retained. Historical 1.8.0
+observers, global resource snapshots and debug-only helper builds/uploads are
+excluded. The separate PTY mutation-sensitivity workflow is manual only.
+
+Pushes on main/develop and pull requests run ordinary validation/package checks;
+work-branch pushes do not duplicate pull-request runs. To prepare updater-signed
+2.0.0 assets without publication, dispatch `windows.yml` on the release branch
+with `updater_package=true`. Both validation jobs must succeed before packaging.
+Preserve repository signing configuration; packaging never publishes a release.
+
+Releases include
 an unsigned Windows x64 portable ZIP, NSIS installer and SHA-256 sums.
 Unsigned builds may trigger Windows reputation warnings.
 
@@ -86,7 +102,7 @@ checks: [hook management](hooks-test-cases.md),
 [project-switch scrolling](project-switch-scroll-test-cases.md) and
 [process ownership](process-consolidation-test-cases.md).
 Results for another commit or executable do not establish GUI success for the
-1.2.0 integration candidate. Record its own validation results in its release notes.
+2.0.0 candidate. Record its own validation results in its release notes.
 
 The [historical validation record](validation.md) describes only the commits and
 tests named there. The [Task Manager capture](real-world-task-manager.png)
@@ -100,4 +116,6 @@ establishes long-duration stability.
 Use a scoped branch and preserve unrelated changes. Report the tests actually run,
 their results and remaining limits. Keep release notes tied to exact artifacts.
 Never copy Claudes source, assets or UI text. This repository is independently
-[MIT-licensed](../LICENSE); packages must retain their third-party notices.
+[AGPL-3.0-or-later licensed](../LICENSE) from 2.0.0 onward; retain
+[the earlier MIT notice](../LICENSE-MIT-LEGACY), third-party notices and the
+matching free [Corresponding Source](../SOURCE.md).

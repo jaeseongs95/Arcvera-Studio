@@ -1,13 +1,5 @@
-name: PTY exact handle release sensitivity
+name: Manual PTY handle release sensitivity
 on:
-  push:
-    branches: [fix/desktop171-pty-handle-evidence]
-  pull_request:
-    paths:
-      - '.github/workflows/pty-drop-sensitivity.yml'
-      - 'scripts/pty-drop-sensitivity*'
-      - 'src-tauri/vendor/portable-pty/**'
-      - 'verification/drop-sensitivity-171/test-plan.json'
   workflow_dispatch:
 permissions:
   contents: read
