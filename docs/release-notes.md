@@ -4,6 +4,13 @@
 
 ### English
 
+Version 2.0.0 and every subsequent version use AGPL-3.0-or-later. The earlier
+MIT notice and third-party licenses are preserved. Settings includes the
+license text and a link to the matching release's free Corresponding Source.
+See [source and redistribution instructions](../SOURCE.md). The validation
+counts below describe the earlier functional candidate; they do not establish
+validation of the rebuilt AGPL package.
+
 Desktop now requires the stable Arcvera Core 1.x contract. Official Codex, earlier Core
 versions and per-session server fallback are no longer supported. Every shared
 connection includes the exact validated server version, including build metadata,
@@ -32,6 +39,11 @@ opt-in network diagnostics on failure. The v1.8.0 official-CLI startup observer
 remains a manual historical diagnostic and does not validate Desktop 2.0.
 
 ### 한국어
+
+2.0.0과 이후 모든 버전에는 AGPL-3.0-or-later를 적용합니다. 기존 MIT 고지와
+타사 라이선스는 보존합니다. 설정에서 라이선스 전문을 읽고 동일 버전의 무료
+대응 소스 릴리스를 열 수 있습니다. [소스·재배포 안내](../SOURCE.md)를 참고하세요.
+아래 검증 수치는 이전 기능 후보의 결과이며, 새 AGPL 패키지 검증을 뜻하지 않습니다.
 
 Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 Codex, 이전 Core 버전과
 개별 서버 대체 실행은 지원하지 않습니다. 모든 공유 연결은 빌드 메타데이터를

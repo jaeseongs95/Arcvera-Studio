@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "OPENDIY_DESKTOP-T-0079-release-2.0.0-AGPL",
+  "contractDigest": "sha256:3f0285cba9cc1f57f82dd9be625e2c3aff251a15958aac72221d5aa80f412522",
+  "requirements": ["AC-006", "AC-007"],
+  "scopeFiles": ["scripts/source-integrity.mjs", "scripts/source-integrity.test.mjs", "scripts/check-license.mjs", "src/license.ts", "tests/license.spec.ts", "scripts/package-source.mjs", "scripts/restore-source-dependencies.mjs"],
+  "runner": "Existing node:test and Playwright; Windows source packaging command",
+  "environment": "This Windows PC; pure Node checks may run while Core builds. Browser, fixture and Cargo/archive work wait for Core own Job termination. CI is additional packaging evidence.",
+  "cases": [
+    {
+      "id": "AGPL-INTEGRITY",
+      "requirementIds": ["AC-007"],
+      "scenario": "Verify valid SRI, reject changed bytes, unsupported SRI and weaker-hash downgrade",
+      "entryPoint": "verifyIntegrity used by package and restore commands",
+      "level": "unit",
+      "expectedBehavior": "Only matching strongest supported integrity is accepted",
+      "oracle": "Known SHA256 abc vector; separately computed SHA512; tampered bytes must throw",
+      "testFiles": ["scripts/source-integrity.test.mjs"],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "New verification boundary; explicit negative and algorithm downgrade cases; no previous product behavior to delete for RED",
+      "argv": ["node", "--test", "scripts/source-integrity.test.mjs"]
+    },
+    {
+      "id": "AGPL-METADATA",
+      "requirementIds": ["AC-006"],
+      "scenario": "Check current and future release licensing, legacy MIT preservation and resources",
+      "entryPoint": "scripts/check-license.mjs",
+      "level": "static",
+      "expectedBehavior": "AGPL metadata and distributed notices agree; original MIT permission remains",
+      "oracle": "User 2.0.0 and all later AGPL; canonical license and original MIT notice",
+      "testFiles": ["scripts/check-license.mjs"],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "License text and package-resource inspection; mechanical deletion mutation not needed",
+      "argv": ["node", "scripts/check-license.mjs"]
+    },
+    {
+      "id": "AGPL-UI",
+      "requirementIds": ["AC-006"],
+      "scenario": "Open settings license dialog, read local text, activate versioned source link, close and restore focus",
+      "entryPoint": "Settings -> License and source",
+      "level": "e2e",
+      "expectedBehavior": "Keyboard and pointer access to notice and exact release; native opener only on explicit activation",
+      "oracle": "Visible AGPL, copyright, warranty and source text; requested URL equals the package version release",
+      "testFiles": ["tests/license.spec.ts"],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "New user flow tested through DOM/IPC boundary; native OS browser launch excluded",
+      "argv": ["npx", "playwright", "test", "tests/license.spec.ts", "--workers=1"]
+    },
+    {
+      "id": "AGPL-ARCHIVE",
+      "requirementIds": ["AC-007"],
+      "scenario": "Build the exact source archive, restore its dependency cache and build frontend offline",
+      "entryPoint": "scripts/package-source.mjs and SOURCE.md build commands",
+      "level": "integration",
+      "expectedBehavior": "Exact commit, Cargo sources, all locked npm sources, licenses and scripts present; npm offline install and build succeed",
+      "oracle": "Git revision, Cargo checksum files and npm lock integrity plus actual offline frontend build",
+      "testFiles": ["scripts/package-source.mjs", "scripts/restore-source-dependencies.mjs"],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Archive inspection and real offline rebuild; full native rebuild remains release CI/Core coordination dependent",
+      "argv": ["node", "scripts/package-source.mjs", "artifacts/agpl-source"]
+    }
+  ],
+  "exclusions": ["No PC installation", "No physical IME/model/phone tests", "Remote UI is a separately owned component and remains unverified until its implementation and visible offer are checked"]
+}

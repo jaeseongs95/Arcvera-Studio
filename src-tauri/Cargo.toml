@@ -3,7 +3,7 @@ name = "arcvera-studio"
 version = "2.0.0"
 description = "Independent terminal workspace for local coding agents"
 authors = ["Arcvera-Studio contributors"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 edition = "2021"
 default-run = "arcvera-studio"
 

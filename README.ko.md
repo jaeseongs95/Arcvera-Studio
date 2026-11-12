@@ -94,7 +94,11 @@ Windows CI에서 검사와 패키징을 수행하지만, 빌드 성공만으로 
 
 ## 라이선스와 방향
 
-독립적으로 구현한 [MIT 라이선스](LICENSE) 프로젝트입니다. Claudes의 다중 터미널 작업 흐름을
+2.0.0과 이후 모든 버전에 [AGPL-3.0-or-later](LICENSE)를 적용하는 독립 구현 프로젝트입니다.
+Copyright (c) 2026 Agent Grid contributors. 이 프로그램은 무보증으로 제공됩니다.
+[소스 접근·재배포 안내](SOURCE.md)와 [기존 MIT 고지](LICENSE-MIT-LEGACY)를 참고하세요.
+이미 부여된 MIT 권리는 유지되며, 타사 구성 요소에는 각자의 라이선스가 적용됩니다.
+Claudes의 다중 터미널 작업 흐름을
 제품 참고로 삼았으며, 해당 프로젝트의 코드·에셋·브랜딩을 포함하지 않습니다.
 [참고 프로젝트의 라이선스](https://github.com/paulallington/Claudes/blob/v1.9.82/LICENSE)를 확인할 수 있습니다.
 

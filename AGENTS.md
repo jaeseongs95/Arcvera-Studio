@@ -5,7 +5,7 @@ Long-term product goal: replace the ChatGPT desktop app with Arcvera-Studio. Eve
 The user-selected Arcvera Core runtime source is https://github.com/jaeseongs95/opendiy-codex; verify its actual CLI/app-server capabilities and support its executable through the existing path setting.
 For plugin/skill management, the current Codex desktop app is the functional reference; registration, installation and activation must actually integrate with the Codex CLI.
 
-Independent MIT implementation. Never copy Claudes source, assets, or UI text.
+Independent implementation: version 2.0.0 and every later version must use AGPL-3.0-or-later; preserve LICENSE-MIT-LEGACY and third-party notices. Never copy Claudes source, assets, or UI text.
 Windows-first Tauri 2, Rust portable-pty, TypeScript/Vite/xterm.js.
 Keep vendor protocols in the Codex adapter; do not hardcode model names.
 Preserve user authentication, config and external sessions. Do not install or stop existing services.

@@ -101,7 +101,11 @@ Do not attach credentials or private conversation logs.
 
 ## License and direction
 
-An independent [MIT-licensed](LICENSE) implementation. Claudes' multi-terminal
+An independent [AGPL-3.0-or-later](LICENSE) implementation in version 2.0.0 and every later version.
+Copyright (c) 2026 Agent Grid contributors. This program comes with no warranty.
+See [source access and redistribution](SOURCE.md) and the preserved
+[earlier MIT notice](LICENSE-MIT-LEGACY). Previously granted MIT rights remain valid;
+third-party components retain their own licenses. Claudes' multi-terminal
 workflow was a product reference; its code, assets and branding are not included.
 See its [reference license](https://github.com/paulallington/Claudes/blob/v1.9.82/LICENSE).
 

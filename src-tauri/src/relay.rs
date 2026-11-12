@@ -250,6 +250,8 @@ impl RelayState {
         if active.is_some() {return Err("기존 연결을 해제한 뒤 다시 연결하세요.".into());}
         let host_id=uuid::Uuid::new_v4().to_string();
         let mut headers=HeaderMap::new();headers.insert("X-OpenDIY-Host-Secret",header);headers.insert("X-OpenDIY-Host-Id",HeaderValue::from_str(&host_id).unwrap());
+        headers.insert("X-Arcvera-License",HeaderValue::from_static("AGPL-3.0-or-later"));
+        headers.insert("X-Arcvera-Source-Url",HeaderValue::from_str(&format!("https://github.com/jaeseongs95/Arcvera-Studio/releases/download/v{0}/arcvera-studio-{0}-source.zip",env!("CARGO_PKG_VERSION"))).map_err(|_| "소스 제공 주소를 준비하지 못했습니다.")?);
         // reqwest uses rustls-no-provider via the updater's dependency graph.
         // First relay use must also work before any updater request. Preserve
         // a provider another caller already installed (including a race).
