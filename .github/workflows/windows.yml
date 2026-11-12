@@ -98,8 +98,6 @@ jobs:
       - run: node scripts/notices.mjs
       - run: node scripts/check-license.mjs
       - run: node --test scripts/source-integrity.test.mjs
-      - name: Package exact Corresponding Source
-        run: node scripts/package-source.mjs artifacts
       - run: npm run build
       - name: Resource snapshot native-before
         shell: pwsh
@@ -187,6 +185,9 @@ jobs:
           cache-on-failure: true
       - run: npm ci
       - run: node scripts/notices.mjs
+      - run: node scripts/check-license.mjs
+      - name: Package exact Corresponding Source
+        run: node scripts/package-source.mjs artifacts
       - name: Prepare verified official NSIS tools
         shell: pwsh
         env:

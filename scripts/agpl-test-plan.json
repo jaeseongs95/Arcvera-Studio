@@ -53,11 +53,11 @@
     {
       "id": "AGPL-ARCHIVE",
       "requirementIds": ["AC-007"],
-      "scenario": "Build the exact source archive, restore its dependency cache through real Windows npm argv without literal quotes, and build frontend offline",
+      "scenario": "Build the exact source archive, restore its dependency cache through real Windows npm argv using explicit local file specs without literal quotes, and build frontend offline",
       "entryPoint": "scripts/package-source.mjs and SOURCE.md build commands",
       "level": "integration",
       "expectedBehavior": "Exact commit, Cargo sources, all locked npm sources, licenses and scripts present; npm offline install and build succeed",
-      "oracle": "Git revision, Cargo checksum files and npm lock integrity plus actual offline npm restore and frontend build; preserve archive01 DirFetcher failure as RED",
+      "oracle": "Git revision, Cargo checksum files and npm lock integrity plus actual offline npm restore and frontend build; preserve archive01 DirFetcher and archive02 Git-source interpretation failures separately",
       "testFiles": ["scripts/package-source.mjs", "scripts/restore-source-dependencies.mjs"],
       "required": true,
       "sensitivity": "manual-review",

@@ -21,7 +21,7 @@ for (const entry of manifest.dependencies) {
   if (process.platform === 'win32') {
     // The validated relative path contains no spaces or shell metacharacters.
     // Passing quoted absolute paths through cmd can leave literal quotes in npm's argv.
-    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `npm.cmd cache add ${entry.file} --offline --cache .source-npm-cache`], { stdio: 'inherit', windowsHide: true });
+    execFileSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `npm.cmd cache add file:./${entry.file} --offline --cache .source-npm-cache`], { stdio: 'inherit', windowsHide: true });
   } else execFileSync('npm', args, { stdio: 'inherit' });
 }
 console.log(`Verified and cached ${locations.size} dependency sources for ${manifest.revision}`);
