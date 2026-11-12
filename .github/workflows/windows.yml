@@ -50,6 +50,7 @@ jobs:
         run: npm run test:e2e -- --shard=${{ matrix.shard }}
         env:
           AGENT_GRID_SOURCE_FIXTURES_ONLY: '1'
+          AGENT_GRID_NETWORK_DIAGNOSTICS: '1'
       - name: Packaged application regressions
         if: ${{ matrix.suite == 'bundled' }}
         run: npm run test:e2e

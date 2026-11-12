@@ -2,6 +2,8 @@
 
 대상은 공개 v1.8.0 앱(소스 `3460042da2024c7a3ecbdcead1655c98bbf06241`), 공식 Codex CLI 0.166.0 및 일회용 Windows CI다. 실행 전에 정의한 사례다. [English](native-cli-cases.md).
 
+이 문서는 수동 workflow dispatch로만 실행하는 과거 T62 관측이다. Arcvera Core 1.x 정식 버전이 필요한 Desktop 2.0의 검증이 아니다. [실행 43125711975](https://github.com/jaeseongs95/Arcvera-Studio/actions/runs/43125711975)는 NC04에 실패했다. 인증 안내가 관측됐으며 45초 안에 스레드·상태 결속을 확인하지 못했다. 최종 소유 프로세스 수는 1로 돌아왔다. 실패와 원래 수용 기준을 보존하며 T62는 미완 상태다.
+
 - NC01: 공개 앱의 SHA-256·크기와 네이티브 CLI SHA-256을 대조한다. 불일치하면 실행 전에 실패한다. 선택한 CLI 옆에 `codex-app-server.exe`가 없어야 한다.
 - NC02: 인증·Codex 홈·프록시·CLI 선택을 유입할 수 있는 레지스트리 환경변수 이름이 있으면 중단한다. 새 결과 폴더와 HOME·USERPROFILE·CODEX_HOME을 만든다. 자식 환경을 비우고 OS 경로와 격리 설정만 명시한다. 기존 사용자 파일은 읽지 않는다.
 - NC03: 격리 환경에서 두 도움말을 조회하고 설치 보호 옵션이 모두 없는지 확인한다. 데몬 시작·설치는 하지 않는다. 이후 `--codex-smoke --sessions 1 --report <path>`를 실행한다. 사용자 입력·엔진 제어·모델 요청은 사용하지 않는다.

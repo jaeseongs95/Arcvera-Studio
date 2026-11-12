@@ -1,7 +1,6 @@
-name: Isolated native CLI startup
+name: Historical v1.8.0 official CLI startup
 on:
-  push:
-    branches: [feat/181-native-cli]
+  # Frozen T62 observation; this does not exercise the current Core-only product.
   workflow_dispatch:
 permissions:
   contents: read

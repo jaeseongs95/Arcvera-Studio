@@ -2,6 +2,8 @@
 
 Scope: public v1.8.0 application, source `3460042da2024c7a3ecbdcead1655c98bbf06241`, and official Codex CLI 0.166.0 on a disposable Windows CI runner. These cases are defined before execution. [한국어](native-cli-cases.ko.md).
 
+This is a historical T62 observation, available only through manual workflow dispatch. It does not validate Desktop 2.0, which requires stable Arcvera Core 1.x. Run [43125711975](https://github.com/jaeseongs95/Arcvera-Studio/actions/runs/43125711975) failed NC04: authentication was observed, no thread/status binding was established within 45 seconds, and the final owned-process count returned to one. The failure and its original acceptance criteria remain preserved; T62 remains incomplete.
+
 - NC01: Verify the application's published SHA-256 and size, and the native CLI SHA-256. A mismatch fails before execution. The selected CLI must have no sibling `codex-app-server.exe`.
 - NC02: Reject registry environment names that could import credentials, a Codex home, proxy or CLI override. Create a new report root, HOME, USERPROFILE and CODEX_HOME. Clear the child environment and explicitly supply only OS paths and the isolated application/CLI settings. No existing user files are read.
 - NC03: Query `app-server --help` and `app-server daemon start --help` using the isolated environment. Both installation guard options must be absent. Never start or install a daemon. Then execute `--codex-smoke --sessions 1 --report <path>`, without user text, engine controls or model requests.

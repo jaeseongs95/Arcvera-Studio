@@ -10,7 +10,9 @@ connection includes the exact validated server version, including build metadata
 in its initialization capabilities. Core rejects a mismatched contract.
 
 Existing settings, authentication and conversations are retained. Select the
-Core CLI and matching server in Executable settings. An unsupported saved path
+Core CLI and server in Executable settings. Each must be a stable 1.x version;
+their versions may differ. Explicit server replacement requires a matching package.
+An unsupported saved path
 is reported without clearing it or starting a replacement server. Install Core
 separately before migrating; see the [user guide](user-guide.md#runtime).
 
@@ -21,8 +23,9 @@ Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 C
 포함한 검증된 서버의 전체 버전을 초기화 기능 정보에 전달합니다. Core는 계약이
 일치하지 않는 연결을 거부합니다.
 
-기존 설정·인증·대화는 유지됩니다. 실행 파일 설정에서 Core CLI와 같은 패키지의
-서버를 선택하세요. 저장된 경로가 미지원이면 경로를 지우거나 대체 서버를 실행하지
+기존 설정·인증·대화는 유지됩니다. 실행 파일 설정에서 Core CLI와 서버를 선택하세요.
+각각 1.x 정식 버전이면 버전이 달라도 사용할 수 있습니다. 명시적으로 서버를 교체할 때는
+같은 패키지가 필요합니다. 저장된 경로가 미지원이면 경로를 지우거나 대체 서버를 실행하지
 않고 오류를 표시합니다. 전환 전에 Core를 별도로 설치하세요.
 [사용 가이드](user-guide.ko.md#runtime)를 참고하세요.
 
