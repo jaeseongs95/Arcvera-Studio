@@ -181,7 +181,31 @@ are rejected. Errors and unsupported CLI capabilities remain visible.
 Plugin installation and marketplace changes use the CLI's own commands; skill
 and setting changes use its app-server APIs. Existing CLI authentication and
 configuration remain owned by that CLI. Changes are read back after applying.
-Start a new session to use changed extensions; running terminals are not restarted.
+Some extension changes require a new session. MCP offers the explicit current-conversation
+inspection and reconnection controls below; running terminals are not restarted.
+
+<a id="mcp"></a>
+
+## MCP servers (2.1 development)
+
+In the extension manager, choose **MCP servers**. Add a new name or select a
+user-base server to review changes, toggle its configuration, or remove it. Other
+layers and configurations whose safe equivalence cannot be confirmed are readonly.
+Configuration enablement does not establish a connection or execution permission.
+
+Editing does not reveal existing protected values. Blank replacement fields keep
+their old values; explicit empty arrays/objects or removal controls change them.
+Switching transport removes the incompatible command/environment or HTTP
+authentication/header settings listed in the review. Confirm the selected server
+and scope before saving. A changed configuration version blocks the write. Refresh
+and review again; unconfirmed writes are not automatically repeated.
+
+To inspect a running conversation, focus its terminal before opening the manager.
+Check **Current conversation target**. Inspect its server state and discovered tools
+separately from saved configuration. An explicit reconnection request is reviewed
+for that conversation and requires an idle, confirmed state. Acceptance is not
+connection completion; inspect again to observe the result. No conversation is
+silently substituted if the original closes or changes generation.
 
 <a id="hooks"></a>
 
@@ -207,6 +231,15 @@ command hook approves its current fingerprint without enabling it automatically.
 The dialog does not create hook definitions or run a hook as a test. Check changed
 configuration in a new session; a successful state readback does not confirm that
 every running conversation has reloaded it.
+
+The 2.1 **Current conversation hooks** panel queries the selected running
+conversation. It is readonly and does not grant trust or execute handlers. Compare
+configuration enablement and trust separately from the displayed execution/application
+state. Unknown remains unknown, and an empty returned inventory does not establish
+a disabled feature. The inventory excludes builtin and per-turn environment handlers;
+it is not the complete execution list. Readonly inventory identifiers are for
+comparison, not mutation keys. Core1.1 runtime metadata and final paired validation
+remain in progress on this development branch.
 
 <a id="subagents"></a>
 

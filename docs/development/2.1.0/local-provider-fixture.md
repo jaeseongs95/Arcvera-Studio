@@ -2,6 +2,11 @@
 
 # Local provider preparation for current-thread verification
 
+The parent's later actual execution is recorded in [Hook/Native verification](hook-verification.md).
+An owned base configuration on public Core1.0.1 produced two real threads and GUI
+inspection, with zero model requests to the HTTP fixture. NOT_RUN below records
+the original authoring/handoff state.
+
 2026-11-14 KST. **Preparation only; execution is NOT_RUN.** These test-only materials support verification of actual Desktop 2.1/Core thread creation and MCP/hook inspection boundaries. They add no unfrozen Core1.1 metadata RPCs. Original Core sources, actual HOME/config/auth, and production apps/daemons are unchanged. Execution and configuration below are procedures for the parent in a separate owned environment; this unit has not performed them.
 
 ## Scope that does not require HTTP

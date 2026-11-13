@@ -2,6 +2,10 @@
 
 # 현재 thread 검증용 로컬 provider 준비물
 
+부모의 후속 실제 실행 결과는 [Hook·Native 검증](hook-verification.ko.md)에 있다.
+공개 Core1.0.1의 own base 설정으로 실제 thread 두 개와 GUI 조회를 확인했으며,
+HTTP fixture의 모델 요청은 0건이었다. 아래 NOT_RUN은 작성·인계 시점 기록이다.
+
 2026-11-14 KST. **준비물 작성 상태이며 실행은 NOT_RUN**이다. Desktop 2.1/Core의 실제 thread 생성·MCP/hook 조회 경계를 검증하기 위한 test-only 준비다. Core1.1의 미동결 metadata RPC를 추가하지 않는다. 원본 Core, 실제 HOME/config/auth와 운영 앱·daemon은 변경하지 않는다. 아래 실행·구성 작성은 부모가 별도 자체 환경에서 수행할 절차이며, 이 문서를 작성한 단위에서는 수행하지 않았다.
 
 ## HTTP 없이 가능한 범위
