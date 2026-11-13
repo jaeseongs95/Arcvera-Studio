@@ -205,6 +205,7 @@ try {
     }, matches => matches.length === 1, 'exactly one Arcvera-Studio tauri.localhost target');
     page = candidates[0]; page.setDefaultTimeout(10_000);
     if (process.env.AGENT_GRID_NATIVE_IDENTIFIER) assert.equal(await nativeCall('plugin:app|identifier'), process.env.AGENT_GRID_NATIVE_IDENTIFIER, 'Expected the explicitly isolated application identifier');
+    if (process.env.AGENT_GRID_NATIVE_VERSION) assert.equal(await nativeCall('plugin:app|version'), process.env.AGENT_GRID_NATIVE_VERSION, 'Expected the explicitly built application version');
     page.on('pageerror', error => report.errors.push(shortError(error)));
     page.on('dialog', async dialog => {
       try {

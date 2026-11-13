@@ -20,3 +20,5 @@
 MCP 도구 한 개의 발견과 Hook inventory 0건을 실제 선택 thread에서 관측했고 stale expectedThreadId는 거절했다. Hook 0건을 기능 비활성으로 추정하지 않았다. runtime DTO는 key/command/matcher/path/diagnostic 원문 대신 읽기 전용 hash ID와 허용 metadata만 투영한다. 실제 GUI의 세션 ID/generation/thread와 운영 앱 identity는 보존됐고 자체 앱·Core는 종료됐다. provider의 최종 health는 요청0/inFlight=false이며 자체 프로세스도 종료됐다.
 
 이 결과는 모델 turn·실제 인증·MCP 도구 호출·Hook handler 실행·설정 변경 후 현재 thread reload·provider cache hit·Core1.1·최종 installer·장기 부하·독립감사 완료를 뜻하지 않는다. source fixture와 실제 경로의 수량을 합쳐 모두 실제 Core 시험이라고 표현하지 않는다.
+
+버전 준비 후 `actual-app-build-05`는 package 2.1.0의 비시험 개발 앱을 생성했다(exit0, exe SHA3830a87e5d2b1b61e02dc8168e3f1536ed6de083a8179db06486b46dfe54f47c). `runtime-210-core101-06`은 Native에서 실제 앱 version 2.1.0을 먼저 확인한 뒤 같은 14개 경계를 PASS/오류0/exit0으로 확인했다. provider 요청0·자체 앱/Core/provider 종료·운영 앱 identity 보존도 확인했다. 이는 여전히 공개 Core1.0.1 baseline이며 Core1.1 최종 짝의 근거가 아니다.
