@@ -42,6 +42,7 @@ pub enum ConversationRequest {
     PermissionStatus,
     ReloadMcp { expected_thread_id: String },
     McpStatus { expected_thread_id: String, server_name: String, cursor: Option<String> },
+    HooksStatus { expected_thread_id: String },
     SetContextWindow { #[serde(deserialize_with="context::nullable_window")] model_context_window: Option<i64>, #[serde(deserialize_with="context::nullable_window")] expected_model_context_window: Option<i64> },
     Compact,
     Page { cursor: Option<String> },
@@ -445,10 +446,10 @@ impl ConversationConnection {
         self.0.detail.lock().map_err(|_| "대화 상세 스냅샷 상태 오류")?.take();
         Ok(true)
     }
-    fn runtime_extension_request(&self, thread_id: &str, expected_thread_id: &str, request: runtime_extensions::RuntimeExtensionRequest) -> Result<Value, String> {
-        if thread_id != expected_thread_id { return Err("검토한 대화가 변경되어 MCP 요청을 보내지 않았습니다. 현재 대화를 다시 확인하세요.".into()); }
+    fn runtime_extension_request(&self, thread_id: &str, expected_thread_id: &str, cwd: &Path, request: runtime_extensions::RuntimeExtensionRequest) -> Result<Value, String> {
+        if thread_id != expected_thread_id { return Err("검토한 대화가 변경되어 확장 요청을 보내지 않았습니다. 현재 대화를 다시 확인하세요.".into()); }
         runtime_extensions::validate(thread_id, &request)?;
-        let mut state = self.0.context_settings.try_lock().map_err(|_| "이 세션의 설정 또는 MCP 조회·변경 요청이 이미 진행 중입니다.")?;
+        let mut state = self.0.context_settings.try_lock().map_err(|_| "이 세션의 설정 또는 확장 조회·변경 요청이 이미 진행 중입니다.")?;
         state.bind_thread(thread_id)?;
         live(&self.0, &AtomicBool::new(false))?;
         if matches!(request, runtime_extensions::RuntimeExtensionRequest::ReloadMcp {}) {
@@ -466,22 +467,24 @@ impl ConversationConnection {
         match &self.0.endpoint {
             Endpoint::Shared(endpoint) => {
                 let mut proxy = endpoint.open_until(Some(cancelled.clone()), Some(deadline))
-                    .map_err(|_| "현재 대화의 MCP 관리 연결을 확인하지 못했습니다. 요청 결과는 미확인입니다.".to_owned())?;
-                transport.lock().map_err(|_| "MCP 연결 정리 상태 오류")?.proxy = proxy.job.as_ref().map(Arc::downgrade);
+                    .map_err(|_| "현재 대화의 확장 관리 연결을 확인하지 못했습니다. 요청 결과는 미확인입니다.".to_owned())?;
+                transport.lock().map_err(|_| "확장 연결 정리 상태 오류")?.proxy = proxy.job.as_ref().map(Arc::downgrade);
                 let result = (|| {
-                    let rpc = proxy.rpc.as_mut().ok_or("현재 대화의 MCP 연결을 찾을 수 없습니다.")?;
+                    let rpc = proxy.rpc.as_mut().ok_or("현재 대화의 확장 연결을 찾을 수 없습니다.")?;
                     rpc.cancelled = Some(cancelled.clone()); rpc.deadline = Some(deadline);
                     let mut init = initialize(); init["capabilities"] = json!({"experimentalApi":true});
-                    rpc.call("initialize", init).map_err(|_| "MCP 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
-                    rpc.send(json!({"method":"initialized","params":{}})).map_err(|_| "MCP 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
+                    rpc.call("initialize", init).map_err(|_| "확장 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
+                    rpc.send(json!({"method":"initialized","params":{}})).map_err(|_| "확장 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
                     live(&self.0, &cancelled)?;
-                    let value = runtime_extensions::exchange(rpc, thread_id, &request)?;
+                    let value = if matches!(request, runtime_extensions::RuntimeExtensionRequest::HooksStatus {}) {
+                        runtime_extensions::exchange_hooks(rpc, thread_id, cwd)?
+                    } else { runtime_extensions::exchange(rpc, thread_id, &request)? };
                     live(&self.0, &cancelled)?;
                     Ok(value)
                 })();
                 match (result, proxy.finish()) {
                     (result, Ok(())) => result,
-                    (_, Err(_)) => Err("MCP 관리 연결 정리를 확인하지 못했습니다. 요청 결과를 자동 재시도하지 않습니다.".into()),
+                    (_, Err(_)) => Err("확장 관리 연결 정리를 확인하지 못했습니다. 요청 결과를 자동 재시도하지 않습니다.".into()),
                 }
             }
             #[cfg(test)]
@@ -499,10 +502,13 @@ impl ConversationConnection {
     fn request_context(&self, thread_id: &str, cwd: &Path, request: ConversationRequest, send_context: Option<SendContext>) -> Result<Value, String> {
         validate_request(&request)?;
         if let ConversationRequest::McpStatus { expected_thread_id, server_name, cursor } = &request {
-            return self.runtime_extension_request(thread_id, expected_thread_id, runtime_extensions::RuntimeExtensionRequest::McpStatus { server_name: server_name.clone(), cursor: cursor.clone() });
+            return self.runtime_extension_request(thread_id, expected_thread_id, cwd, runtime_extensions::RuntimeExtensionRequest::McpStatus { server_name: server_name.clone(), cursor: cursor.clone() });
         }
         if let ConversationRequest::ReloadMcp { expected_thread_id } = &request {
-            return self.runtime_extension_request(thread_id, expected_thread_id, runtime_extensions::RuntimeExtensionRequest::ReloadMcp {});
+            return self.runtime_extension_request(thread_id, expected_thread_id, cwd, runtime_extensions::RuntimeExtensionRequest::ReloadMcp {});
+        }
+        if let ConversationRequest::HooksStatus { expected_thread_id } = &request {
+            return self.runtime_extension_request(thread_id, expected_thread_id, cwd, runtime_extensions::RuntimeExtensionRequest::HooksStatus {});
         }
         if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::PermissionStatus | ConversationRequest::SetContextWindow {..}) {
             return self.context_settings_request(thread_id, request);
@@ -856,7 +862,7 @@ fn cursor(value: &Option<String>) -> Result<(), String> {
 }
 fn validate_request(request: &ConversationRequest) -> Result<(), String> {
     match request {
-        ConversationRequest::ReloadMcp { expected_thread_id } | ConversationRequest::McpStatus { expected_thread_id, .. } => valid_id(expected_thread_id),
+        ConversationRequest::ReloadMcp { expected_thread_id } | ConversationRequest::McpStatus { expected_thread_id, .. } | ConversationRequest::HooksStatus { expected_thread_id } => valid_id(expected_thread_id),
         ConversationRequest::SetContextWindow {model_context_window,expected_model_context_window} => {context::validate_window(*model_context_window)?;context::validate_window(*expected_model_context_window)},
         ConversationRequest::Page {cursor: value} | ConversationRequest::Models {cursor: value} => cursor(value),
         ConversationRequest::Items {turn_id,cursor: value} => {valid_id(turn_id)?;cursor(value)},

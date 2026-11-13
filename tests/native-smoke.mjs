@@ -204,6 +204,7 @@ try {
       return matches;
     }, matches => matches.length === 1, 'exactly one Arcvera-Studio tauri.localhost target');
     page = candidates[0]; page.setDefaultTimeout(10_000);
+    if (process.env.AGENT_GRID_NATIVE_IDENTIFIER) assert.equal(await nativeCall('plugin:app|identifier'), process.env.AGENT_GRID_NATIVE_IDENTIFIER, 'Expected the explicitly isolated application identifier');
     page.on('pageerror', error => report.errors.push(shortError(error)));
     page.on('dialog', async dialog => {
       try {
@@ -358,6 +359,10 @@ try {
     assert.notEqual(report.sessions[0].threadId, report.sessions[1].threadId, 'Two new sessions unexpectedly share a thread UUID');
     return { validFullUuids: true, distinctThreads: true };
   });
+  if (process.env.AGENT_GRID_NATIVE_RUNTIME_EXTENSIONS === '1') {
+    const { checkNativeRuntimeExtensions } = await import('./native-runtime-extensions.mjs');
+    await check('actual selected-thread MCP and readonly Hook inventory', () => checkNativeRuntimeExtensions({ page, nativeCall, cwd, sessions: report.sessions, until, maskedScreenshot }));
+  }
   if (process.env.AGENT_GRID_NATIVE_PROJECT_PICKER === '1') {
     await check('native project tabs filter live terminals without replacing PTYs or xterm DOM', async () => {
       const originalProjects = await nativeCall('list_projects');

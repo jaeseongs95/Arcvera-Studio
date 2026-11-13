@@ -98,6 +98,9 @@ fn context(cwd: Option<&str>) -> Result<PathBuf, String> {
 fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<ProxyStream>) -> Result<T, String>) -> Result<T, String> {
     shared::with_rpc(exe, cwd, operation)
 }
+pub(super) fn parse_runtime_hooks(value: &Value, directory: &Path) -> Result<ExtensionHooks, String> {
+    hooks::parse(value, directory)
+}
 
 struct CliProcess {
     child: Child, job: Option<ProcessJob>,

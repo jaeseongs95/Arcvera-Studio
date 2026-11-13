@@ -1,4 +1,4 @@
-//! Narrow MCP runtime wire adapter. The caller owns session admission and transport lifetime.
+//! Narrow extension runtime wire adapters. The caller owns session admission and transport lifetime.
 use super::*;
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -13,18 +13,22 @@ const MAX_JSON_DEPTH: usize = 32;
 const MAX_JSON_ARRAY: usize = 256;
 const MAX_JSON_FIELDS: usize = 512;
 const INVALID_RESPONSE: &str = "MCP runtime 응답 형식 또는 상한을 확인할 수 없습니다. 요청 결과는 확인되지 않았습니다.";
+const INVALID_HOOK_RESPONSE: &str = "현재 대화 Hook 응답 형식·대상 또는 상한을 확인할 수 없습니다. 조회 결과는 미확인입니다.";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "operation", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub(super) enum RuntimeExtensionRequest {
     ReloadMcp {},
     McpStatus { server_name: String, cursor: Option<String> },
+    HooksStatus {},
 }
 
 /// Validate before the caller opens the admitted vendor connection.
 pub(super) fn validate(thread_id: &str, request: &RuntimeExtensionRequest) -> Result<(), String> {
     identifier(thread_id, MAX_THREAD_BYTES)
-        .map_err(|_| "현재 대화의 MCP 요청 대상을 확인할 수 없습니다.".to_owned())?;
+        .map_err(|_| if matches!(request, RuntimeExtensionRequest::HooksStatus {}) {
+            "현재 대화의 Hook 조회 대상을 확인할 수 없습니다.".to_owned()
+        } else { "현재 대화의 MCP 요청 대상을 확인할 수 없습니다.".to_owned() })?;
     if let RuntimeExtensionRequest::McpStatus { server_name, cursor } = request {
         identifier(server_name, MAX_SERVER_BYTES)
             .map_err(|_| "MCP 서버 이름 형식을 확인할 수 없습니다.".to_owned())?;
@@ -48,17 +52,72 @@ pub(super) fn exchange<S: Read + Write>(
             if let Some(cursor) = cursor { params["cursor"] = json!(cursor); }
             ("mcpServerStatus/list", params)
         }
+        RuntimeExtensionRequest::HooksStatus {} => return Err("현재 대화 Hook 조회에는 결속된 프로젝트 경로가 필요합니다.".into()),
     };
     let value = rpc.call(method, params).map_err(|error| safe_rpc_error(request, &error))?;
     same_thread(&value, thread_id)?;
     let result = match request {
         RuntimeExtensionRequest::ReloadMcp {} => reload_result(&value, thread_id),
         RuntimeExtensionRequest::McpStatus { server_name, cursor } => status_result(&value, thread_id, server_name, cursor.as_deref()),
+        RuntimeExtensionRequest::HooksStatus {} => Err("현재 대화 Hook 조회에는 결속된 프로젝트 경로가 필요합니다.".into()),
     }?;
     // Raw tools may contain large descriptions/schemas inside the shared Rpc frame limit.
     // Bound only the validated renderer projection; never forward unused tool content.
     bounded_response(&result)?;
     Ok(result)
+}
+
+/// Existing hooks/list thread mode, not a configuration query or execution-gate probe.
+/// The caller owns the expected thread/cwd binding, admission, cancellation and Rpc lifetime.
+pub(super) fn exchange_hooks<S: Read + Write>(
+    rpc: &mut Rpc<S>, thread_id: &str, cwd: &Path,
+) -> Result<Value, String> {
+    validate(thread_id, &RuntimeExtensionRequest::HooksStatus {})?;
+    let directory = cwd.to_str().ok_or(INVALID_HOOK_RESPONSE)?;
+    if !cwd.is_absolute() || identifier(directory, 128 * 1024).is_err() {
+        return Err("현재 대화 Hook 조회의 프로젝트 경로를 확인할 수 없습니다.".into());
+    }
+    let value = rpc.call("hooks/list", json!({"threadId":thread_id}))
+        .map_err(|error| safe_hooks_rpc_error(&error))?;
+    // The existing wire does not echo threadId. Reject a conflicting explicit echo,
+    // but do not pretend that its absence acknowledges thread identity or a gate.
+    same_thread(&value, thread_id).map_err(|_| INVALID_HOOK_RESPONSE.to_owned())?;
+    let hooks = extensions::parse_runtime_hooks(&value, cwd).map_err(|_| INVALID_HOOK_RESPONSE.to_owned())?;
+    // Explicit allowlist: opaque keys, hashes, paths, commands and diagnostics may
+    // contain sensitive content even after length/type validation. Never serialize
+    // ExtensionHooks here; future fields must not cross this read-only boundary.
+    let items: Vec<Value> = hooks.items.iter().map(|hook| json!({
+        "id":format!("hook-{:x}",Sha256::digest(hook.key.as_bytes())),
+        "eventName":hook.event_name,"handlerType":hook.handler_type,"source":hook.source,
+        "enabled":hook.enabled,"isManaged":hook.is_managed,"trustStatus":hook.trust_status,
+    })).collect();
+    let result = json!({
+        "operation":"hooksStatus","threadId":thread_id,"provenance":"loadedThreadHooksList",
+        "executionGate":"unknown","applicationState":"unknown",
+        "hooks":{"items":items,"warningCount":hooks.warnings.len(),"errorCount":hooks.errors.len()},
+    });
+    bounded_hooks_response(&result)?;
+    Ok(result)
+}
+
+fn safe_hooks_rpc_error(raw: &str) -> String {
+    let class = if raw.contains("-32601") || raw.contains("Method not found") || raw.contains("method not found") {
+        "선택한 Core가 현재 대화 Hook 조회를 지원하지 않습니다."
+    } else if raw.contains("timed out") || raw.contains("기한") {
+        "현재 대화 Hook 조회 시간이 초과되었습니다."
+    } else if raw.contains("cancelled") || raw.contains("canceled") {
+        "현재 대화 Hook 조회가 취소되었습니다."
+    } else if raw.contains("transport") || raw.contains("disconnect") {
+        "현재 대화 Hook 연결 응답을 확인하지 못했습니다."
+    } else { "현재 대화 Hook 조회가 실패했습니다." };
+    format!("{class} 조회 결과와 실행 gate는 미확인입니다.")
+}
+
+fn bounded_hooks_response(value: &Value) -> Result<(), String> {
+    // ceiling: reuse the shared 8 MiB budget after an explicit, typed projection.
+    // Hook's existing 4096-row/64 KiB field limits are not MCP's 256-row/8 KiB limits.
+    serde_json::to_writer(SizeLimit { remaining: MAX_FRAME }, value)
+        .map_err(|_| INVALID_HOOK_RESPONSE.to_owned())
 }
 
 fn identifier(value: &str, maximum: usize) -> Result<(), String> {
@@ -83,6 +142,7 @@ fn safe_rpc_error(request: &RuntimeExtensionRequest, raw: &str) -> String {
     match request {
         RuntimeExtensionRequest::ReloadMcp {} => format!("{class} 재연결 요청 결과는 미확인입니다. 자동 재시도하지 않습니다."),
         RuntimeExtensionRequest::McpStatus { .. } => format!("{class} 현재 연결과 도구 목록은 미확인입니다."),
+        RuntimeExtensionRequest::HooksStatus {} => safe_hooks_rpc_error(raw),
     }
 }
 
@@ -510,5 +570,209 @@ mod tests {
             let error = safe_rpc_error(&request(None), &raw);
             assert!(error.contains(class)); assert!(error.contains("미확인")); assert!(!error.contains(SECRET));
         }
+    }
+
+    // Hook wire fixtures exercise the real Rpc framing/parser but no Core process or socket.
+    fn hook_directory() -> std::path::PathBuf { env::current_dir().unwrap() }
+    fn hook_row(key: &str, handler: &str) -> Value {
+        let mut value = json!({"key":key,"currentHash":"opaque-hash","handlerType":handler,
+            "eventName":"preToolUse","matcher":null,"timeoutSec":10,"statusMessage":null,
+            "additionalContextLimit":null,"sourcePath":hook_directory().join("hooks.json"),
+            "source":"project","pluginId":null,"enabled":true,"isManaged":false,"trustStatus":"trusted"});
+        match handler {
+            "command" => { value["command"] = json!("echo fixture"); value["async"] = json!(false); }
+            "mcpTool" => { value["server"] = json!("fixture-server"); value["tool"] = json!("fixture-tool"); }
+            _ => {}
+        }
+        value
+    }
+    fn hook_inventory(hooks: Vec<Value>) -> Value {
+        json!({"data":[{"cwd":hook_directory(),"hooks":hooks,"warnings":[],"errors":[]}]})
+    }
+    fn execute_hooks(response: Value) -> (Result<Value, String>, Vec<Value>) {
+        let mut rpc = fixture(Some(json!({"id":1,"result":response})));
+        let result = exchange_hooks(&mut rpc, THREAD, &hook_directory());
+        (result, requests(&rpc))
+    }
+
+    // HR01: the oracle is the existing public HooksListParams/Response, not a new 1.1 field.
+    #[test]
+    fn runtime_extensions_hooks_exact_thread_query_and_explicit_readonly_projection() {
+        let rows = ["command","mcpTool","prompt","agent"].into_iter()
+            .map(|handler| hook_row(handler, handler)).collect();
+        let (result, sent) = execute_hooks(hook_inventory(rows));
+        assert_eq!(sent, vec![json!({"id":1,"method":"hooks/list","params":{"threadId":THREAD}})]);
+        let result = result.unwrap();
+        assert_eq!(result["operation"], "hooksStatus"); assert_eq!(result["threadId"], THREAD);
+        assert_eq!(result["provenance"], "loadedThreadHooksList");
+        assert_eq!(result["executionGate"], "unknown"); assert_eq!(result["applicationState"], "unknown");
+        assert_eq!(result["hooks"]["warningCount"], 0); assert_eq!(result["hooks"]["errorCount"], 0);
+        let items = result["hooks"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4);
+        for (item, handler) in items.iter().zip(["command","mcpTool","prompt","agent"]) {
+            assert_eq!(item.as_object().unwrap().len(), 7);
+            assert_eq!(item["eventName"], "preToolUse"); assert_eq!(item["handlerType"], handler);
+            assert_eq!(item["source"], "project"); assert_eq!(item["enabled"], true);
+            assert_eq!(item["isManaged"], false); assert_eq!(item["trustStatus"], "trusted");
+            let id = item["id"].as_str().unwrap();
+            assert!(id.starts_with("hook-")); assert_eq!(id.len(), 69);
+            assert!(id[5..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+        }
+    }
+    // HR02: pre-admission validation and additional-field rejection must happen before a send.
+    #[test]
+    fn runtime_extensions_hooks_invalid_inputs_and_missing_cwd_never_send() {
+        assert!(serde_json::from_value::<RuntimeExtensionRequest>(json!({"operation":"hooksStatus"})).is_ok());
+        for field in ["cwd","threadId","method","enabled"] {
+            let mut request = json!({"operation":"hooksStatus"}); request[field] = json!(SECRET);
+            assert!(serde_json::from_value::<RuntimeExtensionRequest>(request).is_err());
+        }
+        for thread in ["".to_owned(),"  ".into(),"thread\n".into(),"x".repeat(MAX_THREAD_BYTES+1),"가".repeat(86)] {
+            let mut rpc = fixture(None);
+            let error = exchange_hooks(&mut rpc, &thread, &hook_directory()).unwrap_err();
+            assert!(!error.contains(&thread) || thread.trim().is_empty());
+            assert!(requests(&rpc).is_empty());
+        }
+        for cwd in [std::path::PathBuf::new(),std::path::PathBuf::from("relative"),
+            hook_directory().join("bad\npath"),hook_directory().join("x".repeat(128*1024+1))] {
+            let mut rpc = fixture(None);
+            assert!(exchange_hooks(&mut rpc, THREAD, &cwd).is_err());
+            assert!(requests(&rpc).is_empty());
+        }
+        let mut rpc = fixture(None);
+        assert!(exchange(&mut rpc, THREAD, &RuntimeExtensionRequest::HooksStatus {}).is_err());
+        assert!(requests(&rpc).is_empty());
+    }
+    // HR03: never use an inventory from an unbound project or an explicit other-thread echo.
+    #[test]
+    fn runtime_extensions_hooks_reject_other_context_and_multiple_projects() {
+        let mut other_cwd = hook_inventory(vec![hook_row(SECRET,"command")]);
+        other_cwd["data"][0]["cwd"] = json!(hook_directory().join(SECRET));
+        let mut multiple = hook_inventory(vec![]);
+        let duplicate = multiple["data"][0].clone();
+        multiple["data"].as_array_mut().unwrap().push(duplicate);
+        let mut other_thread = hook_inventory(vec![]); other_thread["threadId"] = json!(SECRET);
+        let mut bad_thread = hook_inventory(vec![]); bad_thread["threadId"] = json!(123);
+        for value in [other_cwd,multiple,other_thread,bad_thread] {
+            let (result, sent) = execute_hooks(value);
+            assert!(!result.unwrap_err().contains(SECRET)); assert_eq!(sent.len(), 1);
+        }
+    }
+    // HR04: the existing bounded parser remains authoritative even for hidden fields.
+    #[test]
+    fn runtime_extensions_hooks_reject_missing_malformed_and_duplicate_metadata() {
+        for value in [Value::Null,json!({}),json!({"data":[]}),json!({"data":{}})] {
+            assert!(execute_hooks(value).0.is_err());
+        }
+        for field in ["cwd","hooks","warnings","errors"] {
+            let mut missing = hook_inventory(vec![]); missing["data"][0].as_object_mut().unwrap().remove(field);
+            assert!(execute_hooks(missing).0.is_err(), "accepted missing {field}");
+            let mut malformed = hook_inventory(vec![]); malformed["data"][0][field] = json!(false);
+            assert!(execute_hooks(malformed).0.is_err(), "accepted malformed {field}");
+        }
+        for (field,value) in [("handlerType",json!("shell")),("eventName",json!("futureEvent")),
+            ("source",json!("futureSource")),("trustStatus",json!("futureTrust")),("timeoutSec",json!(-1)),
+            ("timeoutSec",json!(9_007_199_254_740_992u64)),("enabled",json!("true")),("isManaged",Value::Null),
+            ("sourcePath",json!("relative")),("key",json!("")),("currentHash",json!("")),
+            ("command",json!(123))] {
+            let mut row = hook_row("key","command"); row[field] = value;
+            let (result,sent) = execute_hooks(hook_inventory(vec![row]));
+            assert!(result.is_err(), "accepted invalid {field}"); assert_eq!(sent.len(),1);
+        }
+        assert!(execute_hooks(hook_inventory(vec![hook_row("same","command"),hook_row("same","agent")])).0.is_err());
+    }
+    // HR05: neither enabled entries nor an empty inventory can prove an execution gate.
+    #[test]
+    fn runtime_extensions_hooks_legacy_empty_and_uninterpreted_metadata_keep_gate_unknown() {
+        let mut value = hook_inventory(vec![]);
+        value["runtime"] = json!({"featureEnabled":false,"baseHandlerCount":0,"scope":SECRET});
+        let result = execute_hooks(value).0.unwrap();
+        assert_eq!(result, json!({"operation":"hooksStatus","threadId":THREAD,"provenance":"loadedThreadHooksList",
+            "executionGate":"unknown","applicationState":"unknown","hooks":{"items":[],"warningCount":0,"errorCount":0}}));
+        assert!(!result.to_string().contains(SECRET));
+    }
+    // HR06: Hook cardinality is intentionally independent of MCP's 256-array boundary.
+    #[test]
+    fn runtime_extensions_hooks_keep_complete_inventory_up_to_existing_4096_limit() {
+        for count in [257,4096,4097] {
+            let rows = (0..count).map(|index| hook_row(&format!("key-{index}"),"command")).collect();
+            let (result,sent) = execute_hooks(hook_inventory(rows));
+            assert_eq!(sent.len(),1);
+            if count <= 4096 { assert_eq!(result.unwrap()["hooks"]["items"].as_array().unwrap().len(),count); }
+            else { assert!(result.is_err()); }
+        }
+    }
+    // HR07: large unused content is not a reason to reject a small safe projection.
+    #[test]
+    fn runtime_extensions_hooks_large_unused_fields_do_not_change_used_field_limits() {
+        let mut row = hook_row("key","command");
+        row["ignored"] = json!({"description":format!("{SECRET}{}","x".repeat(MAX_RESPONSE_BYTES+1)),
+            "array":vec![SECRET;MAX_JSON_ARRAY+1],"schema":(0..=MAX_JSON_FIELDS).map(|i|(format!("field-{i}"),json!(SECRET))).collect::<serde_json::Map<_,_>>()});
+        row["command"] = json!("x".repeat(64*1024));
+        let result = execute_hooks(hook_inventory(vec![row.clone()])).0.unwrap();
+        assert!(!result.to_string().contains(SECRET)); assert!(result["hooks"]["items"][0].get("command").is_none());
+        for (field,value) in [("command",json!("x".repeat(64*1024+1))),("command",json!("가".repeat(64*1024/3+1))),
+            ("matcher",json!("x".repeat(64*1024+1))),("statusMessage",json!("x".repeat(64*1024+1))),
+            ("key",json!("가".repeat(4096/3+1))),("currentHash",json!("x".repeat(4097)))] {
+            let mut invalid = row.clone(); invalid[field] = value;
+            assert!(execute_hooks(hook_inventory(vec![invalid])).0.is_err(),"accepted oversized {field}");
+        }
+    }
+    // HR08: length validation alone does not make opaque identity/display strings secret-safe.
+    #[test]
+    fn runtime_extensions_hooks_allowlist_never_exposes_raw_identity_or_diagnostics() {
+        let mut command = hook_row(SECRET,"command");
+        for field in ["currentHash","command","matcher","statusMessage","pluginId","environmentId"] { command[field] = json!(SECRET); }
+        command["sourcePath"] = json!(hook_directory().join(SECRET));
+        command["env"] = json!({"TOKEN":SECRET}); command["prompt"] = json!(SECRET);
+        let mut mcp = hook_row("second","mcpTool"); mcp["server"] = json!(SECRET); mcp["tool"] = json!(SECRET);
+        let mut value = hook_inventory(vec![command,mcp]);
+        value["data"][0]["warnings"] = json!([SECRET,SECRET]);
+        value["data"][0]["errors"] = json!([{"path":SECRET,"message":SECRET}]);
+        let result = execute_hooks(value.clone()).0.unwrap();
+        assert!(!result.to_string().contains(SECRET));
+        assert_eq!(result["hooks"]["warningCount"],2); assert_eq!(result["hooks"]["errorCount"],1);
+        assert_eq!(result["hooks"].as_object().unwrap().len(),3);
+        for item in result["hooks"]["items"].as_array().unwrap() { assert_eq!(item.as_object().unwrap().len(),7); }
+        for field in ["warnings","errors"] {
+            let mut oversized = value.clone();
+            oversized["data"][0][field] = json!(vec![value["data"][0][field][0].clone();129]);
+            let error = execute_hooks(oversized).0.unwrap_err(); assert!(!error.contains(SECRET));
+        }
+    }
+    // HR09: errors remain errors, without diagnostic reflection or an additional send.
+    #[test]
+    fn runtime_extensions_hooks_rpc_failure_and_disconnect_never_retry_or_relay_raw_content() {
+        for (reply,class) in [(None,"연결"),(Some(json!({"id":1,"error":{"code":-32601,"message":SECRET}})),"지원"),
+            (Some(json!({"id":1,"error":{"code":-32000,"message":format!("transport {SECRET}")}})),"연결"),
+            (Some(json!({"id":1,"error":{"code":-32000,"message":format!("timed out {SECRET}")}})),"초과"),
+            (Some(json!({"id":1,"error":{"code":-32000,"message":format!("cancelled {SECRET}")}})),"취소")] {
+            let mut rpc = fixture(reply);
+            let error = exchange_hooks(&mut rpc,THREAD,&hook_directory()).unwrap_err();
+            assert!(!error.contains(SECRET)); assert!(error.contains("미확인")); assert!(error.contains(class));
+            assert_eq!(requests(&rpc).len(),1);
+        }
+        let mut rpc = fixture(None); rpc.cancelled = Some(Arc::new(AtomicBool::new(true)));
+        assert!(exchange_hooks(&mut rpc,THREAD,&hook_directory()).is_err()); assert!(requests(&rpc).is_empty());
+    }
+    // HR10: shared transport and the Hook projection have separate, finite byte ceilings.
+    #[test]
+    fn runtime_extensions_hooks_raw_frame_and_projected_byte_limits_are_preserved() {
+        let mut value = hook_inventory(vec![]); value["unused"] = json!("x".repeat(MAX_FRAME));
+        let mut rpc = fixture(Some(json!({"id":1,"result":value})));
+        let error = exchange_hooks(&mut rpc,THREAD,&hook_directory()).unwrap_err();
+        assert!(error.contains("미확인")); assert_eq!(requests(&rpc).len(),1);
+        assert!(bounded_hooks_response(&json!("x".repeat(MAX_FRAME))).is_err());
+        assert!(bounded_hooks_response(&json!("x".repeat(MAX_RESPONSE_BYTES+1))).is_ok());
+    }
+    // HR11: SHA256('abc') is an external known vector; no product hashing builds the oracle.
+    #[test]
+    fn runtime_extensions_hooks_readonly_id_is_stable_distinct_and_not_the_mutation_key() {
+        let value = hook_inventory(vec![hook_row("abc","command"),hook_row("abd","command")]);
+        let first = execute_hooks(value.clone()).0.unwrap(); let second = execute_hooks(value).0.unwrap();
+        let items = first["hooks"]["items"].as_array().unwrap();
+        assert_eq!(items[0]["id"],"hook-ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_ne!(items[0]["id"],items[1]["id"]); assert_eq!(first,second);
+        for item in items { assert!(item.get("key").is_none()); assert!(item.get("currentHash").is_none()); }
     }
 }

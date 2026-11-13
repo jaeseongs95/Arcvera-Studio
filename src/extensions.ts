@@ -1,5 +1,6 @@
 import { bindAttribute, bindText, onLanguageChange, t, unbindText } from './i18n';
 import { createMcpRuntimePanel, type McpRuntimeTarget } from './mcp-runtime';
+import { createHookRuntimePanel } from './hook-runtime';
 import './extensions.css';
 
 export interface ExtensionPlugin {
@@ -59,6 +60,8 @@ export function createExtensionsManager(host: ExtensionsHost) {
   document.body.append(dialog);
   const $ = <T extends HTMLElement = HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   const text = (selector: string, ko: string, en: string) => bindText($(selector), ko, en);
+  const hookRuntimeHost = document.createElement('div'); hookRuntimeHost.id = 'extensions-hook-runtime'; hookRuntimeHost.hidden = true;
+  $('#extensions-content').insertAdjacentElement('beforebegin', hookRuntimeHost);
   for (const [selector, ko, en] of [
     ['#extensions-eyebrow', '확장 관리', 'EXTENSIONS'], ['#extensions-title', '플러그인·스킬·Hook·MCP', 'Plugins, skills, hooks & MCP'],
     ['#extensions-description', '설치된 확장을 관리하거나 필요한 플러그인을 찾아 추가하세요.', 'Manage installed extensions or find a plugin to add.'],
@@ -100,6 +103,8 @@ export function createExtensionsManager(host: ExtensionsHost) {
   let runtimeOperation: Promise<unknown> | undefined;
   let runtimePanel: ReturnType<typeof createMcpRuntimePanel> | undefined;
   let runtimePanelKey: string | undefined;
+  let hookRuntimePanel: ReturnType<typeof createHookRuntimePanel> | undefined;
+  let hookRuntimePanelKey: string | undefined;
   let exitRequested = false; let exitDrain: Promise<void> | undefined; let picker: Promise<string | null> | undefined;
   const current = (token: number) => dialog.open && token === version;
   const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -120,6 +125,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     }
     updateCatalogControls();
     runtimePanel?.setDisabled(blocked || !!runtimeOperation);
+    hookRuntimePanel?.setDisabled(blocked || !!runtimeOperation);
   }
   function cancelReview() { pendingAction = undefined; $('#extensions-review').hidden = true; }
   function review(request: Mutation, target: string, ko: string, en: string, scopeKo: string, scopeEn: string) {
@@ -246,6 +252,19 @@ export function createExtensionsManager(host: ExtensionsHost) {
     detail.prepend(title); detail.append(data, actions);
     if (runtimePanel) detail.append(runtimePanel.element);
   }
+  function renderHookRuntime() {
+    hookRuntimeHost.hidden = tab !== 'hooks';
+    if (tab !== 'hooks') return;
+    const key = JSON.stringify([version, runtimeTarget?.id, runtimeTarget?.generation, runtimeTarget?.threadId]);
+    if (key !== hookRuntimePanelKey) {
+      hookRuntimePanel?.dispose();
+      const target = runtimeTarget ? { ...runtimeTarget } : undefined;
+      const token = version;
+      hookRuntimePanel = createHookRuntimePanel({ target, onInspect: () => { if (target && current(token)) void runHookRuntimeRequest(target); } });
+      hookRuntimePanelKey = key; hookRuntimeHost.replaceChildren(hookRuntimePanel.element);
+    }
+    hookRuntimePanel?.setDisabled(busy || exitRequested || !!runtimeOperation);
+  }
   function renderList() {
     const query = search.value.trim().toLocaleLowerCase(); const filtered = rows().filter(row => !query || row.searchable.some(field => field.toLocaleLowerCase().includes(query)));
     if (starts[tab] >= filtered.length) starts[tab] = Math.floor(Math.max(0, filtered.length - 1) / 250) * 250;
@@ -273,7 +292,8 @@ export function createExtensionsManager(host: ExtensionsHost) {
     text('#extensions-more', limits[tab] < 250 ? '50개 더 보기' : '다음 항목', limits[tab] < 250 ? 'Show 50 more' : 'Next entries');
     $('#extensions-range').textContent = filtered.length ? `${starts[tab] + 1}–${starts[tab] + visible.length} / ${filtered.length}` : '';
     renderDetail(visible.find(row => row.id === selections[tab]));
-    text('#extensions-session-label', 'MCP 요청 대상', 'MCP request target');
+    renderHookRuntime();
+    text('#extensions-session-label', '현재 대화 조회 대상', 'Current conversation target');
     if (runtimeTarget) { unbindText($('#extensions-session')); $('#extensions-session').textContent = runtimeTarget.title; }
     else text('#extensions-session', '선택한 실행 중 대화 없음', 'No running conversation selected');
     const sectionErrors = snapshot?.errors.filter(error => error.section === tab) ?? [];
@@ -345,6 +365,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       await runRuntimeRequest(target, String(request.serverName), 'reload'); return;
     }
     const request = pendingAction; const token = version; cancelReview(); $('#extensions-error').hidden = true; setBusy(true); status('변경하고 실제 구성을 다시 확인하는 중…', 'Applying changes and verifying the configuration…');
+    hookRuntimePanel?.showUnconfirmed();
     const operation = host.call<ExtensionsSnapshot>('extensions_mutate', { cwd, request }); mutation = operation;
     try {
       const value = await operation;
@@ -374,8 +395,30 @@ export function createExtensionsManager(host: ExtensionsHost) {
       if (current(token)) setBusy(false);
     }
   }
+  async function runHookRuntimeRequest(target: McpRuntimeTarget) {
+    if (busy || exitRequested || runtimeOperation || !runtimeTarget || target.id !== runtimeTarget.id || target.generation !== runtimeTarget.generation || target.threadId !== runtimeTarget.threadId) return;
+    const token = version; cancelReview(); $('#extensions-error').hidden = true; setBusy(true); hookRuntimePanel?.showPending();
+    status('현재 대화의 Hook 목록을 조회하는 중…', 'Reading the current conversation’s hook inventory…');
+    const operation = host.call<unknown>('conversation_request', { id: target.id, generation: target.generation, request: { type: 'hooksStatus', expectedThreadId: target.threadId } });
+    runtimeOperation = operation;
+    try {
+      const value = await operation;
+      if (current(token) && tab === 'hooks') {
+        if (!hookRuntimePanel?.render(value)) throw Error(t('현재 대화 Hook 조회 결과 형식을 확인하지 못했습니다.', 'The current-conversation hook result could not be confirmed.'));
+        status('조회된 Hook 목록입니다. 실행 허용과 적용 완료는 별도 확인이 필요합니다.', 'Observed hook inventory. Execution permission and application are separate outcomes.');
+      }
+    } catch (error) {
+      if (current(token)) { hookRuntimePanel?.showUnconfirmed(); showError(error); status('현재 대화 Hook 조회 결과는 미확인입니다. 자동 재시도하지 않습니다.', 'The hook inventory is unconfirmed and will not be retried automatically.'); }
+    } finally {
+      if (runtimeOperation === operation) runtimeOperation = undefined;
+      if (current(token)) setBusy(false);
+    }
+  }
   $('#extensions-close').onclick = () => dialog.close();
-  dialog.onclose = () => { runtimePanel?.dispose(); runtimePanel = undefined; runtimePanelKey = undefined; runtimeTarget = undefined; clearMcpInputs(); version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; };
+  function clearClosedView() { runtimePanel?.dispose(); runtimePanel = undefined; runtimePanelKey = undefined; hookRuntimePanel?.dispose(); hookRuntimePanel = undefined; hookRuntimePanelKey = undefined; hookRuntimeHost.replaceChildren(); hookRuntimeHost.hidden = true; runtimeTarget = undefined; clearMcpInputs(); version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; }
+  // A close event may arrive after the same dialog has already reopened.
+  // open() synchronously retires the old view; a late event must not clear the new one.
+  dialog.onclose = () => { if (!dialog.open) clearClosedView(); };
   $('#extensions-refresh').onclick = load; search.oninput = () => { if (!busy && !exitRequested) { limits[tab] = 50; starts[tab] = 0; cancelReview(); renderList(); } };
   $('#extensions-plugin-discover').onclick = () => {
     if (busy || exitRequested) return;
@@ -545,6 +588,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     cancelExit() { exitRequested = false; exitDrain = undefined; setBusy(busy); },
     open(projectCwd?: string, target?: McpRuntimeTarget) {
       if (dialog.open || exitRequested) return;
+      clearClosedView();
       const nextCwd = projectCwd || null; if (cwd !== nextCwd) for (const key of TABS) delete selections[key];
       if (catalogMode) search.value = ''; catalogMode = false; loadedCatalogQuery = null;
       snapshot = undefined; cwd = nextCwd; version++; busy = false; for (const key of TABS) { limits[key] = 50; starts[key] = 0; } $('#extensions-executable').textContent = '…';
