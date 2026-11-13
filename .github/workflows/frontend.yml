@@ -61,6 +61,8 @@ jobs:
       - name: Generate required license resource
         run: node scripts/notices.mjs
       - run: npm run build
+      - name: Compile non-test adapter paths
+        run: cargo check --lib --locked --manifest-path src-tauri/Cargo.toml
       - name: MCP and conversation adapter unit checks
         shell: pwsh
         run: |

@@ -34,6 +34,8 @@ P06-H1 (D77, 실행 전 추가): 기존 extensions Playwright fixture에서 `ena
 | 같은 시험·같은 입력의 수정 후 | `d77-green/run.log`, exit 0, 1 PASS | 구성·신뢰 표시와 빈 목록 설명만 확인 |
 | 확장·MCP 영향 회귀 | `d77-regression/run.log`, exit 0, 27 PASS, 실패·skip 0. `typecheck.exit.txt` 0 | 실제 feature gate·현재 thread 적용·MCP discovery·캐시 구성 조회·최종 패키지는 미검증 |
 
-`frontend.yml`은 현재 2.1 작업 브랜치의 frontend 변경을 검증하며 Rust/Core·최종 Windows 패키지 검증을 대신하지 않는다. private 저장소에서는 수동 실행만 허용한다. 최종 후보는 기존 전체 Windows 검증도 별도로 확인한다.
+`frontend.yml`은 현재 2.1 작업 브랜치의 frontend와 native adapter를 검사한다. 실제 Core·GUI·최종 Windows 패키지 검증을 대신하지 않는다. private 저장소에서는 수동 실행만 허용한다. 최종 후보는 기존 전체 Windows 검증도 별도로 확인한다.
+
+D80: 실제 앱 개발 빌드 `actual-app-build-01`은 `b187d276`에서 `runtime_extension_request` 누락 E0599 두 건으로 종료했다. `cfg(test)`가 제품 메서드에 붙어 단위시험만 통과했다. 수정 후 같은 별도 identifier의 개발 앱 빌드 `actual-app-build-02`는 exit0이며 실행 파일 SHA256은 `09ed33e8f20f0aa0e0b01596fa7dea2e7164b4e62e24f6cd848cffeaf3e75dcd`다. CI에도 `cargo check --lib --locked`를 추가했다. 이 결과는 비시험 컴파일 근거이며 실제 Core·GUI 전체 동작 통과와 구분한다. 개발 앱의 identifier는 `io.agentgrid.desktop.integration210`으로 운영 앱과 다르며 최종 설치 패키지를 검증한 것은 아니다.
 
 MCP 기능 추가 후 `mcp-runtime-ui-03`은 새 관리·결과 패널·부모 수명과 기존 확장 회귀 44 PASS, 실패·skip 0, exit0이며 TypeScript 검사도 0이다. Windows headless Chromium의 합성 IPC 화면을 직접 확인하고 설정 동작과 runtime 조회 제어의 배치를 보완했다. 이 화면은 실제 Tauri/Core 연결 증거가 아니다. `conversation-native-05`는 기존 대화·컨텍스트와 새 expectedThreadId 경계를 포함해 124 PASS, 실패·ignored 0, Cargo0이다. `projection-red-06`의 정상 큰 미사용 schema 반례는 변경 전 코드에서 1 FAIL/Cargo101, 동일 inline 시험으로 수정한 `projection-green-07`은 16 PASS/0FAIL/0ignored/Cargo0이다. 각각의 근거 범위와 세부 원시 경로는 해당 MCP 사례 문서를 따른다.

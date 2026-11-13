@@ -445,7 +445,6 @@ impl ConversationConnection {
         self.0.detail.lock().map_err(|_| "대화 상세 스냅샷 상태 오류")?.take();
         Ok(true)
     }
-    #[cfg(test)]
     fn runtime_extension_request(&self, thread_id: &str, expected_thread_id: &str, request: runtime_extensions::RuntimeExtensionRequest) -> Result<Value, String> {
         if thread_id != expected_thread_id { return Err("검토한 대화가 변경되어 MCP 요청을 보내지 않았습니다. 현재 대화를 다시 확인하세요.".into()); }
         runtime_extensions::validate(thread_id, &request)?;
@@ -489,6 +488,7 @@ impl ConversationConnection {
             Endpoint::Unavailable => Err("Test fixture has no MCP runtime endpoint".into()),
         }
     }
+    #[cfg(test)]
     pub(crate) fn request(&self, thread_id: &str, cwd: &Path, request: ConversationRequest) -> Result<Value, String> {
         self.request_context(thread_id,cwd,request,None)
     }
