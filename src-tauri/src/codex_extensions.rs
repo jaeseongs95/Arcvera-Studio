@@ -7,7 +7,7 @@ mod hooks;
 pub use hooks::{ExtensionHook, ExtensionHookError, ExtensionHooks};
 #[path = "codex_mcp.rs"]
 mod mcp;
-pub use mcp::{ExtensionMcpServers, McpTransport};
+pub use mcp::{ExtensionMcpServers, McpServerPatch, McpTransport};
 
 const MAX_ROWS: usize = 4096;
 // 실제 카탈로그는 9천 개를 넘는다. CLI 원문 8 MiB 제한도 별도로 유지한다.
@@ -58,6 +58,8 @@ pub struct ExtensionsSnapshot {
 #[serde(tag = "operation", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ExtensionMutation {
     AddMcpServer { name: String, transport: McpTransport },
+    EditMcpServer { name: String, expected_version: String, patch: McpServerPatch },
+    RemoveMcpServer { name: String, expected_version: String },
     InstallPlugin { selector: String },
     RemovePlugin { plugin_id: String },
     SetPluginEnabled { plugin_id: String, enabled: bool },
@@ -563,7 +565,7 @@ pub(crate) fn extensions_mutate_with_executable(exe: &OsString, cwd: Option<Stri
     let mut expected_plugin: Option<(String, Option<bool>)> = None;
     let mut expected_skill: Option<(PathBuf, Option<bool>)> = None;
     let mut expected_marketplace: Option<(String, bool)> = None;
-    let mut expected_mcp: Option<String> = None;
+    let mut expected_mcp: Option<(String, bool)> = None;
     let mut args: Vec<String> = Vec::new();
     match request {
         ExtensionMutation::AddMcpServer { name, transport } => {
@@ -573,7 +575,25 @@ pub(crate) fn extensions_mutate_with_executable(exe: &OsString, cwd: Option<Stri
                 mcp::add(&directory, &name, &transport, &mut |method, params| rpc.call(method, params))
             });
             if connected { result?; } else { return Err(mcp::safe_error("MCP connection", &result.unwrap_err())); }
-            expected_mcp = Some(name);
+            expected_mcp = Some((name, true));
+        }
+        ExtensionMutation::EditMcpServer { name, expected_version, patch } => {
+            let mut connected = false;
+            let result = with_rpc(exe, &directory, |rpc| {
+                connected = true;
+                mcp::edit(&directory, &name, &expected_version, &patch, &mut |method, params| rpc.call(method, params))
+            });
+            if connected { result?; } else { return Err(mcp::safe_error("MCP connection", &result.unwrap_err())); }
+            expected_mcp = Some((name, true));
+        }
+        ExtensionMutation::RemoveMcpServer { name, expected_version } => {
+            let mut connected = false;
+            let result = with_rpc(exe, &directory, |rpc| {
+                connected = true;
+                mcp::remove(&directory, &name, &expected_version, &mut |method, params| rpc.call(method, params))
+            });
+            if connected { result?; } else { return Err(mcp::safe_error("MCP connection", &result.unwrap_err())); }
+            expected_mcp = Some((name, false));
         }
         ExtensionMutation::InstallPlugin { selector } => {
             plugin_selector(&selector)?;
@@ -639,8 +659,8 @@ pub(crate) fn extensions_mutate_with_executable(exe: &OsString, cwd: Option<Stri
         }
     }
     let result = snapshot(exe, &directory, cwd.as_deref(), None);
-    if let Some(name) = expected_mcp {
-        if !result.mcp_servers.as_ref().is_some_and(|servers| servers.items.iter().any(|server| server.name == name)) {
+    if let Some((name, present)) = expected_mcp {
+        if !result.mcp_servers.as_ref().is_some_and(|servers| servers.items.iter().any(|server| server.name == name) == present) {
             return Err("MCP 설정 저장 후 목록을 확인하지 못했습니다. 저장되었을 수 있으니 재시도 전에 새로 고침하세요.".into());
         }
     }

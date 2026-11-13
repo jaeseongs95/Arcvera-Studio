@@ -25,7 +25,7 @@ jobs:
         run: npm run build
       - run: npx playwright install chromium
       - name: Context and extension frontend regressions
-        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/mcp-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
+        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/mcp-manager.spec.ts tests/mcp-runtime.spec.ts tests/extensions.spec.ts --reporter=line,junit
         env:
           PLAYWRIGHT_JUNIT_OUTPUT_FILE: artifacts/frontend-validation/junit.xml
           AGENT_GRID_TEST_OUTPUT: artifacts/frontend-validation/results
@@ -35,5 +35,46 @@ jobs:
         with:
           name: desktop-frontend-validation
           path: artifacts/frontend-validation/
+          if-no-files-found: warn
+          retention-days: 14
+  native-adapters:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - name: Generate required license resource
+        run: node scripts/notices.mjs
+      - run: npm run build
+      - name: MCP and conversation adapter unit checks
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
+          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::')) {
+            $name = $filter.Replace(':', '-').Trim('-')
+            cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Preserve native unit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-native-adapter-validation
+          path: artifacts/native-adapters/
           if-no-files-found: warn
           retention-days: 14

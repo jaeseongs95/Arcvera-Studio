@@ -40,6 +40,8 @@ pub enum ConversationRequest {
     ContextStatus,
     ContextSettings,
     PermissionStatus,
+    ReloadMcp { expected_thread_id: String },
+    McpStatus { expected_thread_id: String, server_name: String, cursor: Option<String> },
     SetContextWindow { #[serde(deserialize_with="context::nullable_window")] model_context_window: Option<i64>, #[serde(deserialize_with="context::nullable_window")] expected_model_context_window: Option<i64> },
     Compact,
     Page { cursor: Option<String> },
@@ -444,6 +446,49 @@ impl ConversationConnection {
         Ok(true)
     }
     #[cfg(test)]
+    fn runtime_extension_request(&self, thread_id: &str, expected_thread_id: &str, request: runtime_extensions::RuntimeExtensionRequest) -> Result<Value, String> {
+        if thread_id != expected_thread_id { return Err("검토한 대화가 변경되어 MCP 요청을 보내지 않았습니다. 현재 대화를 다시 확인하세요.".into()); }
+        runtime_extensions::validate(thread_id, &request)?;
+        let mut state = self.0.context_settings.try_lock().map_err(|_| "이 세션의 설정 또는 MCP 조회·변경 요청이 이미 진행 중입니다.")?;
+        state.bind_thread(thread_id)?;
+        live(&self.0, &AtomicBool::new(false))?;
+        if matches!(request, runtime_extensions::RuntimeExtensionRequest::ReloadMcp {}) {
+            let status = self.context_status(thread_id)?;
+            let (_, _, pending, complete) = self.question_snapshot()?;
+            if status["connected"] != true || status["active"] != false || status["compacting"] != false
+                || status["reason"] == "closing" || self.0.unknown.load(Ordering::Acquire) || !complete || !pending.is_empty() {
+                return Err("대화의 연결·작업·승인 상태를 확인한 뒤 MCP를 다시 연결할 수 있습니다. 요청하지 않았습니다.".into());
+            }
+        }
+        let deadline = Instant::now() + RPC_TIMEOUT;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let transport = Arc::new(Mutex::new(Transport::default()));
+        let _watch = DeadlineWatch::start(Arc::new(Mutex::new(Some(deadline))), transport.clone(), cancelled.clone(), self.0.stopped.clone())?;
+        match &self.0.endpoint {
+            Endpoint::Shared(endpoint) => {
+                let mut proxy = endpoint.open_until(Some(cancelled.clone()), Some(deadline))
+                    .map_err(|_| "현재 대화의 MCP 관리 연결을 확인하지 못했습니다. 요청 결과는 미확인입니다.".to_owned())?;
+                transport.lock().map_err(|_| "MCP 연결 정리 상태 오류")?.proxy = proxy.job.as_ref().map(Arc::downgrade);
+                let result = (|| {
+                    let rpc = proxy.rpc.as_mut().ok_or("현재 대화의 MCP 연결을 찾을 수 없습니다.")?;
+                    rpc.cancelled = Some(cancelled.clone()); rpc.deadline = Some(deadline);
+                    let mut init = initialize(); init["capabilities"] = json!({"experimentalApi":true});
+                    rpc.call("initialize", init).map_err(|_| "MCP 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
+                    rpc.send(json!({"method":"initialized","params":{}})).map_err(|_| "MCP 관리 연결 초기화를 확인하지 못했습니다.".to_owned())?;
+                    live(&self.0, &cancelled)?;
+                    let value = runtime_extensions::exchange(rpc, thread_id, &request)?;
+                    live(&self.0, &cancelled)?;
+                    Ok(value)
+                })();
+                match (result, proxy.finish()) {
+                    (result, Ok(())) => result,
+                    (_, Err(_)) => Err("MCP 관리 연결 정리를 확인하지 못했습니다. 요청 결과를 자동 재시도하지 않습니다.".into()),
+                }
+            }
+            #[cfg(test)]
+            Endpoint::Unavailable => Err("Test fixture has no MCP runtime endpoint".into()),
+        }
+    }
     pub(crate) fn request(&self, thread_id: &str, cwd: &Path, request: ConversationRequest) -> Result<Value, String> {
         self.request_context(thread_id,cwd,request,None)
     }
@@ -453,6 +498,12 @@ impl ConversationConnection {
     }
     fn request_context(&self, thread_id: &str, cwd: &Path, request: ConversationRequest, send_context: Option<SendContext>) -> Result<Value, String> {
         validate_request(&request)?;
+        if let ConversationRequest::McpStatus { expected_thread_id, server_name, cursor } = &request {
+            return self.runtime_extension_request(thread_id, expected_thread_id, runtime_extensions::RuntimeExtensionRequest::McpStatus { server_name: server_name.clone(), cursor: cursor.clone() });
+        }
+        if let ConversationRequest::ReloadMcp { expected_thread_id } = &request {
+            return self.runtime_extension_request(thread_id, expected_thread_id, runtime_extensions::RuntimeExtensionRequest::ReloadMcp {});
+        }
         if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::PermissionStatus | ConversationRequest::SetContextWindow {..}) {
             return self.context_settings_request(thread_id, request);
         }
@@ -805,6 +856,7 @@ fn cursor(value: &Option<String>) -> Result<(), String> {
 }
 fn validate_request(request: &ConversationRequest) -> Result<(), String> {
     match request {
+        ConversationRequest::ReloadMcp { expected_thread_id } | ConversationRequest::McpStatus { expected_thread_id, .. } => valid_id(expected_thread_id),
         ConversationRequest::SetContextWindow {model_context_window,expected_model_context_window} => {context::validate_window(*model_context_window)?;context::validate_window(*expected_model_context_window)},
         ConversationRequest::Page {cursor: value} | ConversationRequest::Models {cursor: value} => cursor(value),
         ConversationRequest::Items {turn_id,cursor: value} => {valid_id(turn_id)?;cursor(value)},

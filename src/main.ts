@@ -1016,7 +1016,10 @@ const questionCenter = createQuestionCenter({ call, button: $<HTMLButtonElement>
 document.body.append(questionCenter.element);
 $('.sidebar').append(weeklyUsage.element);
 bindText($('#extensions-open-label'), '플러그인·스킬·Hook', 'Plugins, skills & hooks');
-$('#extensions-open').onclick = () => extensionsManager.open(selectedProjectCwd());
+$('#extensions-open').onclick = () => {
+  const selected = active && isVisible(active) ? sessions.get(active) : undefined;
+  extensionsManager.open(selectedProjectCwd(), selected?.active && selected.threadId ? { id: selected.id, generation: selected.generation, threadId: selected.threadId, title: selected.title } : undefined);
+};
 const attachmentStorage = createAttachmentStorage(call, id => sessions.get(id)?.title);
 $('#attachment-storage-open').onclick = () => attachmentStorage.open();
 const executableSettings = createExecutableSettings(async <T>(command: string, args?: Record<string, unknown>) => {

@@ -4,6 +4,15 @@ const SETTINGS: &str = "thread/settings/update";
 
 #[derive(Default)]
 pub(super) struct State { thread: Option<String>, pending: Option<Option<i64>> }
+impl State {
+    pub(super) fn bind_thread(&mut self, thread_id: &str) -> Result<(), String> {
+        if self.thread.as_deref().is_some_and(|thread| thread != thread_id) {
+            return Err("다른 대화의 컨텍스트 설정을 재사용하지 않았습니다.".into());
+        }
+        self.thread.get_or_insert_with(|| thread_id.to_owned());
+        Ok(())
+    }
+}
 pub(super) fn nullable_window<'de,D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i64>,D::Error> { Option::<i64>::deserialize(deserializer) }
 pub(super) fn validate_window(value: Option<i64>) -> Result<(),String> {
     if value.is_some_and(|value| !(1..=MAX_CONTEXT_INTEGER).contains(&value)) {Err("컨텍스트 크기는 정확하게 표현할 수 있는 양의 정수여야 합니다.".into())} else {Ok(())}
@@ -28,8 +37,7 @@ impl ConversationConnection {
         // Bounded concurrency: a second request never waits behind network I/O.
         // This lock belongs to this session connection, not another session.
         let mut state=self.0.context_settings.try_lock().map_err(|_|"이 세션의 컨텍스트 설정 요청이 이미 진행 중입니다.")?;
-        if state.thread.as_deref().is_some_and(|thread|thread!=thread_id) {return Err("다른 대화의 컨텍스트 설정을 재사용하지 않았습니다.".into());}
-        state.thread.get_or_insert_with(||thread_id.to_owned());
+        state.bind_thread(thread_id)?;
         live(&self.0,&AtomicBool::new(false))?;
         let deadline=Instant::now()+RPC_TIMEOUT;
         let cancelled=Arc::new(AtomicBool::new(false)); let transport=Arc::new(Mutex::new(Transport::default()));

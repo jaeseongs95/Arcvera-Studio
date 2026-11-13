@@ -1,5 +1,7 @@
 # Desktop 2.1.0 사전 검증 사례
 
+[English](verification-cases.md) · 한국어
+
 2026-11-14 KST. 실행 전 정의한다. 모든 사례는 현재 NOT_RUN이며, CLI 담당의 계약·실행물 전달 뒤 구체 입력과 예상 wire를 고정한다. 기존 runner와 시험을 재사용하고, 모의 경계와 실제 Core·GUI 실행을 분리해 기록한다.
 
 | ID | 요구·실제 진입점 | 입력·실패 경계 | 통과 조건·증거 |
@@ -33,3 +35,5 @@ P06-H1 (D77, 실행 전 추가): 기존 extensions Playwright fixture에서 `ena
 | 확장·MCP 영향 회귀 | `d77-regression/run.log`, exit 0, 27 PASS, 실패·skip 0. `typecheck.exit.txt` 0 | 실제 feature gate·현재 thread 적용·MCP discovery·캐시 구성 조회·최종 패키지는 미검증 |
 
 `frontend.yml`은 현재 2.1 작업 브랜치의 frontend 변경을 검증하며 Rust/Core·최종 Windows 패키지 검증을 대신하지 않는다. private 저장소에서는 수동 실행만 허용한다. 최종 후보는 기존 전체 Windows 검증도 별도로 확인한다.
+
+MCP 기능 추가 후 `mcp-runtime-ui-03`은 새 관리·결과 패널·부모 수명과 기존 확장 회귀 44 PASS, 실패·skip 0, exit0이며 TypeScript 검사도 0이다. Windows headless Chromium의 합성 IPC 화면을 직접 확인하고 설정 동작과 runtime 조회 제어의 배치를 보완했다. 이 화면은 실제 Tauri/Core 연결 증거가 아니다. `conversation-native-05`는 기존 대화·컨텍스트와 새 expectedThreadId 경계를 포함해 124 PASS, 실패·ignored 0, Cargo0이다. `projection-red-06`의 정상 큰 미사용 schema 반례는 변경 전 코드에서 1 FAIL/Cargo101, 동일 inline 시험으로 수정한 `projection-green-07`은 16 PASS/0FAIL/0ignored/Cargo0이다. 각각의 근거 범위와 세부 원시 경로는 해당 MCP 사례 문서를 따른다.

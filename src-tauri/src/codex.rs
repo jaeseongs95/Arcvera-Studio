@@ -44,6 +44,8 @@ pub use catalog::{catalog_list, catalog_list_with_executable, catalog_preview, c
 
 #[path = "codex_extensions.rs"]
 mod extensions;
+#[path = "codex_runtime_extensions.rs"]
+mod runtime_extensions;
 pub use extensions::{ExtensionMutation, ExtensionsSnapshot};
 pub(crate) use extensions::{extension_admission, extensions_list_with_executable, extensions_list_with_catalog_query, extensions_mutate_with_executable, ExtensionPermit};
 

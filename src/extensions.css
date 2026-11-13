@@ -1,3 +1,7 @@
 .extensions-tabs{flex-wrap:wrap}
 .extensions-form textarea{font:inherit;font-size:11px;width:100%;padding:9px;background:#111722;border:1px solid #3a4359;border-radius:5px;color:#dce1ed;resize:vertical;min-height:60px}
 #extensions-mcp-form [hidden]{display:none}
+#extensions-mcp-clear-env, #extensions-mcp-clear-bearer { width: auto; margin-right: 0.5rem; }
+#extensions-mcp-runtime{margin-top:12px;padding-top:12px;border-top:1px solid #3a4359}
+#extensions-mcp-runtime ul{max-height:180px;overflow:auto;overflow-wrap:anywhere;padding-left:20px}
+#extensions-mcp-runtime .quiet-button{margin:4px 4px 0 0}

@@ -1,4 +1,5 @@
-import { bindAttribute, bindText, t, unbindText } from './i18n';
+import { bindAttribute, bindText, onLanguageChange, t, unbindText } from './i18n';
+import { createMcpRuntimePanel, type McpRuntimeTarget } from './mcp-runtime';
 import './extensions.css';
 
 export interface ExtensionPlugin {
@@ -15,8 +16,8 @@ export interface ExtensionHook {
   enabled: boolean; isManaged: boolean; currentHash: string; trustStatus: 'managed' | 'untrusted' | 'trusted' | 'modified';
 }
 export interface ExtensionHooks { items: ExtensionHook[]; warnings: string[]; errors: { path: string; message: string }[] }
-export interface ExtensionMcpServer { name: string; transport: 'stdio' | 'streamableHttp' | 'unknown'; enabled: boolean; configuredIn: string[] }
-export interface ExtensionMcpServers { items: ExtensionMcpServer[]; userFile: string }
+export interface ExtensionMcpServer { name: string; transport: 'stdio' | 'streamableHttp' | 'unknown'; enabled: boolean; configuredIn: string[]; editable?: boolean }
+export interface ExtensionMcpServers { items: ExtensionMcpServer[]; userFile: string; configVersion?: string }
 export interface ExtensionsSnapshot {
   executable: string; cwd: string | null;
   plugins: { installed: ExtensionPlugin[]; available: ExtensionPlugin[] } | null;
@@ -41,7 +42,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
   // Static markup only. CLI metadata and user input are inserted as text below.
   dialog.innerHTML = `<div class="dialog-heading"><div><span class="eyebrow" id="extensions-eyebrow"></span><h2 id="extensions-title"></h2></div><button id="extensions-close" class="icon-button">×</button></div>
     <p id="extensions-description"></p>
-    <dl class="extensions-context"><dt id="extensions-executable-label"></dt><dd id="extensions-executable"></dd><dt id="extensions-project-label"></dt><dd id="extensions-project"></dd></dl>
+    <dl class="extensions-context"><dt id="extensions-executable-label"></dt><dd id="extensions-executable"></dd><dt id="extensions-project-label"></dt><dd id="extensions-project"></dd><dt id="extensions-session-label"></dt><dd id="extensions-session"></dd></dl>
     <div class="extensions-tabs" role="tablist"><button id="extensions-tab-plugins" role="tab" aria-controls="extensions-content" data-tab="plugins"></button><button id="extensions-tab-skills" role="tab" aria-controls="extensions-content" data-tab="skills"></button><button id="extensions-tab-hooks" role="tab" aria-controls="extensions-content" data-tab="hooks"></button><button id="extensions-tab-marketplaces" role="tab" aria-controls="extensions-content" data-tab="marketplaces"></button><button id="extensions-tab-mcpServers" role="tab" aria-controls="extensions-content" data-tab="mcpServers"></button></div>
     <div class="extensions-tools"><label for="extensions-search" id="extensions-search-label"></label><input id="extensions-search" type="search" maxlength="200" autocomplete="off"/><button id="extensions-plugin-discover" class="quiet-button"></button><button id="extensions-plugin-search" class="quiet-button" hidden></button><button id="extensions-refresh" class="quiet-button"></button></div>
     <div id="extensions-status" role="status" aria-live="polite"></div><div id="extensions-error" class="inline-error" role="alert" hidden></div>
@@ -49,8 +50,8 @@ export function createExtensionsManager(host: ExtensionsHost) {
       <form id="extensions-skill-form" class="extensions-form" hidden><h3 id="extensions-import-title"></h3><label for="extensions-skill-source" id="extensions-skill-source-label"></label><div class="extensions-picker"><input id="extensions-skill-source" readonly/><button type="button" id="extensions-skill-choose" class="quiet-button"></button></div><label for="extensions-skill-name" id="extensions-skill-name-label"></label><input id="extensions-skill-name" maxlength="64" pattern="[a-z0-9_][a-z0-9_\\-]{0,63}" required/><small id="extensions-skill-name-help"></small><label for="extensions-skill-scope" id="extensions-skill-scope-label"></label><select id="extensions-skill-scope"><option value="user" id="extensions-scope-user"></option><option value="project" id="extensions-scope-project"></option></select><small id="extensions-skill-destination"></small><button id="extensions-skill-import" class="primary-button" type="submit"></button></form>
       <form id="extensions-marketplace-form" class="extensions-form" hidden><h3 id="extensions-marketplace-title"></h3><label for="extensions-marketplace-source" id="extensions-marketplace-source-label"></label><input id="extensions-marketplace-source" maxlength="4096" required/><label for="extensions-marketplace-ref" id="extensions-marketplace-ref-label"></label><input id="extensions-marketplace-ref" maxlength="200"/><button id="extensions-marketplace-add" class="primary-button" type="submit"></button></form>
       <form id="extensions-mcp-form" class="extensions-form" hidden autocomplete="off"><h3 id="extensions-mcp-title"></h3><small id="extensions-mcp-scope"></small><label for="extensions-mcp-name" id="extensions-mcp-name-label"></label><input id="extensions-mcp-name" maxlength="128" required/><label for="extensions-mcp-transport" id="extensions-mcp-transport-label"></label><select id="extensions-mcp-transport"><option value="stdio">STDIO</option><option value="streamableHttp">Streamable HTTP</option></select>
-        <div id="extensions-mcp-stdio"><label for="extensions-mcp-command" id="extensions-mcp-command-label"></label><input id="extensions-mcp-command" maxlength="4096"/><label for="extensions-mcp-args" id="extensions-mcp-args-label"></label><textarea id="extensions-mcp-args" maxlength="65536" rows="3">[]</textarea><small id="extensions-mcp-args-help"></small><label for="extensions-mcp-env" id="extensions-mcp-env-label"></label><input id="extensions-mcp-env" type="password" maxlength="65536" autocomplete="new-password"/><small id="extensions-mcp-env-help"></small></div>
-        <div id="extensions-mcp-http" hidden><label for="extensions-mcp-url" id="extensions-mcp-url-label"></label><input id="extensions-mcp-url" maxlength="8192"/><label for="extensions-mcp-bearer" id="extensions-mcp-bearer-label"></label><input id="extensions-mcp-bearer" maxlength="256"/><small id="extensions-mcp-bearer-help"></small></div><button id="extensions-mcp-add" class="primary-button" type="submit"></button>
+        <div id="extensions-mcp-stdio"><label for="extensions-mcp-command" id="extensions-mcp-command-label"></label><input id="extensions-mcp-command" maxlength="4096"/><label for="extensions-mcp-args" id="extensions-mcp-args-label"></label><textarea id="extensions-mcp-args" maxlength="65536" rows="3">[]</textarea><small id="extensions-mcp-args-help"></small><label for="extensions-mcp-env" id="extensions-mcp-env-label"></label><input id="extensions-mcp-env" type="password" maxlength="65536" autocomplete="new-password"/><small id="extensions-mcp-env-help"></small><label id="extensions-mcp-clear-env-row" hidden><input type="checkbox" id="extensions-mcp-clear-env"/><span id="extensions-mcp-clear-env-label"></span></label></div>
+        <div id="extensions-mcp-http" hidden><label for="extensions-mcp-url" id="extensions-mcp-url-label"></label><input id="extensions-mcp-url" maxlength="8192"/><label for="extensions-mcp-bearer" id="extensions-mcp-bearer-label"></label><input id="extensions-mcp-bearer" maxlength="256"/><small id="extensions-mcp-bearer-help"></small><label id="extensions-mcp-clear-bearer-row" hidden><input type="checkbox" id="extensions-mcp-clear-bearer"/><span id="extensions-mcp-clear-bearer-label"></span></label></div><button id="extensions-mcp-add" class="primary-button" type="submit"></button><button id="extensions-mcp-cancel-edit" class="quiet-button" type="button" hidden></button>
       </form>
     </div></section>
     <div id="extensions-review" class="extensions-review" hidden><strong id="extensions-review-title"></strong><pre id="extensions-review-target"></pre><p id="extensions-review-scope"></p><div class="extensions-review-actions"><button id="extensions-review-cancel" class="quiet-button"></button><button id="extensions-review-confirm" class="primary-button"></button></div></div>
@@ -80,7 +81,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     ['#extensions-mcp-env-label', '환경변수 (선택 · JSON 객체)', 'Environment variables (optional JSON object)'], ['#extensions-mcp-env-help', '예: {"TOKEN":"value"}. 입력값은 검토 요약과 목록에 표시하지 않습니다.', 'Example: {"TOKEN":"value"}. Values are omitted from the review summary and inventory.'],
     ['#extensions-mcp-url-label', '서버 URL', 'Server URL'], ['#extensions-mcp-bearer-label', 'Bearer token 환경변수 이름 (선택)', 'Bearer token environment variable (optional)'],
     ['#extensions-mcp-bearer-help', '토큰 값이 아닌 환경변수 이름을 입력하세요.', 'Enter the environment variable name, not its token value.'], ['#extensions-mcp-add', '추가 검토', 'Review addition'],
-    ['#extensions-effect', '변경 후 새 세션에서 구성을 확인하세요. 열린 터미널은 재시작하지 않습니다.', 'Check the configuration in a new session after changes. Open terminals are not restarted.'],
+    ['#extensions-effect', '저장된 구성과 대화에 적용된 상태를 구분해 확인하세요. 열린 터미널은 재시작하지 않습니다.', 'Review saved configuration separately from a conversation’s applied state. Open terminals are not restarted.'],
   ]) text(selector, ko, en);
   bindAttribute($('#extensions-close'), 'aria-label', '확장 관리 닫기', 'Close extension manager');
   bindAttribute($('#extensions-search'), 'placeholder', '이름·설명·경로로 검색', 'Search names, descriptions and paths');
@@ -94,6 +95,11 @@ export function createExtensionsManager(host: ExtensionsHost) {
   let pendingRead: { token: number; cwd: string | null; catalogQuery: string | null } | undefined; let readPump: Promise<void> | undefined;
   let catalogMode = false; let loadedCatalogQuery: string | null = null;
   let pendingAction: Mutation | undefined;
+  let mcpEditing: { name: string; configVersion: string; transport: 'stdio' | 'streamableHttp' } | undefined;
+  let runtimeTarget: McpRuntimeTarget | undefined;
+  let runtimeOperation: Promise<unknown> | undefined;
+  let runtimePanel: ReturnType<typeof createMcpRuntimePanel> | undefined;
+  let runtimePanelKey: string | undefined;
   let exitRequested = false; let exitDrain: Promise<void> | undefined; let picker: Promise<string | null> | undefined;
   const current = (token: number) => dialog.open && token === version;
   const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -113,13 +119,14 @@ export function createExtensionsManager(host: ExtensionsHost) {
       updateDestination();
     }
     updateCatalogControls();
+    runtimePanel?.setDisabled(blocked || !!runtimeOperation);
   }
   function cancelReview() { pendingAction = undefined; $('#extensions-review').hidden = true; }
   function review(request: Mutation, target: string, ko: string, en: string, scopeKo: string, scopeEn: string) {
     if (busy || exitRequested) return;
     pendingAction = request; text('#extensions-review-title', ko, en); $('#extensions-review-target').textContent = target;
     text('#extensions-review-scope', scopeKo, scopeEn); $('#extensions-review').hidden = false;
-    const destructive = request.operation === 'removePlugin' || request.operation === 'removeMarketplace';
+    const destructive = request.operation === 'removePlugin' || request.operation === 'removeMarketplace' || request.operation === 'removeMcpServer';
     $('#extensions-review-confirm').className = destructive ? 'danger-button' : 'primary-button';
     text('#extensions-review-confirm', destructive ? '제거 확인' : '실행', destructive ? 'Confirm removal' : 'Apply');
     $('#extensions-review-confirm').focus();
@@ -155,6 +162,10 @@ export function createExtensionsManager(host: ExtensionsHost) {
     const button = document.createElement('button'); button.id = id; button.type = 'button'; button.className = 'quiet-button'; bindText(button, ko, en); button.disabled = busy || exitRequested; button.onclick = run; parent.append(button);
   }
   function renderDetail(row?: Row) {
+    const panelKey = tab === 'mcpServers' && row ? JSON.stringify([version, runtimeTarget?.id, runtimeTarget?.generation, runtimeTarget?.threadId, row.id]) : undefined;
+    const retainedPanel = panelKey !== undefined && panelKey === runtimePanelKey ? runtimePanel : undefined;
+    if (!retainedPanel) runtimePanel?.dispose();
+    runtimePanel = undefined; runtimePanelKey = undefined;
     const detail = $('#extensions-detail'); detail.replaceChildren();
     if (!row) { const empty = document.createElement('p'); bindText(empty, '목록에서 항목을 선택하세요.', 'Select an item from the list.'); detail.append(empty); return; }
     const title = document.createElement('h3'); title.textContent = row.title;
@@ -172,7 +183,36 @@ export function createExtensionsManager(host: ExtensionsHost) {
       const server = row.item as ExtensionMcpServer;
       metadata(data, '연결 방식', 'Transport', server.transport);
       metadata(data, '설정 범위', 'Configured in', server.configuredIn.map(scope => ({ user: t('사용자', 'User'), project: t('프로젝트', 'Project'), profile: t('프로필', 'Profile'), managedOrOther: t('관리 또는 기타', 'Managed or other') })[scope] ?? scope).join(', '));
-      const state = document.createElement('p'); bindText(state, '저장된 구성입니다. 연결·인증 상태는 새 세션에서 확인하세요.', 'Saved configuration. Check connection and authentication in a new session.'); detail.append(state);
+      const state = document.createElement('p'); bindText(state, runtimeTarget ? '저장된 구성입니다. 아래에서 현재 대화의 연결·인증·도구 상태를 별도로 확인하세요.' : '저장된 구성입니다. 연결·인증 상태는 새 세션에서 확인하세요.', runtimeTarget ? 'Saved configuration. Inspect the current conversation’s connection, authentication and tools separately below.' : 'Saved configuration. Check connection and authentication in a new session.'); detail.append(state);
+      const configVersion = snapshot?.mcpServers?.configVersion;
+      if (server.editable === true && typeof configVersion === 'string' && configVersion && server.transport !== 'unknown') {
+        action(actions, 'extensions-mcp-edit', '서버 수정…', 'Edit server…', () => beginMcpEdit(server, configVersion));
+        const reviewConfiguration = (request: Mutation, ko: string, en: string) => {
+          if (mcpEditing) { showError(t('수정 중인 입력을 먼저 적용하거나 취소하세요.', 'Apply or cancel the current edit first.')); return; }
+          review(request, server.name, ko, en, '선택한 사용자 서버 구성만 변경합니다. 현재 대화의 도구 반영은 별도로 확인해야 합니다.', 'Changes only this user server configuration. Tool availability in the current conversation must be checked separately.');
+        };
+        action(actions, 'extensions-mcp-toggle', server.enabled ? '사용 안 함' : '사용 설정', server.enabled ? 'Disable' : 'Enable in configuration', () => reviewConfiguration({ operation: 'editMcpServer', name: server.name, expectedVersion: configVersion, patch: { enabled: !server.enabled } }, 'MCP 서버 사용 설정', 'Change MCP server configuration'));
+        action(actions, 'extensions-mcp-remove', '서버 구성 삭제…', 'Remove server configuration…', () => reviewConfiguration({ operation: 'removeMcpServer', name: server.name, expectedVersion: configVersion }, 'MCP 서버 구성을 삭제할까요?', 'Remove this MCP server configuration?'));
+      } else {
+        const readonly = document.createElement('p'); bindText(readonly, '이 구성의 안전한 수정 범위를 확인하지 못해 읽기 전용으로 표시합니다.', 'This configuration is read-only because its safe editing scope could not be confirmed.'); detail.append(readonly);
+      }
+      const target = runtimeTarget ? { ...runtimeTarget } : undefined;
+      const token = version;
+      runtimePanel = retainedPanel ?? createMcpRuntimePanel({
+        target, serverName: server.name,
+        onReload: () => {
+          if (!target || !current(token) || runtimeOperation || busy || exitRequested) return;
+          if (mcpEditing) { showError(t('수정 중인 입력을 먼저 적용하거나 취소하세요.', 'Apply or cancel the current edit first.')); return; }
+          review({ operation: 'reloadMcpRuntime', target, serverName: server.name }, target.title,
+            '현재 대화의 MCP를 다시 연결할까요?', 'Reconnect MCP for this conversation?',
+            '현재 저장된 MCP 구성을 이 대화에 다시 연결하도록 요청합니다. 접수는 연결·도구 준비 완료가 아니며, 다른 대화와 터미널은 재시작하지 않습니다.',
+            'Requests reconnection using the saved MCP configuration for this conversation. Acceptance does not confirm connection or tool readiness. Other conversations and terminals are not restarted.');
+        },
+        onInspect: cursor => { if (target && current(token)) void runRuntimeRequest(target, server.name, 'status', cursor); },
+      });
+      runtimePanelKey = panelKey;
+      runtimePanel.element.id = 'extensions-mcp-runtime';
+      runtimePanel.setDisabled(busy || exitRequested || !!runtimeOperation);
     } else if (tab === 'skills') {
       const skill = row.item as ExtensionSkill;
       const description = document.createElement('p'); description.textContent = preview(skill.description); detail.append(description);
@@ -204,6 +244,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       action(actions, 'extensions-marketplace-remove', '등록 제거…', 'Remove registration…', () => review({ operation: 'removeMarketplace', name: marketplace.name }, marketplace.name, '마켓플레이스 등록을 제거할까요?', 'Remove this marketplace registration?', ...userScope));
     }
     detail.prepend(title); detail.append(data, actions);
+    if (runtimePanel) detail.append(runtimePanel.element);
   }
   function renderList() {
     const query = search.value.trim().toLocaleLowerCase(); const filtered = rows().filter(row => !query || row.searchable.some(field => field.toLocaleLowerCase().includes(query)));
@@ -232,6 +273,9 @@ export function createExtensionsManager(host: ExtensionsHost) {
     text('#extensions-more', limits[tab] < 250 ? '50개 더 보기' : '다음 항목', limits[tab] < 250 ? 'Show 50 more' : 'Next entries');
     $('#extensions-range').textContent = filtered.length ? `${starts[tab] + 1}–${starts[tab] + visible.length} / ${filtered.length}` : '';
     renderDetail(visible.find(row => row.id === selections[tab]));
+    text('#extensions-session-label', 'MCP 요청 대상', 'MCP request target');
+    if (runtimeTarget) { unbindText($('#extensions-session')); $('#extensions-session').textContent = runtimeTarget.title; }
+    else text('#extensions-session', '선택한 실행 중 대화 없음', 'No running conversation selected');
     const sectionErrors = snapshot?.errors.filter(error => error.section === tab) ?? [];
     if (tab === 'hooks' && snapshot?.hooks && (snapshot.hooks.errors.length || snapshot.hooks.warnings.length)) {
       const diagnostics = document.createElement('p'); diagnostics.id = 'extensions-hook-diagnostics';
@@ -242,7 +286,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     $('#extensions-content').setAttribute('aria-labelledby', `extensions-tab-${tab}`);
     $('#extensions-mcp-form').hidden = tab !== 'mcpServers';
     $<HTMLButtonElement>('#extensions-mcp-add').disabled = busy || exitRequested || !snapshot?.mcpServers;
-    text('#extensions-mcp-scope', snapshot?.mcpServers ? `사용자 구성에 새 이름만 저장합니다: ${snapshot.mcpServers.userFile}` : '쓰기 가능한 사용자 구성을 확인하지 못했습니다. 새로 고침하세요.', snapshot?.mcpServers ? `New names only in user configuration: ${snapshot.mcpServers.userFile}` : 'Writable user configuration is unavailable. Refresh to retry.');
+    renderMcpMode();
     $('#extensions-skill-form').hidden = tab !== 'skills'; $('#extensions-marketplace-form').hidden = tab !== 'marketplaces';
     for (const button of dialog.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
       const selected = button.dataset.tab === tab; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
@@ -274,6 +318,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       const intent = pendingRead; pendingRead = undefined;
       try {
         if (mutation) { try { await mutation; } catch { /* Requery after the earlier operation settles. */ } }
+        if (runtimeOperation) { try { await runtimeOperation; } catch { /* The request boundary owns the outcome; read the current configuration afterwards. */ } }
         if (!current(intent.token) || exitRequested) continue;
         const value = await host.call<ExtensionsSnapshot>('extensions_list', { cwd: intent.cwd, ...(intent.catalogQuery ? { catalogQuery: intent.catalogQuery } : {}) });
         if (current(intent.token)) { loadedCatalogQuery = intent.catalogQuery; show(value); status(value.errors.length ? '일부 목록을 불러오지 못했습니다. 오류가 있는 탭을 확인하세요.' : '실제 CLI 구성을 불러왔습니다.', value.errors.length ? 'Some lists could not be loaded. Review the marked tabs.' : 'Loaded the actual CLI configuration.'); }
@@ -293,19 +338,44 @@ export function createExtensionsManager(host: ExtensionsHost) {
   }
   async function apply() {
     if (busy || exitRequested || !pendingAction) return;
+    if (pendingAction.operation === 'reloadMcpRuntime') {
+      const request = pendingAction; cancelReview();
+      const target = request.target as McpRuntimeTarget;
+      if (!runtimeTarget || target.id !== runtimeTarget.id || target.generation !== runtimeTarget.generation || target.threadId !== runtimeTarget.threadId) return;
+      await runRuntimeRequest(target, String(request.serverName), 'reload'); return;
+    }
     const request = pendingAction; const token = version; cancelReview(); $('#extensions-error').hidden = true; setBusy(true); status('변경하고 실제 구성을 다시 확인하는 중…', 'Applying changes and verifying the configuration…');
     const operation = host.call<ExtensionsSnapshot>('extensions_mutate', { cwd, request }); mutation = operation;
     try {
       const value = await operation;
-      if (current(token)) { if (request.operation === 'addMcpServer') clearMcpInputs(); if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
+      if (current(token)) { if (request.operation === 'addMcpServer' || request.operation === 'editMcpServer' && mcpEditing?.name === request.name) clearMcpInputs(); if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
       else host.notify('확장 구성이 변경되었습니다. 확장 관리를 다시 열어 확인하세요.', false, 'Extension configuration changed. Reopen the manager to review it.');
     } catch (error) {
       if (current(token)) { snapshot = undefined; renderList(); showError(error); status('변경을 완료하지 못했습니다. 오류와 실제 구성을 확인하세요.', 'The change could not be completed. Review the error and refresh the actual configuration.'); }
       else host.notify(`확장 구성 변경 실패: ${errorMessage(error)}`, true, `Could not change extension configuration: ${errorMessage(error)}`);
     } finally { if (mutation === operation) mutation = undefined; if (current(token)) setBusy(false); }
   }
+  async function runRuntimeRequest(target: McpRuntimeTarget, serverName: string, kind: 'reload' | 'status', cursor?: string) {
+    if (busy || exitRequested || runtimeOperation || !runtimeTarget || target.id !== runtimeTarget.id || target.generation !== runtimeTarget.generation || target.threadId !== runtimeTarget.threadId) return;
+    const token = version; cancelReview(); $('#extensions-error').hidden = true; setBusy(true); runtimePanel?.showPending();
+    status(kind === 'reload' ? '현재 대화의 MCP 재연결 접수를 확인하는 중…' : '현재 대화의 MCP 상태를 조회하는 중…', kind === 'reload' ? 'Checking acceptance of MCP reconnection for this conversation…' : 'Reading MCP state for this conversation…');
+    const request = kind === 'reload' ? { type: 'reloadMcp', expectedThreadId: target.threadId } : { type: 'mcpStatus', expectedThreadId: target.threadId, serverName, ...(cursor ? { cursor } : {}) };
+    const operation = host.call<unknown>('conversation_request', { id: target.id, generation: target.generation, request }); runtimeOperation = operation;
+    try {
+      const value = await operation;
+      if (current(token) && tab === 'mcpServers' && selections.mcpServers === serverName) {
+        if (!runtimePanel?.render(value)) throw Error(t('MCP 요청 결과 형식을 확인하지 못했습니다.', 'The MCP response format could not be confirmed.'));
+        status('MCP 요청 결과를 표시했습니다. 저장·재연결 접수·실제 도구 상태를 구분해 확인하세요.', 'MCP results are shown. Configuration persistence, reconnection acceptance, and observed tools are separate outcomes.');
+      }
+    } catch (error) {
+      if (current(token)) { runtimePanel?.showUnconfirmed(); showError(error); status('MCP 요청 결과는 미확인입니다. 자동으로 다시 요청하지 않습니다.', 'The MCP outcome is unconfirmed and will not be retried automatically.'); }
+    } finally {
+      if (runtimeOperation === operation) runtimeOperation = undefined;
+      if (current(token)) setBusy(false);
+    }
+  }
   $('#extensions-close').onclick = () => dialog.close();
-  dialog.onclose = () => { clearMcpInputs(); version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; };
+  dialog.onclose = () => { runtimePanel?.dispose(); runtimePanel = undefined; runtimePanelKey = undefined; runtimeTarget = undefined; clearMcpInputs(); version++; pendingRead = undefined; snapshot = undefined; cancelReview(); $('#extensions-list').replaceChildren(); $('#extensions-detail').replaceChildren(); $('#extensions-error').textContent = ''; $('#extensions-error').hidden = true; $('#extensions-more').hidden = true; $('#extensions-previous').hidden = true; $('#extensions-range').textContent = ''; };
   $('#extensions-refresh').onclick = load; search.oninput = () => { if (!busy && !exitRequested) { limits[tab] = 50; starts[tab] = 0; cancelReview(); renderList(); } };
   $('#extensions-plugin-discover').onclick = () => {
     if (busy || exitRequested) return;
@@ -356,20 +426,85 @@ export function createExtensionsManager(host: ExtensionsHost) {
     review({ operation: 'importSkill', sourcePath, name, scope }, `${sourcePath}\n→ ${destination}`, '스킬 폴더 가져오기', 'Import skill folder', scope === 'project' ? '현재 프로젝트에 새 폴더를 만듭니다. 기존 폴더는 덮어쓰지 않습니다.' : '사용자 스킬 폴더에 복사합니다. 모든 프로젝트에서 발견할 수 있습니다.', scope === 'project' ? 'Creates a new folder in the current project. Existing folders are never overwritten.' : 'Copies into the user skills directory, where all projects can discover it.');
   };
   function clearMcpInputs() {
+    mcpEditing = undefined;
     for (const id of ['name', 'command', 'env', 'url', 'bearer']) $<HTMLInputElement>(`#extensions-mcp-${id}`).value = '';
     $<HTMLTextAreaElement>('#extensions-mcp-args').value = '[]';
+    $<HTMLInputElement>('#extensions-mcp-clear-env').checked = false;
+    $<HTMLInputElement>('#extensions-mcp-clear-bearer').checked = false;
+    renderMcpMode();
+  }
+  function renderMcpMode() {
+    const editing = !!mcpEditing;
+    text('#extensions-mcp-title', editing ? 'MCP 서버 수정' : 'MCP 서버 추가', editing ? 'Edit MCP server' : 'Add an MCP server');
+    text('#extensions-mcp-name-label', editing ? '서버 이름' : '새 서버 이름', editing ? 'Server name' : 'New server name');
+    text('#extensions-mcp-add', editing ? '수정 검토' : '추가 검토', editing ? 'Review changes' : 'Review addition');
+    text('#extensions-mcp-cancel-edit', '수정 취소', 'Cancel editing');
+    text('#extensions-mcp-clear-env-label', '저장된 환경변수 설정 삭제', 'Remove the saved environment override');
+    text('#extensions-mcp-clear-bearer-label', '저장된 Bearer 환경변수 참조 삭제', 'Remove the saved bearer environment reference');
+    $<HTMLInputElement>('#extensions-mcp-name').readOnly = editing;
+    $('#extensions-mcp-cancel-edit').hidden = !editing;
+    $('#extensions-mcp-clear-env-row').hidden = !editing;
+    $('#extensions-mcp-clear-bearer-row').hidden = !editing;
+    for (const id of ['command', 'args', 'env', 'url', 'bearer']) bindAttribute($(`#extensions-mcp-${id}`), 'placeholder', editing ? '비워 두면 기존 값 유지' : '', editing ? 'Leave blank to keep the existing value' : '');
+    const file = snapshot?.mcpServers?.userFile;
+    text('#extensions-mcp-scope', !file ? '쓰기 가능한 사용자 구성을 확인하지 못했습니다. 새로 고침하세요.' : editing ? `보호된 기존 값은 표시하지 않습니다. 바꿀 값만 입력하세요. [] 또는 {}는 명시적으로 비웁니다. 저장 위치: ${file}` : `사용자 구성에 새 이름을 저장합니다: ${file}`, !file ? 'Writable user configuration is unavailable. Refresh to retry.' : editing ? `Protected existing values are not displayed. Enter only changes; [] or {} explicitly empties a value. File: ${file}` : `New server names are saved in user configuration: ${file}`);
+  }
+  function beginMcpEdit(server: ExtensionMcpServer, configVersion: string) {
+    if (busy || exitRequested || server.transport === 'unknown') return;
+    if (mcpEditing) { showError(t('수정 중인 입력을 먼저 적용하거나 취소하세요.', 'Apply or cancel the current edit first.')); return; }
+    clearMcpInputs(); cancelReview();
+    mcpEditing = { name: server.name, configVersion, transport: server.transport };
+    $<HTMLInputElement>('#extensions-mcp-name').value = server.name;
+    $<HTMLSelectElement>('#extensions-mcp-transport').value = server.transport;
+    $<HTMLTextAreaElement>('#extensions-mcp-args').value = '';
+    updateMcpTransport(); renderMcpMode();
+    $<HTMLInputElement>(server.transport === 'stdio' ? '#extensions-mcp-command' : '#extensions-mcp-url').focus();
   }
   function updateMcpTransport() {
     const stdio = $<HTMLSelectElement>('#extensions-mcp-transport').value === 'stdio';
     $('#extensions-mcp-stdio').hidden = !stdio; $('#extensions-mcp-http').hidden = stdio;
   }
   $('#extensions-mcp-form').oninput = cancelReview;
+  $('#extensions-mcp-cancel-edit').onclick = () => { if (!busy && !exitRequested) { cancelReview(); clearMcpInputs(); } };
   $('#extensions-mcp-transport').onchange = () => { cancelReview(); updateMcpTransport(); };
   $('#extensions-mcp-form').onsubmit = event => {
     event.preventDefault(); if (busy || exitRequested || !snapshot?.mcpServers) return;
     const name = $<HTMLInputElement>('#extensions-mcp-name').value;
     if (!name || name.length > 128 || [...name].some(char => !/[A-Za-z0-9]/.test(char) && !'-_:@/.'.includes(char))) { showError(t('서버 이름은 영문·숫자와 - _ : @ / . 문자로 128자 이내여야 합니다.', 'Use 1–128 letters, digits, or - _ : @ / . for the server name.')); return; }
     const type = $<HTMLSelectElement>('#extensions-mcp-transport').value;
+    if (mcpEditing) {
+      if (snapshot.mcpServers.configVersion !== mcpEditing.configVersion || !snapshot.mcpServers.items.some(server => server.name === mcpEditing!.name && server.editable === true)) {
+        showError(t('구성이 변경되어 전송하지 않았습니다. 입력을 보존했으니 수정 취소 후 대상을 다시 확인하세요.', 'The configuration changed, so nothing was sent. Your input is preserved; cancel editing and review the target again.')); return;
+      }
+      const transport: Record<string, unknown> = { type };
+      try {
+        if (type === 'stdio') {
+          const command = $<HTMLInputElement>('#extensions-mcp-command').value;
+          const args = $<HTMLTextAreaElement>('#extensions-mcp-args').value.trim();
+          const env = $<HTMLInputElement>('#extensions-mcp-env').value.trim();
+          const clearEnv = $<HTMLInputElement>('#extensions-mcp-clear-env').checked;
+          if (command) { if (!command.trim()) throw Error(); transport.command = command; }
+          if (args) { const parsed: unknown = JSON.parse(args); if (!Array.isArray(parsed) || !parsed.every(value => typeof value === 'string')) throw Error(); transport.args = parsed; }
+          if (env) { const parsed: unknown = JSON.parse(env); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Object.values(parsed).every(value => typeof value === 'string') || clearEnv) throw Error(); transport.env = parsed; }
+          if (clearEnv) transport.clearEnv = true;
+          if (mcpEditing.transport !== type && !command) throw Error();
+        } else if (type === 'streamableHttp') {
+          const url = $<HTMLInputElement>('#extensions-mcp-url').value;
+          const bearer = $<HTMLInputElement>('#extensions-mcp-bearer').value;
+          const clearBearer = $<HTMLInputElement>('#extensions-mcp-clear-bearer').checked;
+          if (url) { const parsed = new URL(url); if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash) throw Error(); transport.url = url; }
+          if (bearer) { if (clearBearer) throw Error(); transport.bearerTokenEnvVar = bearer; }
+          if (clearBearer) transport.clearBearerTokenEnvVar = true;
+          if (mcpEditing.transport !== type && !url) throw Error();
+        } else throw Error();
+      } catch { showError(t('MCP 수정 입력 형식을 확인하세요. 전송 변경에는 새 명령 또는 URL이 필요하며 설정과 삭제를 동시에 요청할 수 없습니다.', 'Check the MCP changes. A transport switch requires a new command or URL, and a value cannot be set and cleared together.')); return; }
+      if (Object.keys(transport).length === 1) { showError(t('수정할 값이나 삭제할 설정을 선택하세요.', 'Enter a change or select an override to remove.')); return; }
+      const switched = mcpEditing.transport !== type;
+      const scopeKo = switched ? type === 'stdio' ? '기존 HTTP 인증·헤더·OAuth 설정을 삭제하고 STDIO로 바꿉니다.' : '기존 STDIO 실행·인수·환경·작업폴더 설정을 삭제하고 HTTP로 바꿉니다.' : '입력한 값만 변경하고 나머지 기존 설정은 유지합니다.';
+      const scopeEn = switched ? type === 'stdio' ? 'Removes the existing HTTP authentication, headers and OAuth settings when switching to STDIO.' : 'Removes the existing STDIO command, arguments, environment and working-directory settings when switching to HTTP.' : 'Changes only supplied fields and preserves other existing settings.';
+      review({ operation: 'editMcpServer', name: mcpEditing.name, expectedVersion: mcpEditing.configVersion, patch: { transport } }, `${mcpEditing.name} · ${type}`, 'MCP 서버 수정', 'Edit MCP server', `${scopeKo} 현재 대화의 반영은 별도로 확인하세요.`, `${scopeEn} Check the current conversation separately.`);
+      return;
+    }
     let transport: Record<string, unknown>;
     try {
       if (type === 'stdio') {
@@ -394,12 +529,13 @@ export function createExtensionsManager(host: ExtensionsHost) {
     const source = $<HTMLInputElement>('#extensions-marketplace-source').value.trim(); const gitRef = $<HTMLInputElement>('#extensions-marketplace-ref').value.trim();
     if (source) review({ operation: 'addMarketplace', source, ...(gitRef ? { gitRef } : {}) }, `${source}${gitRef ? `\nref: ${gitRef}` : ''}`, '마켓플레이스 등록', 'Register marketplace', ...userScope);
   };
+  onLanguageChange(() => { if (dialog.open) renderList(); });
   return {
     beginExit(): Promise<void> {
       if (exitDrain) return exitDrain;
       // Close admission synchronously, before waiting for already accepted work.
       exitRequested = true; pendingRead = undefined; cancelReview(); setBusy(busy);
-      const accepted = [mutation, readPump, picker].flatMap(operation => operation ? [operation.then(() => undefined)] : []);
+      const accepted = [mutation, runtimeOperation, readPump, picker].flatMap(operation => operation ? [operation.then(() => undefined)] : []);
       exitDrain = Promise.allSettled(accepted).then(results => {
         const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
         if (failure) throw failure.reason;
@@ -407,11 +543,12 @@ export function createExtensionsManager(host: ExtensionsHost) {
       return exitDrain;
     },
     cancelExit() { exitRequested = false; exitDrain = undefined; setBusy(busy); },
-    open(projectCwd?: string) {
+    open(projectCwd?: string, target?: McpRuntimeTarget) {
       if (dialog.open || exitRequested) return;
       const nextCwd = projectCwd || null; if (cwd !== nextCwd) for (const key of TABS) delete selections[key];
       if (catalogMode) search.value = ''; catalogMode = false; loadedCatalogQuery = null;
       snapshot = undefined; cwd = nextCwd; version++; busy = false; for (const key of TABS) { limits[key] = 50; starts[key] = 0; } $('#extensions-executable').textContent = '…';
+      runtimeTarget = target && typeof target.id === 'string' && typeof target.threadId === 'string' && target.threadId && Number.isSafeInteger(target.generation) && target.generation > 0 ? { ...target } : undefined;
       if (cwd) { unbindText($('#extensions-project')); $('#extensions-project').textContent = cwd; } else text('#extensions-project', '사용자 구성 · 선택된 프로젝트 없음', 'User configuration · no project selected');
       renderList();
       dialog.showModal(); load(); $('#extensions-close').focus();

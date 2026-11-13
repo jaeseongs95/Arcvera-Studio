@@ -1537,3 +1537,21 @@
             drop(rpc);remove_staged_send_fixture(context,attachment,root);
         }
     }
+#[test]
+fn runtime_extensions_ipc_binds_the_reviewed_thread_and_rejects_extra_fields() {
+    let valid = json!({"type":"reloadMcp","expectedThreadId":"original"});
+    assert!(serde_json::from_value::<ConversationRequest>(valid.clone()).is_ok());
+    for extra in ["method", "threadId", "cwd"] {
+        let mut request = valid.clone(); request[extra] = json!("arbitrary");
+        assert!(serde_json::from_value::<ConversationRequest>(request).is_err());
+    }
+    assert!(serde_json::from_value::<ConversationRequest>(json!({"type":"reloadMcp"})).is_err());
+    let status = json!({"type":"mcpStatus","expectedThreadId":"original","serverName":"fixture","cursor":null});
+    assert!(serde_json::from_value::<ConversationRequest>(status).is_ok());
+    let control = ConversationConnection::new(Endpoint::Unavailable, Arc::new(AtomicBool::new(false)));
+    for request in [ConversationRequest::ReloadMcp { expected_thread_id: "different".into() },
+        ConversationRequest::McpStatus { expected_thread_id: "different".into(), server_name: "fixture".into(), cursor: None }] {
+        let error = control.request("original", Path::new("."), request).unwrap_err();
+        assert!(error.contains("검토한 대화가 변경"), "reject stale review before creating any runtime connection");
+    }
+}
