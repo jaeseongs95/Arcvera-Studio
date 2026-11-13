@@ -5,6 +5,11 @@ by project, arrange terminals in a resizable grid and return to saved work.
 
 **English** | [한국어](README.ko.md)
 
+This branch targets **2.1.0** and is not a published release. The latest published
+version remains 2.0.1. Core 1.1 context-composition metadata, paired integration,
+final packaging and independent release review remain in progress.
+See the [2.1 development scope](docs/development/2.1.0/scope.md).
+
 [Download](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest) ·
 [Quick start](#quick-start) · [User guide](docs/user-guide.md) ·
 [Development](docs/development.md)
