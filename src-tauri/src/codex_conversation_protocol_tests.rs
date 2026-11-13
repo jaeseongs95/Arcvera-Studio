@@ -400,7 +400,7 @@
             let mut socket = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
             let request = read_request(&mut socket);
             assert_eq!(request["method"], "initialize");
-            assert_eq!(request["params"]["clientInfo"]["version"], "2.0.0");
+            assert_eq!(request["params"]["clientInfo"]["version"], env!("CARGO_PKG_VERSION"));
             assert_eq!(request["params"]["capabilities"]["extensions"]["arcvera/core"]["version"], "1.0.0+fixture");
             reply(&mut socket, &request, json!({}));
         });
@@ -642,7 +642,7 @@
     }
     fn conversation_bootstrap(socket: &mut WebSocket<TcpStream>,cwd: &Path,compact: Option<Value>,initialize_interrupt: Option<Value>,passive_interrupt: Option<Value>) {
         let init=read_request(socket);assert_eq!(init["method"],"initialize");let mut initialized=supported_initialize();
-        assert_eq!(init["params"]["clientInfo"]["version"], "2.0.0");
+        assert_eq!(init["params"]["clientInfo"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(init["params"]["capabilities"]["extensions"]["arcvera/core"]["version"], "1.0.0+fixture");
         let malformed=initialize_interrupt.as_ref().is_some_and(|value|!value.is_boolean());
         if let Some(capability)=initialize_interrupt {initialized["supportsExpectedTurnInterrupt"]=capability;}reply(socket,&init,initialized);if malformed {return;}
