@@ -132,10 +132,10 @@ fn first_installation(value: &Value, mut metadata: impl FnMut(&Path) -> std::io:
     if socket.file_name() != Some(std::ffi::OsStr::new("app-server-control.sock"))
         || control.file_name() != Some(std::ffi::OsStr::new("app-server-control")) { return false; }
     let Some(home) = control.parent() else { return false; };
-    let name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let names = if cfg!(windows) { ["codex.exe", "arcvera.exe"] } else { ["codex", "arcvera"] };
     if !["app-server-daemon", "standalone"].iter().any(|package| {
         let current = home.join("packages").join(package).join("current");
-        managed == current.join("bin").join(name) || managed == current.join(name)
+        names.iter().any(|name| managed == current.join("bin").join(name) || managed == current.join(name))
     }) { return false; }
     // null 버전은 exe가 사라진 기존 current에서도 나온다. 고정 경로의 metadata만
     // 확인하고 존재·끊어진 링크·권한 오류는 preserving 시작과 CLI 원래 오류를 보존한다.

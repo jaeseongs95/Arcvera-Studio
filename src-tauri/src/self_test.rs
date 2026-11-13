@@ -734,6 +734,14 @@ pub fn run_codex_smoke() -> i32 {
         if let Some(controls) = report.controls.as_mut() {
             let ready = snapshots.iter().find(|info| started.iter().any(|original| original.id == info.id) && info.thread_id.as_ref().is_some_and(|id| Uuid::parse_str(id).is_ok()) && matches!(info.state.as_str(), "idle" | "running" | "waiting"));
             controls.run(&harness.engine, ready);
+            if diagnostic_terminal {
+                for original in &started {
+                    let output = harness.take_output(original)?;
+                    let bytes = serde_json::to_vec_pretty(&controls_terminal_snapshot(&original.id, &output)).map_err(|e| format!("encode local controls terminal diagnostic: {e}"))?;
+                    let path = directory.join(format!("controls-terminal-{}.json", original.id));
+                    std::fs::write(path, bytes).map_err(|e| format!("write local controls terminal diagnostic: {e}"))?;
+                }
+            }
         }
         harness.finish()?;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -752,6 +760,12 @@ pub fn run_codex_smoke() -> i32 {
     if let Err(error) = std::fs::write(&destination, text.as_bytes()) { eprintln!("write Codex smoke report: {error}"); return 2; }
     println!("{text}");
     if report.pass { 0 } else { 1 }
+}
+
+fn controls_terminal_snapshot(session_id: &str, output: &str) -> serde_json::Value {
+    let prefix: String = output.chars().take(8192).collect();
+    let redacted: String = redact_terminal(&prefix).chars().take(8192).collect();
+    serde_json::json!({"sessionId":session_id,"phase":"afterControls","redactedPrefix":redacted})
 }
 
 fn redact_terminal(text: &str) -> String {
@@ -800,8 +814,12 @@ mod tests {
         let report = std::env::temp_dir().join("opendiy-smoke-options.json");
         let mut args = vec!["opendiy".into(), "--codex-smoke".into(), "--report".into(), report.to_string_lossy().into_owned()];
         assert!(!super::codex_smoke_options(&args).unwrap().4);
+        assert!(!super::codex_smoke_options(&args).unwrap().2);
         args.push("--engine-controls".into());
         assert!(super::codex_smoke_options(&args).unwrap().4);
+        assert!(!super::codex_smoke_options(&args).unwrap().2);
+        args.push("--diagnostic-terminal".into());
+        assert!(super::codex_smoke_options(&args).unwrap().2);
         args.push("--engine-control".into());
         assert!(super::codex_smoke_options(&args).is_err());
     }
@@ -836,5 +854,16 @@ mod tests {
         assert!(result.contains("\x1b[31mError\x1b[0m"));
         for secret in ["abc.def", "secret", "sk-example-token", "capability"] { assert!(!result.contains(secret)); }
         assert!(result.ends_with("\nnext"));
+    }
+    #[test]
+    fn controls_terminal_diagnostic_is_redacted_bounded_and_identifies_phase() {
+        let output = format!("대기 token=secret Bearer abc.def {}", "한".repeat(9000));
+        let value = super::controls_terminal_snapshot("owned-fixture", &output);
+        assert_eq!(value["phase"], "afterControls");
+        assert_eq!(value["sessionId"], "owned-fixture");
+        let prefix = value["redactedPrefix"].as_str().unwrap();
+        assert!(prefix.chars().count() <= 8192);
+        assert!(prefix.starts_with("대기 "));
+        assert!(!prefix.contains("secret") && !prefix.contains("abc.def"));
     }
 }
