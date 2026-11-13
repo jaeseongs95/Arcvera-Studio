@@ -19,6 +19,8 @@ required-features = ["actual-updater-probe"]
 [features]
 # Explicit TEST component only, excluded from product builds.
 actual-updater-probe = ["tauri/test"]
+# Explicit real Core fixture checks; test-only code, excluded from product builds.
+actual-core-fixture = []
 
 [lib]
 name = "arcvera_studio_lib"

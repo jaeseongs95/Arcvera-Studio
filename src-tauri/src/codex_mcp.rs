@@ -279,7 +279,20 @@ fn editable_server<'a>(config: &'a Value, server_name: &str) -> Result<&'a Value
         }
     }
     let saved = found.filter(|value| value.is_object()).ok_or("사용자 base MCP 서버를 확인할 수 없습니다. 변경하지 않았습니다.")?;
-    if table(&config["config"])?.and_then(|servers| servers.get(server_name)) != Some(saved) {
+    let source = saved.as_object().unwrap();
+    let effective = table(&config["config"])?.and_then(|servers| servers.get(server_name)).and_then(Value::as_object);
+    // ceiling: accept only the three additive defaults observed in actual Core1.0.1.
+    // Keep the raw user object for patches/readback; never persist projected defaults.
+    let matches = effective.is_some_and(|effective| {
+        source.iter().all(|(key, value)| effective.get(key) == Some(value))
+            && effective.iter().all(|(key, value)| source.contains_key(key) || match key.as_str() {
+                "enabled" => value.as_bool() == Some(true),
+                "environment_id" => value.as_str() == Some("local"),
+                "tool_timeout_sec" => value.is_null(),
+                _ => false,
+            })
+    });
+    if !matches {
         return Err("MCP 실제 구성과 사용자 base 구성이 다릅니다. 변경하지 않았습니다.".into());
     }
     Ok(saved)
@@ -344,6 +357,31 @@ pub(super) fn remove(directory: &Path, server_name: &str, expected_version: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "actual-core-fixture")]
+    #[test]
+    fn actual_core_user_layer_semantics() {
+        let expected_home = std::path::PathBuf::from(env::var_os("ARCVERA_STUDIO_ACTUAL_CORE_HOME").expect("explicit owned Core fixture home required"));
+        assert!(expected_home.is_absolute());
+        assert_eq!(std::fs::canonicalize(&expected_home).unwrap(), std::fs::canonicalize(env::var_os("ARCVERA_HOME").expect("isolated Core home required")).unwrap());
+        let cli = env::var_os("ARCVERA_STUDIO_ACTUAL_CORE_EXE").expect("explicit public Core executable required");
+        let cwd = expected_home.parent().unwrap().join("project");
+        super::super::with_rpc(&cli, &cwd, |rpc| {
+            let config = read(&cwd, &mut |method, params| rpc.call(method, params))?;
+            let inventory = inventory(&config)?;
+            let targets: Vec<_> = inventory.items.iter().filter(|item| item.name.starts_with("desktop210_probe_")).collect();
+            assert!(!targets.is_empty(), "the isolated actual fixture must contain its prepared user MCP server");
+            for item in targets {
+                let saved = layers(&config)?.iter().find(|layer| layer["name"]["type"] == "user" && layer["name"]["profile"].is_null()).unwrap()["config"]["mcp_servers"][&item.name].as_object().unwrap();
+                let effective = config["config"]["mcp_servers"][&item.name].as_object().unwrap();
+                let keys: std::collections::BTreeSet<_> = saved.keys().chain(effective.keys()).collect();
+                let differences: Vec<_> = keys.into_iter().filter(|key| saved.get(*key) != effective.get(*key)).collect();
+                // Only field names and bounded DTO flags; never raw config values.
+                println!("actual Core MCP projection {}", json!({"name":item.name,"sourceKeys":saved.keys().collect::<Vec<_>>(),"effectiveKeys":effective.keys().collect::<Vec<_>>(),"differentKeys":differences,"transport":item.transport,"editable":item.editable}));
+                assert!(item.editable && item.transport == "stdio", "own user-only STDIO configuration must remain editable");
+            }
+            Ok(())
+        }).unwrap();
+    }
     fn config() -> Value { json!({"config":{},"layers":[{"name":{"type":"user","profile":null,"file":file()},"version":"v1","config":{}}]}) }
     fn file() -> String { env::temp_dir().join("mcp-fixture-config.toml").to_string_lossy().into_owned() }
     fn stdio() -> McpTransport { McpTransport::Stdio { command:"fixture-tool".into(),args:vec!["literal \"argument\"".into(),"".into()],env:BTreeMap::new() } }
@@ -443,6 +481,102 @@ mod tests {
             None => remove(Path::new("."), "server.name", expected_version, &mut rpc),
         };
         (result, requests)
+    }
+    fn with_observed_defaults(mut config: Value) -> Value {
+        let effective = config["config"]["mcp_servers"]["server.name"].as_object_mut().unwrap();
+        for (key, value) in [("enabled", json!(true)), ("environment_id", json!("local")), ("tool_timeout_sec", Value::Null)] {
+            effective.entry(key.to_string()).or_insert(value);
+        }
+        config
+    }
+    #[test]
+    fn observed_core_defaults_allow_inventory_edit_and_remove_without_persisting_defaults() {
+        let original = json!({"command":"fixture","args":["kept"],"env":{"TOKEN":"SECRET_SENTINEL"},"unknown":{"keep":true}});
+        let before = with_observed_defaults(saved(original.clone()));
+        let inventory = inventory(&before).unwrap();
+        let row = inventory.items.iter().find(|row| row.name == "server.name").unwrap();
+        assert!(row.editable && row.transport == "stdio");
+        let mut expected = original.clone(); expected["args"] = json!(["new"]);
+        let after = with_observed_defaults(after_change(&before, Some(expected.clone())));
+        let (result, requests) = run_change(before.clone(), "v1", Some(&patch(json!({"transport":{"type":"stdio","args":["new"]}}))), Ok(write_ok()), Ok(after));
+        result.unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1], ("config/value/write".into(), json!({"keyPath":"mcp_servers.\"server.name\"","value":expected,"mergeStrategy":"replace","filePath":file(),"expectedVersion":"v1"})));
+        assert!(!serde_json::to_string(&requests[1]).unwrap().contains("SIBLING_SENTINEL"));
+        let (result, requests) = run_change(before.clone(), "v1", None, Ok(write_ok()), Ok(after_change(&before, None)));
+        result.unwrap(); assert_eq!(requests.len(), 3); assert!(requests[1].1["value"].is_null());
+        assert_eq!(before["layers"][0]["config"]["mcp_servers"]["server.name"], original);
+    }
+    #[test]
+    fn observed_defaults_do_not_allow_other_differences_or_missing_source_values() {
+        let original = with_observed_defaults(saved(json!({"command":"fixture","args":["kept"],"env":{"TOKEN":"SECRET_SENTINEL"},"unknown":"UNKNOWN_SENTINEL"})));
+        let mut variants = Vec::new();
+        for (key, value) in [("enabled", json!(false)), ("enabled", json!("true")), ("enabled", Value::Null),
+            ("environment_id", json!("remote")), ("environment_id", json!(true)), ("environment_id", Value::Null),
+            ("tool_timeout_sec", json!(0)), ("tool_timeout_sec", json!("null")), ("tool_timeout_sec", json!(false)),
+            ("arbitrary", Value::Null), ("required", json!(false)), ("args", json!([])),
+            ("env", json!({"TOKEN":"CHANGED_SENTINEL"})), ("unknown", json!("CHANGED_SENTINEL"))] {
+            let mut config = original.clone(); config["config"]["mcp_servers"]["server.name"][key] = value; variants.push(config);
+        }
+        for key in ["command", "args", "env", "unknown"] {
+            let mut config = original.clone(); config["config"]["mcp_servers"]["server.name"].as_object_mut().unwrap().remove(key); variants.push(config);
+        }
+        for (key, value) in [("enabled", json!(false)), ("environment_id", json!("remote")), ("tool_timeout_sec", json!(3))] {
+            let mut config = original.clone(); config["layers"][0]["config"]["mcp_servers"]["server.name"][key] = value; variants.push(config);
+        }
+        for (key, value) in [("enabled", json!(true)), ("environment_id", json!("local")), ("tool_timeout_sec", Value::Null)] {
+            let mut config = original.clone();
+            config["layers"][0]["config"]["mcp_servers"]["server.name"][key] = value;
+            config["config"]["mcp_servers"]["server.name"].as_object_mut().unwrap().remove(key);
+            variants.push(config);
+        }
+        let mut missing_args = with_observed_defaults(saved(json!({"command":"fixture"})));
+        missing_args["config"]["mcp_servers"]["server.name"]["args"] = json!([]); variants.push(missing_args);
+        let patch = patch(json!({"enabled":false}));
+        for before in variants {
+            assert!(editable_server(&before, "server.name").is_err());
+            if let Ok(inventory) = inventory(&before) { assert!(!inventory.items.iter().find(|row| row.name == "server.name").unwrap().editable); }
+            for operation in [Some(&patch), None] {
+                let (result, requests) = run_change(before.clone(), "v1", operation, Ok(write_ok()), Ok(config()));
+                let error = result.unwrap_err(); assert!(!error.contains("SENTINEL")); assert_eq!(requests.len(), 1);
+            }
+        }
+    }
+    #[test]
+    fn observed_defaults_preserve_scope_version_and_complete_readback_guards() {
+        let original = json!({"command":"fixture","args":[],"env":{"TOKEN":"SECRET_SENTINEL"},"unknown":"UNKNOWN_SENTINEL"});
+        let before = with_observed_defaults(saved(original.clone()));
+        let patch = patch(json!({"transport":{"type":"stdio","args":["new"]}}));
+        let mut variants = Vec::new();
+        for kind in ["project", "system", "sessionFlags", "unknown"] {
+            let mut config = before.clone(); config["layers"].as_array_mut().unwrap().push(json!({"name":{"type":kind},"version":"other","config":{"mcp_servers":{"server.name":original}}})); variants.push(config);
+        }
+        let mut profile = before.clone(); profile["layers"][0]["name"]["profile"] = json!("other"); variants.push(profile);
+        let mut disabled = before.clone(); disabled["layers"][0]["disabledReason"] = json!("managed"); variants.push(disabled);
+        let mut duplicate = before.clone(); let layer = duplicate["layers"][0].clone(); duplicate["layers"].as_array_mut().unwrap().push(layer); variants.push(duplicate);
+        for config in variants {
+            for operation in [Some(&patch), None] {
+                let (result, requests) = run_change(config.clone(), "v1", operation, Ok(write_ok()), Ok(config.clone()));
+                assert!(result.is_err()); assert_eq!(requests.len(), 1);
+            }
+        }
+        for operation in [Some(&patch), None] {
+            let (result, requests) = run_change(before.clone(), "stale", operation, Ok(write_ok()), Ok(config()));
+            assert!(result.is_err()); assert_eq!(requests.len(), 1);
+        }
+        let mut expected = original; expected["args"] = json!(["new"]);
+        let after = with_observed_defaults(after_change(&before, Some(expected)));
+        let mut variants = Vec::new();
+        for key in ["env", "unknown"] {
+            let mut config = after.clone(); config["layers"][0]["config"]["mcp_servers"]["server.name"].as_object_mut().unwrap().remove(key); variants.push(config);
+            let mut config = after.clone(); config["config"]["mcp_servers"]["server.name"].as_object_mut().unwrap().remove(key); variants.push(config);
+        }
+        let mut sibling = after.clone(); sibling["layers"][0]["config"]["mcp_servers"].as_object_mut().unwrap().remove("sibling"); variants.push(sibling);
+        let mut default = after; default["config"]["mcp_servers"]["server.name"]["enabled"] = json!(false); variants.push(default);
+        for after in variants {
+            let (result, requests) = run_change(before.clone(), "v1", Some(&patch), Ok(write_ok()), Ok(after));
+            let error = result.unwrap_err(); assert!(!error.contains("SENTINEL")); assert_eq!(requests.len(), 3);
+        }
     }
     #[test]
     fn reviewed_version_conflict_blocks_edit_and_delete_without_a_write() {

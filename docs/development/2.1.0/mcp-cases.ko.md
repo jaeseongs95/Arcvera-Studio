@@ -50,3 +50,17 @@ Core `d6026cbd6157fa18d966031792c537ac383377ac`의 `codex-rs/config/src/mcp_type
 UI의 최초 새 기능 사례는 아직 없는 수정 버튼을 기다리다 timeout으로 실패했으며 `artifacts/mcp-ui-red/`에 보존했다. 구현 후 같은 UI 사례를 포함한 기존 추가·실패·exit와 신규 수정·삭제·전송 변경·stale/읽기 전용·secret 정산 10건이 `artifacts/mcp-ui-green/`에서 PASS, exit0이다. 이는 기능 추가 전의 부재와 구현 후 동작을 확인한 것으로, 제품에 이미 존재하던 결함을 소급 선언하지 않는다. TypeScript 검사도 exit0이었다. 이후 현재 thread UI 모듈 연결 변경은 다음 영향 회귀 실행에서 다시 확인한다. 실제 Core 저장·변경 후 도구 발견은 계속 NOT_RUN이다.
 
 이후 부모 연결·영문/한글 전환·조회 자료 보존·배치 보완을 포함한 `artifacts/mcp-runtime-ui-03/`의 관리/결과 패널/기존 확장 영향 회귀는 44 PASS, 실패·skip 0, exit0이고 TypeScript 검사도 0이다. 이는 여전히 합성 IPC 검증이며 실제 Core CAS·재로드·도구 호출 완료를 뜻하지 않는다.
+
+## D81 실제 Core 기본값 표현 차이: 수정 전 사례 정의
+
+부모의 격리 Core1.0.1 실행에서 새 STDIO 서버는 사용자 원본 키가 `[args,command,env]`, 최상위 키가 `[args,command,enabled,env,environment_id,tool_timeout_sec]`였고, 차이는 정확히 `enabled`/`environment_id`/`tool_timeout_sec`였다. transport는 stdio였지만 editable=false여서 실제 시험 `actual_core_user_layer_semantics`가 0 PASS/1 FAIL, Cargo101로 실패했다. 필드명만 기록한 자체 기술 근거는 `D:/codex/build/desktop210-integration-20261114/actual-mcp-red-01/stdout.log`다. 이 실패 시험의 입력·기대값은 유지한다.
+
+수정 전 정의한 합성 회귀 oracle:
+
+- D81-01: 사용자 원본의 모든 키·값이 같고 최상위에만 `enabled=true`, `environment_id="local"`, `tool_timeout_sec=null`이 추가된 서버는 editable이다. edit/remove가 기존 CAS와 정확 readback을 만족하면 성공하며, 추가 기본값은 사용자 원본이나 쓰기 payload에 복사하지 않는다. secret/unknown/sibling과 무관한 사용자 구성 전체를 보존한다.
+- D81-02: 세 추가 키의 비기본값·잘못된 타입, 임의 null/미허용 추가 키, 사용자 원본 키의 누락·변경(명시 기본값·secret·unknown 포함)은 editable=false이며 edit/remove mutation은 0회다.
+- D81-03: 같은 정상 기본값 표현에도 다른 계층/중복/비활성·profile 사용자 계층, stale version은 계속 mutation 0회다. 변경 후 secret/unknown/sibling 또는 기본값 표현이 잘못되면 성공으로 보고하지 않고 재시도하지 않는다.
+
+Core 정본 근거는 `codex-rs/app-server/src/config_manager_service.rs:169`의 typed 최상위 직렬화와 `config_layer.rs:59`의 계층 원본 반환, `codex-rs/config/src/mcp_types.rs:240`, `:283`, `:570`, `:617`의 세 기본값이다. 이번 허용은 실제 관측한 세 필드만 대상으로 한다. 누락 args의 `[]` 생성, timeout 별칭 등 다른 정상화 표현은 안전 동등성을 확인하지 못해 읽기 전용으로 남긴다. 사용자 base 단독·활성 계층, 정책/상위 계층 거절, CAS와 전체 사용자 구성 readback 검사는 완화하지 않는다. 구성 편집 가능성을 runtime 정책 허용이나 도구 실행 성공으로 해석하지 않는다.
+
+작성·인계 시점에는 새 시험이 NOT_RUN이었다. 이후 부모가 직렬 실행한 `actual-mcp-green-02`는 19 PASS/0 FAIL/0 ignored/Cargo0이다. 하나는 같은 실제 Core 읽기 oracle, 18개는 합성 RPC 회귀다. `actual-app-build-03` exit0 뒤 실제 WebView2/Tauri IPC의 `native-core101-03/native-mcp.json` 7개 사례가 통과했다. 사용자 한 서버의 add/edit/stale CAS/전송 전환/delete와 보호값 readback 범위이며 현재 thread 도구 재연결·호출, Core1.1.0, 최종 설치 패키지는 미검증이다. 시험 앱 exit0·운영 앱 PID/시작시각 보존 및 자체 Core1.0.1 daemon의 별도 종료를 확인했다.
