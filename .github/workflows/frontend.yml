@@ -1,0 +1,39 @@
+name: Desktop frontend validation
+
+on:
+  push:
+    branches: [feature/desktop-2.1.0-core110]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    # Private repositories execute validation only through workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Type-check and bundle the frontend
+        run: npm run build
+      - run: npx playwright install chromium
+      - name: Context and extension frontend regressions
+        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/mcp-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: artifacts/frontend-validation/junit.xml
+          AGENT_GRID_TEST_OUTPUT: artifacts/frontend-validation/results
+      - name: Preserve frontend evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-frontend-validation
+          path: artifacts/frontend-validation/
+          if-no-files-found: warn
+          retention-days: 14

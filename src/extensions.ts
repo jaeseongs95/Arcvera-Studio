@@ -144,7 +144,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     }
     if (tab === 'skills') return (snapshot.skills ?? []).map(item => ({ id: item.path, title: item.name, subtitle: item.description, searchable: [item.name, item.description, item.path, item.scope, item.pluginId ?? ''], item }));
     if (tab === 'mcpServers') return (snapshot.mcpServers?.items ?? []).map(item => ({ id: item.name, title: item.name, subtitle: `${item.transport} · ${item.enabled ? t('사용 설정됨', 'Configured enabled') : t('사용 안 함', 'Disabled')}`, searchable: [item.name, item.transport, ...item.configuredIn], item }));
-    if (tab === 'hooks') return (snapshot.hooks?.items ?? []).map(item => ({ id: item.key, title: item.eventName, subtitle: `${item.source} · ${item.enabled ? t('사용 중', 'Enabled') : t('사용 안 함', 'Disabled')} · ${hookTrust(item)}`, searchable: [item.key, item.eventName, item.sourcePath, item.source, item.pluginId ?? '', hookHandler(item)], item }));
+    if (tab === 'hooks') return (snapshot.hooks?.items ?? []).map(item => ({ id: item.key, title: item.eventName, subtitle: `${item.source} · ${item.enabled ? t('사용 설정됨', 'Configured enabled') : t('사용 안 함', 'Disabled')} · ${hookTrust(item)}`, searchable: [item.key, item.eventName, item.sourcePath, item.source, item.pluginId ?? '', hookHandler(item)], item }));
     return (snapshot.marketplaces ?? []).map(item => ({ id: item.name, title: item.name, subtitle: item.source, searchable: [item.name, item.source, item.path ?? ''], item }));
   }
   function metadata(parent: HTMLElement, ko: string, en: string, value: string | null | undefined) {
@@ -186,7 +186,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       metadata(data, '종류', 'Handler', hook.handlerType); metadata(data, '대상 조건', 'Matcher', hook.matcher);
       metadata(data, '시간 제한', 'Timeout', `${hook.timeoutSec}s`); metadata(data, '내용 지문', 'Content fingerprint', hook.currentHash);
       const content = document.createElement('pre'); content.id = 'extensions-hook-content'; content.textContent = hookHandler(hook); detail.append(content);
-      const state = document.createElement('p'); bindText(state, `${hook.enabled ? '사용 중' : '사용 안 함'} · ${hookTrustNames[hook.trustStatus][0]}`, `${hook.enabled ? 'Enabled' : 'Disabled'} · ${hookTrustNames[hook.trustStatus][1]}`); detail.append(state);
+      const state = document.createElement('p'); bindText(state, `${hook.enabled ? '사용 설정됨' : '사용 안 함'} · ${hookTrustNames[hook.trustStatus][0]}`, `${hook.enabled ? 'Configured enabled' : 'Disabled'} · ${hookTrustNames[hook.trustStatus][1]}`); detail.append(state);
       if (hook.isManaged) {
         const managed = document.createElement('p'); bindText(managed, '관리자가 정한 Hook입니다. 여기서는 사용·신뢰 설정을 바꾸지 않습니다.', 'This hook is managed by policy. Its activation and trust cannot be changed here.'); detail.append(managed);
       } else {
@@ -219,7 +219,13 @@ export function createExtensionsManager(host: ExtensionsHost) {
     }
     if (!filtered.length) {
       const empty = document.createElement('p'); const unavailable = !snapshot || snapshot[tab] === null;
-      bindText(empty, tab === 'plugins' && catalogMode && !loadedCatalogQuery ? '플러그인 이름을 두 글자 이상 입력하고 찾기를 누르세요.' : unavailable ? '목록을 불러오지 못했습니다.' : query ? '검색 결과가 없습니다.' : '등록된 항목이 없습니다.', tab === 'plugins' && catalogMode && !loadedCatalogQuery ? 'Enter at least two characters of a plugin name and choose Find.' : unavailable ? 'This list could not be loaded.' : query ? 'No matching items.' : 'No entries found.'); list.append(empty);
+      const message = tab === 'plugins' && catalogMode && !loadedCatalogQuery
+        ? ['플러그인 이름을 두 글자 이상 입력하고 찾기를 누르세요.', 'Enter at least two characters of a plugin name and choose Find.']
+        : unavailable ? ['목록을 불러오지 못했습니다.', 'This list could not be loaded.']
+        : query ? ['검색 결과가 없습니다.', 'No matching items.']
+        : tab === 'hooks' ? ['조회된 Hook이 없습니다. 이 목록만으로 기능 활성화나 실행 가능 여부를 확인할 수 없습니다.', 'No hooks were returned. This list alone does not confirm feature activation or execution readiness.']
+        : ['등록된 항목이 없습니다.', 'No entries found.'];
+      bindText(empty, message[0], message[1]); list.append(empty);
     }
     $('#extensions-more').hidden = filtered.length <= starts[tab] + limits[tab];
     $('#extensions-previous').hidden = starts[tab] === 0;
