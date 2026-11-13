@@ -93,14 +93,8 @@ fn context(cwd: Option<&str>) -> Result<PathBuf, String> {
         None => env::temp_dir().canonicalize().map_err(|e| format!("Cannot open extension process directory: {e}")),
     }
 }
-fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<TcpStream>) -> Result<T, String>) -> Result<T, String> {
-    let (server, mut rpc) = launch_server(exe, cwd, None)?;
-    let result = operation(&mut rpc);
-    let _ = rpc.ws.close(None);
-    let _ = rpc.ws.get_ref().shutdown(Shutdown::Both);
-    drop(rpc);
-    drop(server);
-    result
+fn with_rpc<T>(exe: &OsString, cwd: &Path, operation: impl FnOnce(&mut Rpc<ProxyStream>) -> Result<T, String>) -> Result<T, String> {
+    shared::with_rpc(exe, cwd, operation)
 }
 
 struct CliProcess {

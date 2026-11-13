@@ -6,6 +6,7 @@ use tauri::Manager;
 
 // opendiy-remote 56c1968, server/remote-server.mjs RELAY_COMMAND_ALLOWLIST.
 pub(crate) const COMMANDS: &[&str] = &[
+    "software_license",
     "get_ui_language", "set_ui_language", "prepare_runtime", "get_codex_settings",
     "runtime_compatibility", "runtime_pair_status", "runtime_transition_preview",
     "load_layout", "save_layout", "list_projects", "import_project", "create_project",
@@ -76,6 +77,12 @@ pub(crate) async fn dispatch(app: tauri::AppHandle, command: &str, args: Value) 
     // Engine validation. Remote path selection never invokes an OS modal.
     macro_rules! invoke { ($name:ident $(, $key:literal)* ) => { value(super::$name(app.state() $(, arg(&args,$key)?)*).await) }; }
     match command {
+        "software_license" => Ok(json!({
+            "name":"Arcvera-Studio", "version":env!("CARGO_PKG_VERSION"),
+            "license":"AGPL-3.0-or-later",
+            "sourceUrl":format!("https://github.com/jaeseongs95/Arcvera-Studio/releases/download/v{0}/arcvera-studio-{0}-source.zip",env!("CARGO_PKG_VERSION")),
+            "notice":"Copyright (c) 2026 Agent Grid contributors. No warranty. You may modify and redistribute under AGPL version 3 or later."
+        })),
         "get_ui_language" => invoke!(get_ui_language),
         "set_ui_language" => value(super::set_ui_language(app.state(),app.state(),arg(&args,"language")?).await),
         "prepare_runtime" => invoke!(prepare_runtime),

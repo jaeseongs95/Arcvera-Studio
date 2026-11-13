@@ -1,10 +1,9 @@
-// Windows CI only: run the exact public relay, using exclusively owned test data.
+// Run the pinned public relay on loopback, using exclusively owned test data.
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
-if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('CI fixture only');
 const root = path.resolve(process.argv[2]);
 const sourceUrl = 'https://raw.githubusercontent.com/jaeseongs95/opendiy-remote/56c1968cbdc1626005993f1dc32f64d936c10f00/server/remote-server.mjs';
 const response = await fetch(sourceUrl, { signal: AbortSignal.timeout(20000) });

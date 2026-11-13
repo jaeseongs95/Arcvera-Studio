@@ -133,8 +133,7 @@ fn read_existing(exe: &OsString, cwd: &Path, deadline: Instant) -> Result<Weekly
     let result = (|| {
         check_cancelled(Some(&expiry.cancelled))?;
         if Instant::now() >= deadline { return Err("사용량 조회 전체 기한이 만료되었습니다.".into()); }
-        let endpoint = shared::SharedEndpoint::existing(exe, cwd, Some(&expiry.cancelled))?
-            .ok_or("이 실행 도구에서는 기존 공유 연결로 사용량을 조회할 수 없습니다. 서버를 새로 시작하지 않았습니다.")?;
+        let endpoint = shared::SharedEndpoint::existing(exe, cwd, Some(&expiry.cancelled))?;
         let mut proxy = endpoint.open_until(Some(expiry.cancelled.clone()), Some(deadline))?;
         let result = match proxy.rpc.as_mut() {
             Some(rpc) => read_snapshot(exe, rpc),
@@ -220,7 +219,7 @@ mod tests {
             rpc_reply(&mut ws, &usage, json!({"rateLimits":{"limitName":"계정","secondary":{"windowDurationMins":10080,"usedPercent":42.5}}}));
             assert!(ws.read().is_err(), "추가 서버·대화·설정 명령을 보내면 안 된다");
         });
-        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))};
+        let mut rpc = Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))};
         let snapshot = read_snapshot(&"선택한 실행 도구".into(), &mut rpc).unwrap();
         assert_eq!(snapshot.weekly.unwrap().used_percent, 42.5);
         assert_eq!(snapshot.limit_name.as_deref(), Some("계정"));
@@ -241,7 +240,7 @@ mod tests {
             ws.send(Message::Text(json!({"id":initialize["id"],"error":{"code":-1,"message":"초기화 실패"}}).to_string().into())).unwrap();
             assert!(ws.read().is_err(), "초기화 실패 뒤 사용량 요청을 보내면 안 된다");
         });
-        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))};
+        let mut rpc = Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(Instant::now()+Duration::from_secs(2))};
         assert!(read_snapshot(&"선택한 실행 도구".into(), &mut rpc).unwrap_err().contains("초기화 실패"));
         drop(rpc); worker.join().unwrap();
 
@@ -251,7 +250,7 @@ mod tests {
             fn write(&mut self, _: &[u8]) -> io::Result<usize> { panic!("취소 뒤 쓰기 금지") }
             fn flush(&mut self) -> io::Result<()> { panic!("취소 뒤 flush 금지") }
         }
-        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(NoIo, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:Some(Arc::new(AtomicBool::new(true))),deadline:Some(Instant::now()+Duration::from_secs(1))};
+        let mut rpc = Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(NoIo, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:Some(Arc::new(AtomicBool::new(true))),deadline:Some(Instant::now()+Duration::from_secs(1))};
         assert!(read_snapshot(&"선택한 실행 도구".into(), &mut rpc).unwrap_err().contains("cancelled"));
     }
 
@@ -283,6 +282,7 @@ class UsageFixture {
   if (args.Length == 4 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "start" && args[3] == "--help") {
    Console.Write("Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n          Preserve existing installation\n" + (mode != "missing-first" ? "      --first-installation\n          Guard first installation\n" : "") + "  -h, --help\n          Print help\n"); return 0;
   }
+  if (args.Length == 1 && args[0] == "--version") { Console.Write("codex-cli 1.0.0+fixture"); return 0; }
   if (args.Length == 3 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "version") {
    if (mode == "version-stall") Thread.Sleep(30000);
    Console.Error.Write("fixture shared server is unavailable"); return 23;
@@ -312,10 +312,10 @@ class UsageFixture {
             let calls = fs::read_to_string(root.join("calls")).unwrap();
             let expected = if mode == "official" || mode == "help-stall" { "app-server --help\n" }
                 else if mode == "missing-first" { "app-server --help\napp-server daemon start --help\n" }
-                else { "app-server --help\napp-server daemon start --help\napp-server daemon version\n" };
+                else { "app-server --help\napp-server daemon start --help\n--version\napp-server daemon version\n" };
             assert_eq!(calls, expected, "{mode}: 새 backend·proxy fallback을 실행하면 안 된다");
             assert!(!calls.contains("--listen") && !calls.lines().any(|line| line.starts_with("app-server daemon start") && line != "app-server daemon start --help"));
-            if mode == "official" { assert!(error.contains("기존 공유 연결"), "{error}"); }
+            if mode == "official" { assert!(error.contains("Arcvera Core"), "{error}"); }
             else if mode == "missing-first" { assert!(error.contains("--first-installation"), "{error}"); }
             else if mode == "offline" { assert!(error.contains("23"), "{error}"); }
             else {

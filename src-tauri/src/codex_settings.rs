@@ -170,7 +170,7 @@ mod tests {
         let invalid = directory.join("missing.exe").to_string_lossy().into_owned();
         let selected = resolve_pair_with(Some(&path), None, Some(OsStr::new(&invalid)), None);
         let snapshot = selected.executable().unwrap();
-        let old_command = portable_pty::CommandBuilder::new(&snapshot);
+        let old_command = portable_pty::CommandBuilder::new_with_process_env(&snapshot);
         assert_eq!(selected.source, "saved");
         assert_eq!(selected.resolved_path.as_deref(), Some(path.as_str()));
         let changed = resolve_pair_with(Some(&invalid), None, Some(OsStr::new(&path)), None);
@@ -184,7 +184,7 @@ mod tests {
         let replacement = resolve_pair_with(Some(&second), None, None, None).executable().unwrap();
         assert_ne!(replacement, snapshot);
         assert_eq!(old_command.get_argv()[0], snapshot);
-        assert_eq!(portable_pty::CommandBuilder::new(&replacement).get_argv()[0], replacement);
+        assert_eq!(portable_pty::CommandBuilder::new_with_process_env(&replacement).get_argv()[0], replacement);
         let environment = resolve_pair_with(None, None, Some(OsStr::new(&path)), None);
         assert_eq!(environment.source, "environment");
         let search = std::env::join_paths([directory.as_path()]).unwrap();

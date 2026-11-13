@@ -1,4 +1,4 @@
-//! Bounded, read-only history queries. Each request owns and reaps its server.
+//! Bounded, read-only history queries. Each request owns and reaps only its Core proxy.
 use super::*;
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +43,7 @@ pub struct CatalogPreview {
     pub unavailable_reason: Option<String>,
 }
 
-pub(super) fn with_reader<T>(exe: &OsString, read: impl FnOnce(&mut Rpc<TcpStream>) -> Result<T, String>) -> Result<T, String> {
+pub(super) fn with_reader<T>(exe: &OsString, read: impl FnOnce(&mut Rpc<ProxyStream>) -> Result<T, String>) -> Result<T, String> {
     // No blocking admission queue: frontends coalesce pending intentions, and a
     // second caller cannot accumulate workers or additional protocol processes.
     let _request = CATALOG_REQUEST.try_lock().map_err(|error| match error {
@@ -51,16 +51,7 @@ pub(super) fn with_reader<T>(exe: &OsString, read: impl FnOnce(&mut Rpc<TcpStrea
         std::sync::TryLockError::Poisoned(_) => "세션 조회 잠금이 손상되었습니다. 앱을 다시 시작하세요.".to_owned(),
     })?;
     let directory = env::temp_dir().canonicalize().map_err(|e| format!("Cannot open catalog process working directory: {e}"))?;
-    let (server, mut rpc) = launch_server(exe, &directory, None)?;
-    let result = read(&mut rpc);
-    // Closing is best-effort; always shut down the transport and reap the owned
-    // Job even after an RPC error. Do not retain a CLOSE_WAIT socket or wait for
-    // a peer's close acknowledgement during resource cleanup.
-    let _ = rpc.ws.close(None);
-    let _ = rpc.ws.get_ref().shutdown(Shutdown::Both);
-    drop(rpc);
-    drop(server);
-    result
+    shared::with_rpc(exe, &directory, read)
 }
 
 fn cursor(value: &Value, previous: Option<&str>) -> Result<Option<String>, String> {

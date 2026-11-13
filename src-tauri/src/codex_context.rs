@@ -42,15 +42,8 @@ impl ConversationConnection {
                 let result=exchange(&self.0,&mut state,proxy.rpc.as_mut().ok_or("컨텍스트 연결을 찾을 수 없습니다.")?,thread_id,request,&cancelled,deadline);
                 match (result,proxy.finish()) {(Ok(value),Ok(()))=>Ok(value),(Err(error),Ok(()))=>Err(error),(result,Err(error))=>Err(format!("{}; 컨텍스트 연결 정리 실패: {error}",result.err().unwrap_or_default()))}
             },
-            Endpoint::Owned {address,token,job}=>{
-                let address_socket=address.trim_start_matches("ws://").parse().map_err(|_|"컨텍스트 서버 주소가 올바르지 않습니다.")?;
-                let stream=TcpStream::connect_timeout(&address_socket,Duration::from_secs(2)).map_err(|error|format!("컨텍스트 연결 실패: {error}"))?;
-                job.upgrade().ok_or("기존 대화 서버가 종료되었습니다.")?.verify_tcp_peer(&stream).map_err(|_|"컨텍스트 서버 연결 소유권을 확인할 수 없습니다.")?;
-                transport.lock().map_err(|_|"컨텍스트 연결 정리 상태 오류")?.socket=Some(stream.try_clone().map_err(|error|error.to_string())?);
-                let mut rpc=authenticated_socket(address,token,stream)?;
-                let result=exchange(&self.0,&mut state,&mut rpc,thread_id,request,&cancelled,deadline);
-                let _=rpc.ws.get_ref().shutdown(Shutdown::Both);result
-            },
+            #[cfg(test)]
+            Endpoint::Unavailable => Err("Test fixture has no runtime endpoint".into()),
         };
         if !permissions {return result;}
         let mut value=result?;

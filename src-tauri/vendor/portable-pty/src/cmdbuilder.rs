@@ -223,6 +223,15 @@ impl CommandBuilder {
         }
     }
 
+    /// Inherit the current process environment without reading Windows registry values.
+    pub fn new_with_process_env<S: AsRef<OsStr>>(program: S) -> Self {
+        let envs = std::env::vars_os().map(|(key, value)| {
+            (EnvEntry::map_key(key.clone()), EnvEntry { preferred_key: key, value, is_from_base_env: true })
+        }).collect();
+        Self { args: vec![program.as_ref().to_owned()], envs, cwd: None,
+            #[cfg(unix)] umask: None, controlling_tty: true }
+    }
+
     /// Create a new builder instance from a pre-built argument vector
     pub fn from_argv(args: Vec<OsString>) -> Self {
         Self {

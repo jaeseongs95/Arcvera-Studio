@@ -10,9 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, FILETIME, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::{Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS},
-        JobObjects::IsProcessInJob,
+    Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, FILETIME, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    System::{JobObjects::IsProcessInJob,
         Threading::{GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, OpenProcess, TerminateProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE}},
 };
 
@@ -88,17 +87,7 @@ fn created_filetime(process: std::os::windows::io::RawHandle) -> u64 {
     u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime)
 }
 fn parent_pid() -> u32 {
-    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    assert_ne!(raw, INVALID_HANDLE_VALUE);
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of_val(&entry) as u32;
-    let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
-    while found != 0 {
-        if entry.th32ProcessID == std::process::id() { return entry.th32ParentProcessID; }
-        found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
-    }
-    panic!("현재 Job fixture의 부모 PID를 찾지 못했습니다.");
+    crate::launch_gate::current_parent_pid()
 }
 fn assert_exact_job(process: &FixtureProcess, job: &ProcessJob) {
     let mut owned = 0;
@@ -278,7 +267,7 @@ fn pty_fixture(directory: &Path) {
         result
     });
     stage(directory, "pty", "출력 소비 시작, 실행기 생성");
-    let mut command = portable_pty::CommandBuilder::new(std::env::current_exe().unwrap());
+    let mut command = portable_pty::CommandBuilder::new_with_process_env(std::env::current_exe().unwrap());
     command.args(fixture_args());
     command.env("OPENDIY_JOB_TEST_DIRECTORY", directory);
     command.env("OPENDIY_JOB_TEST_ROLE", "pty");

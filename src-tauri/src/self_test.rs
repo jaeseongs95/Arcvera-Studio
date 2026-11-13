@@ -479,12 +479,12 @@ impl Drop for Harness { fn drop(&mut self) { let _ = self.finish(); } }
 fn shell(script: &str) -> Result<CommandBuilder, String> {
     #[cfg(windows)] {
         let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is not defined")?;
-        let mut command = CommandBuilder::new(PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe"));
+        let mut command = CommandBuilder::new_with_process_env(PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe"));
         command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]);
         Ok(command)
     }
     #[cfg(not(windows))] {
-        let mut command = CommandBuilder::new("/bin/sh");
+        let mut command = CommandBuilder::new_with_process_env("/bin/sh");
         command.args(["-c", script]);
         Ok(command)
     }
@@ -510,70 +510,6 @@ fn fixture_tail(output: &str) -> String {
     serde_json::to_string(&tail).unwrap_or_else(|_| "\"fixture tail serialization failed\"".into())
 }
 
-#[cfg(windows)]
-fn unrelated_listener_receives_no_authentication() -> Result<(), String> {
-    use crate::{codex, process_job::ProcessJob, owned_process::{self, Child, Command, Stdio}};
-    use std::{io::Read, net::TcpListener};
-    struct OwnedSleeper { child: Child, job: Option<ProcessJob> }
-    impl Drop for OwnedSleeper {
-        fn drop(&mut self) {
-            if let Some(job) = self.job.take() { let _ = job.terminate(); }
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-    let baseline = process_job::app_owned_processes()?;
-    // This listener belongs to the test executable's app Job, but deliberately
-    // not to the dummy server's more specific owned Job.
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-    let endpoint = format!("ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
-    let executable = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot is not defined")?).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut command = Command::new(executable.as_os_str());
-    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(0x08000000);
-    let job = ProcessJob::new(false)?;
-    let (child, pending) = owned_process::spawn_suspended(&mut command, job.as_handle())?;
-    let mut sleeper = OwnedSleeper { child, job: Some(job) };
-    pending.resume()?;
-    let receiving = thread::spawn(move || -> Result<usize, String> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut socket = loop {
-            match listener.accept() {
-                Ok((socket, _)) => break socket,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-                Err(error) => return Err(format!("accept unrelated ownership fixture connection: {error}")),
-            }
-        };
-        // Accepted sockets can inherit the nonblocking listener mode on Windows.
-        // Wait for the rejected peer to close, within the existing read deadline.
-        socket.set_nonblocking(false).map_err(|e| e.to_string())?;
-        socket.set_read_timeout(Some(Duration::from_secs(3))).map_err(|e| e.to_string())?;
-        let mut bytes = [0u8; 1024];
-        match socket.read(&mut bytes) {
-            Ok(count) => Ok(count),
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(0),
-            Err(error) => Err(format!("read unrelated ownership fixture connection: {error}")),
-        }
-    });
-    // Exercise the actual production connect path with a synthetic capability,
-    // rather than a duplicate ownership check that could miss a later HTTP send.
-    let connection = codex::verify_connect_peer_fixture(&endpoint, &mut sleeper.child, sleeper.job.as_ref().expect("job assigned"));
-    let received = receiving.join().map_err(|_| "ownership fixture listener panicked")??;
-    let result = match connection {
-        Err(error) if error.contains("connected TCP server does not belong to the owned server job") && received == 0 => Ok(()),
-        Err(error) => Err(format!("ownership fixture did not reach the expected rejection; received {received} HTTP bytes: {error}")),
-        Ok(()) => Err(format!("unrelated listener was accepted; received {received} HTTP bytes")),
-    };
-    drop(sleeper);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_job::app_owned_processes()? != baseline {
-        if Instant::now() >= deadline { return Err("ownership fixture did not restore its owned process baseline".into()); }
-        thread::sleep(Duration::from_millis(20));
-    }
-    result
-}
-
 fn suite(duration: Duration) -> Report {
     let start = Instant::now();
     let mut report = Report { schema: "agent-grid-self-test-v1", tests: 0, pass: 0, fail: 0, duration_seconds: 0.0, iterations: 0, sessions_started: 0, output_frames: 0, output_bytes: 0, blocked_input_observed: None, process_tree: None, sample_memory: vec![memory_sample(start)], errors: Vec::new(), scope: "Headless native PTY fixtures only. No GUI, vendor protocol, model API, or user-config validation. blockedInputObserved=false means the host did not demonstrate input backpressure; that case verifies bounded write/stop completion without claiming a blocked-write boundary." };
@@ -582,11 +518,6 @@ fn suite(duration: Duration) -> Report {
         process_job::install_app_job()?;
         let mut harness = Harness::new()?;
         counters = Some((harness.sessions_started.clone(), harness.output_frames.clone(), harness.output_bytes.clone()));
-        #[cfg(windows)] {
-            report.tests += 1;
-            unrelated_listener_receives_no_authentication()?;
-            report.pass += 1;
-        }
         for count in [2, 8, 16] {
             report.tests += 1;
             report.sessions_started += harness.isolation(count)?;
@@ -733,7 +664,7 @@ fn codex_smoke_options(args: &[String]) -> Result<(usize, PathBuf, bool, Option<
 
 /// Real adapter smoke with terminal-protocol replies only, without user text or
 /// a model turn. This may stop
-/// at the official CLI's trust/auth/first-run UI; that is an explicit failed
+/// at Core's trust/auth/first-run UI; that is an explicit failed
 /// binding check, never permission to answer the prompt on the user's behalf.
 pub fn run_codex_smoke() -> i32 {
     let args: Vec<_> = std::env::args().collect();

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Arcvera-Studio",
-  "version": "1.8.0",
+  "version": "2.0.0",
   "identifier": "io.agentgrid.desktop",
   "plugins": {
     "updater": {
@@ -37,7 +37,11 @@
     ],
     "resources": {
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "../LICENSE": "LICENSE"
+      "../LICENSE": "LICENSE",
+      "../LICENSE-MIT-LEGACY": "LICENSE-MIT-LEGACY",
+      "../SOURCE.md": "SOURCE.md",
+      "installer/RUNTIME.md": "RUNTIME.md",
+      "installer/RUNTIME.ko.md": "RUNTIME.ko.md"
     },
     "icon": [
       "icons/icon.ico",
@@ -45,6 +49,7 @@
     ],
     "shortDescription": "Local coding agent terminal workspace",
     "windows": {
+      "webviewInstallMode": { "type": "skip" },
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,

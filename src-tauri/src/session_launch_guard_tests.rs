@@ -50,7 +50,7 @@ fn launch_post_install_failure_publishes_unknown_once_after_owned_cleanup() {
         Err(INJECTED.into())
     }));
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new_with_process_env(shell);
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
     let launching_engine = engine.clone();
     let launching_session = session.clone();
@@ -143,7 +143,7 @@ fn worker_install_failure_case(name: &'static str, expected_readers: usize) {
         Ok(())
     }));
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new_with_process_env(shell);
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
     let session_owners_before_launch = Arc::strong_count(&session);
     let launching_engine = engine.clone();
@@ -207,7 +207,7 @@ fn failed_launch_guard_case(resume_before_stop: bool) {
     let drainer = thread::spawn(move || { let _ = std::io::copy(&mut reader, &mut std::io::sink()); });
     let writer = pair.master.take_writer().unwrap();
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new_with_process_env(shell);
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]);
     let job = ProcessJob::new(false).unwrap();
     let suspended = pair.slave.spawn_command_in_job_suspended(command, job.as_handle()).unwrap();
@@ -355,7 +355,7 @@ fn activation_sink_failure_case(expected: &'static str) {
 }
 
 fn launch_shell() -> CommandBuilder {
-    CommandBuilder::new(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+    CommandBuilder::new_with_process_env(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
 }
 
 fn reply_launch_fixture_dsr(backend: &Mutex<Option<std::sync::Weak<EngineInner>>>, tail: &Mutex<String>, replies: &Mutex<Vec<Result<(), String>>>, chunk: &TerminalOutput) -> Result<(), String> {

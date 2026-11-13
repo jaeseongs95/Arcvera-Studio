@@ -1,5 +1,6 @@
 ; Based on tauri-cli-v2.12.4 installer.nsi, MIT (see TAURI-LICENSE-MIT).
-; Local changes: stable upgrade records, running-app guard and shortcut preservation.
+; Local changes: stable upgrade records, running-app guard, shortcut preservation,
+; and externally installed Microsoft runtime prerequisites.
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -61,10 +62,6 @@ ${StrLoc}
 !define ADDITIONALPLUGINSPATH "{{additional_plugins_path}}"
 !define ALLOWDOWNGRADES "{{allow_downgrades}}"
 !define DISPLAYLANGUAGESELECTOR "{{display_language_selector}}"
-!define INSTALLWEBVIEW2MODE "{{install_webview2_mode}}"
-!define WEBVIEW2INSTALLERARGS "{{webview2_installer_args}}"
-!define WEBVIEW2BOOTSTRAPPERPATH "{{webview2_bootstrapper_path}}"
-!define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
 ; Stable upgrade identity from OpenDIY Desktop; DisplayName remains the new product name.
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenDIY Desktop"
@@ -519,6 +516,9 @@ LangString choowHowToInstall 0 ""
 {{/each}}
 
 Function .onInit
+  ; Check before uninstall/upgrade pages or file changes, including /UPDATE.
+  Call ArcveraRequireWebView2
+
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1
@@ -603,97 +603,36 @@ Function .onInit
   !endif
 FunctionEnd
 
-Section WebView2
-  ; Check if Webview2 is already installed and skip this section
+Function ArcveraRequireWebView2
+  ; Read the existing Evergreen runtime only. Never acquire or install it.
   ${If} ${RunningX64}
     ReadRegStr $4 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${Else}
     ReadRegStr $4 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
   ${If} $4 == ""
+  ${OrIf} $4 == "0.0.0.0"
     ReadRegStr $4 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
 
+  StrCpy $R0 0
   ${If} $4 == ""
-    ; Webview2 installation
-    ;
-    ; Skip if updating
-    ${If} $UpdateMode <> 1
-      !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
-        Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        DetailPrint "$(webview2Downloading)"
-        NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        Pop $0
-        ${If} $0 == "success"
-          DetailPrint "$(webview2DownloadSuccess)"
-        ${Else}
-          DetailPrint "$(webview2DownloadError)"
-          Abort "$(webview2AbortError)"
-        ${EndIf}
-        StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        Goto install_webview2
-      !endif
-
-      !if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"
-        Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        File "/oname=$TEMP\MicrosoftEdgeWebview2Setup.exe" "${WEBVIEW2BOOTSTRAPPERPATH}"
-        DetailPrint "$(installingWebview2)"
-        StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        Goto install_webview2
-      !endif
-
-      !if "${INSTALLWEBVIEW2MODE}" == "offlineInstaller"
-        Delete "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
-        File "/oname=$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe" "${WEBVIEW2INSTALLERPATH}"
-        DetailPrint "$(installingWebview2)"
-        StrCpy $6 "$TEMP\MicrosoftEdgeWebView2RuntimeInstaller.exe"
-        Goto install_webview2
-      !endif
-
-      Goto webview2_done
-
-      install_webview2:
-        DetailPrint "$(installingWebview2)"
-        ; $6 holds the path to the webview2 installer
-        ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
-        ${If} $1 = 0
-          DetailPrint "$(webview2InstallSuccess)"
-        ${Else}
-          DetailPrint "$(webview2InstallError)"
-          Abort "$(webview2AbortError)"
-        ${EndIf}
-      webview2_done:
-    ${EndIf}
+  ${OrIf} $4 == "0.0.0.0"
+    StrCpy $R0 1
   ${Else}
     !if "${MINIMUMWEBVIEW2VERSION}" != ""
       ${VersionCompare} "${MINIMUMWEBVIEW2VERSION}" "$4" $R0
-      ${If} $R0 = 1
-        update_webview:
-          DetailPrint "$(installingWebview2)"
-          ${If} ${RunningX64}
-            ReadRegStr $R1 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate" "path"
-          ${Else}
-            ReadRegStr $R1 HKLM "SOFTWARE\Microsoft\EdgeUpdate" "path"
-          ${EndIf}
-          ${If} $R1 == ""
-            ReadRegStr $R1 HKCU "SOFTWARE\Microsoft\EdgeUpdate" "path"
-          ${EndIf}
-          ${If} $R1 != ""
-            ; Chromium updater docs: https://source.chromium.org/chromium/chromium/src/+/main:docs/updater/user_manual.md
-            ; Modified from "HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft EdgeWebView\ModifyPath"
-            ExecWait `"$R1" /install appguid=${WEBVIEW2APPGUID}&needsadmin=true` $1
-            ${If} $1 = 0
-              DetailPrint "$(webview2InstallSuccess)"
-            ${Else}
-              MessageBox MB_ICONEXCLAMATION|MB_ABORTRETRYIGNORE "$(webview2InstallError)" IDIGNORE ignore IDRETRY update_webview
-              Quit
-              ignore:
-            ${EndIf}
-          ${EndIf}
-      ${EndIf}
     !endif
   ${EndIf}
-SectionEnd
+  ${If} $R0 = 1
+    DetailPrint "Install/update WebView2 directly from https://developer.microsoft.com/en-us/microsoft-edge/webview2/ and retry. See RUNTIME.md / RUNTIME.ko.md."
+    ${IfNot} ${Silent}
+      MessageBox MB_ICONSTOP "Install or update Microsoft Edge WebView2 Runtime yourself, then retry. Arcvera-Studio does not download or install Microsoft runtimes.$\r$\n$\r$\nMicrosoft Edge WebView2 Runtime을 직접 설치하거나 갱신한 뒤 다시 실행하세요. Arcvera-Studio는 Microsoft 런타임을 다운로드하거나 설치하지 않습니다.$\r$\n$\r$\nhttps://developer.microsoft.com/en-us/microsoft-edge/webview2/"
+    ${EndIf}
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+FunctionEnd
 
 Section Install
   SetOutPath $INSTDIR

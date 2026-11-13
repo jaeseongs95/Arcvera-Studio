@@ -1,4 +1,5 @@
 import { createAttachmentStorage } from './attachment-storage';
+import { createLicenseControl } from './license';
 import { createRelayControl, type RelayStatus } from './relay-control';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -1000,6 +1001,7 @@ const permissionStatus = createPermissionStatus({ call, availabilityChanged(id, 
   if (current?.generation === generation) updatePermissionButton(current);
 } });
 const settingsDialog = $<HTMLDialogElement>('#settings-dialog');
+settingsDialog.querySelector('.settings-options')!.append(createLicenseControl(error => notifyError('소스 페이지 열기 실패', 'Could not open source page', error)));
 const relayControl = createRelayControl({ call });
 settingsDialog.querySelector('.settings-options')!.append(relayControl.button);
 const updatesHost = document.createElement('section'); settingsDialog.append(updatesHost);

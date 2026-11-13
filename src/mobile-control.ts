@@ -4,7 +4,7 @@ import './mobile-control.css';
 interface LiveSession { id: string; generation: number; title: string; active: boolean }
 interface RemoteStatus { status: 'disabled' | 'connecting' | 'connected' | 'errored'; serverName: string; environmentId: string | null }
 interface Pairing { manualCode: string; expiresAt: number; environmentId: string }
-interface Reply { isolated: boolean; shared: boolean; mutationsAllowed: boolean; status: RemoteStatus | null; pairing: Pairing | null }
+interface Reply { shared: boolean; mutationsAllowed: boolean; status: RemoteStatus | null; pairing: Pairing | null }
 type Action = 'status' | 'enable' | 'disable' | 'pair';
 interface Host { call<T>(command: string, args?: Record<string, unknown>): Promise<T>; notify(ko: string, error?: boolean, en?: string): void; openExecutableSettings(): void }
 
@@ -37,7 +37,7 @@ export function createMobileControl(host: Host) {
     ['#mobile-control-disable', '원격 제어 끄기', 'Disable remote control'],
     ['#mobile-control-pair', '모바일 연결 코드 만들기', 'Create mobile pairing code'],
     ['#mobile-control-code-label', '모바일 Codex에 입력할 연결 코드', 'Pairing code for mobile Codex'],
-    ['#mobile-control-compatibility-help', '이 세션은 개별 서버를 사용하며 원격 등록 분리 옵션(--remote-control-client-name)을 지원하지 않습니다. 기존 공유 Codex 서버를 실행한 뒤 새 세션을 시작하거나 지원 실행 파일을 선택하세요. 공유 서버를 자동으로 설치하거나 시작하지 않습니다.', 'This session uses a separate server without isolated remote registration (--remote-control-client-name). Start an existing shared Codex server and open a new session, or choose a compatible executable. Shared servers are never installed or started automatically.'],
+    ['#mobile-control-compatibility-help', 'Arcvera Core 공유 서버 연결을 확인할 수 없습니다. 실행 파일 설정에서 Core 패키지를 선택하고 새 세션을 시작하세요.', 'The Arcvera Core shared-server connection could not be confirmed. Choose a Core package in executable settings and start a new session.'],
     ['#mobile-control-cli-settings', '실행 파일 설정 열기', 'Open executable settings'],
     ['#mobile-control-lifetime', '연결 코드는 저장하지 않습니다. 창을 닫으면 앱은 숨겨집니다.', 'Pairing codes are never saved. Closing the window hides the app.'],
   ];
@@ -45,7 +45,7 @@ export function createMobileControl(host: Host) {
   bindAttribute($('#mobile-control-close'), 'aria-label', '원격 제어 창 닫기', 'Close remote control');
   let sessions: LiveSession[] = [];
   let status: RemoteStatus | null = null;
-  let isolated: boolean | null = null;
+  let loaded = false;
   let shared = false;
   let mutationsAllowed = false;
   let expiresAt: number | null = null;
@@ -55,10 +55,10 @@ export function createMobileControl(host: Host) {
   const selected = () => sessions.find(session => session.id === select.value);
   function clearPairing() { $('#mobile-control-code').textContent = ''; $('#mobile-control-expiry').textContent = ''; expiresAt = null; pairing.hidden = true; }
   function renderStatus() {
-    $('#mobile-control-compatibility').hidden = isolated === null || mutationsAllowed;
-    $('#mobile-control-scope').textContent = isolated === null ? '' : shared
+    $('#mobile-control-compatibility').hidden = !loaded || mutationsAllowed;
+    $('#mobile-control-scope').textContent = !loaded ? '' : shared
       ? t('기존 공유 서버에 연결되었습니다. 켜기·끄기와 연결 코드는 이 서버의 모든 대화에 적용됩니다. 세션 종료는 종료 요청 시 확인한 작업만 중단하며 새 원격 작업은 보존합니다. 중단을 확인하지 못하면 상태를 알 수 없음으로 표시합니다. 공유 서버와 기존 원격 등록은 유지됩니다.', 'Connected to the existing shared server. Enable, disable and pairing apply to all its conversations. Stopping a session targets the turn identified at the stop request and preserves later remote turns. An unconfirmed stop is shown as unknown. The shared server and existing registration are preserved.')
-      : t('이 앱이 개별 세션 서버를 소유합니다. 세션이나 앱을 종료하면 해당 서버의 모바일 연결도 끝납니다.', 'This app owns this session’s separate server. Stopping the session or exiting the app ends its mobile connection.');
+      : t('Core 공유 서버 연결이 필요합니다.', 'A Core shared-server connection is required.');
     const states = {
       disabled: ['원격 제어 꺼짐', 'Remote control disabled'],
       connecting: ['원격 서비스 연결 중', 'Connecting to remote service'],
@@ -77,7 +77,7 @@ export function createMobileControl(host: Host) {
     for (const id of ['enable', 'disable', 'pair']) $<HTMLButtonElement>(`#mobile-control-${id}`).disabled = !!request || exitRequested || !selected() || !mutationsAllowed;
     $<HTMLButtonElement>('#mobile-control-pair').disabled ||= status?.status !== 'connected';
   }
-  function clear() { epoch++; sessions = []; select.replaceChildren(); status = null; isolated = null; shared = false; mutationsAllowed = false; clearPairing(); error.textContent = ''; error.hidden = true; renderStatus(); controls(); }
+  function clear() { epoch++; sessions = []; select.replaceChildren(); status = null; loaded = false; shared = false; mutationsAllowed = false; clearPairing(); error.textContent = ''; error.hidden = true; renderStatus(); controls(); }
   function failure(reason: unknown, action?: Action) {
     const detail = String(reason instanceof Error ? reason.message : reason).slice(0, 600);
     if (dialog.open) { error.textContent = t('원격 제어 요청 실패: ', 'Remote control request failed: ') + detail; error.hidden = false; }
@@ -95,9 +95,9 @@ export function createMobileControl(host: Host) {
       try {
         const result = await host.call<Reply>('mobile_control', { id: session.id, generation: session.generation, action });
         if (!dialog.open || token !== epoch) return;
-        isolated = result.isolated === true;
+        loaded = true;
         shared = result.shared === true;
-        mutationsAllowed = result.mutationsAllowed === true;
+        mutationsAllowed = shared && result.mutationsAllowed === true;
         if (result.status) { status = result.status; if (status.status !== 'connected') clearPairing(); }
         if (result.pairing) {
           const value = result.pairing;
@@ -125,7 +125,7 @@ export function createMobileControl(host: Host) {
   button.onclick = () => void open();
   $('#mobile-control-close').onclick = () => dialog.close();
   dialog.addEventListener('close', clear);
-  select.onchange = () => { epoch++; status = null; isolated = null; shared = false; mutationsAllowed = false; clearPairing(); renderStatus(); controls(); void run('status'); };
+  select.onchange = () => { epoch++; status = null; loaded = false; shared = false; mutationsAllowed = false; clearPairing(); renderStatus(); controls(); void run('status'); };
   $('#mobile-control-cli-settings').onclick = () => { dialog.close(); host.openExecutableSettings(); };
   for (const [id, action] of [['refresh', 'status'], ['enable', 'enable'], ['disable', 'disable'], ['pair', 'pair']] as const) $(`#mobile-control-${id}`).onclick = () => void run(action);
   onLanguageChange(renderStatus);

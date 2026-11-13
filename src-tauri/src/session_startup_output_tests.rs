@@ -80,7 +80,7 @@ fn preparing_dsr_output_waits_for_live_input_without_allowing_preparing_user_inp
         Ok(())
     }));
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut command = CommandBuilder::new(shell);
+    let mut command = CommandBuilder::new_with_process_env(shell);
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::WriteLine('NATIVE_STARTUP_READY'); Start-Sleep -Seconds 30"]);
     let info = engine.start_fixture(StartRequest { cwd: std::env::current_dir().unwrap().to_string_lossy().into_owned(), title: "controlled startup DSR".into(), project_id: None, project_assigned: false, thread_id: None, cols: 80, rows: 24 }, command).unwrap();
     struct Cleanup(Engine, SessionInfo);

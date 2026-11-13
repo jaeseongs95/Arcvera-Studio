@@ -1,4 +1,4 @@
-//! Official Codex app-server protocol adapter. User config/auth remain owned by Codex.
+//! Arcvera Core protocol adapter. User configuration and authentication remain owned by Core.
 use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -31,7 +31,6 @@ pub(crate) fn update_version_with_executable(exe: &OsString, cancelled: &Arc<Ato
     Ok(text.into())
 }
 
-const TOKEN_ENV: &str = "ARCVERA_STUDIO_REMOTE_TOKEN";
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const HELP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FRAME: usize = 8 * 1024 * 1024;
@@ -135,10 +134,7 @@ pub struct ExternalSession {
 
 pub struct CodexSession {
     pub command: CommandBuilder,
-    server: Option<Child>,
-    job: Option<Arc<ProcessJob>>,
     stopped: Arc<AtomicBool>,
-    socket: Option<TcpStream>,
     observer: Option<JoinHandle<()>>,
     mobile: Option<MobileConnection>,
     shared: Option<shared::SharedControl>,
@@ -159,11 +155,7 @@ impl Drop for CodexSession {
         self.stopped.store(true, Ordering::Release);
         if let Some(conversation) = &self.conversation { conversation.cancel(); }
         if let Some(mobile) = &self.mobile { mobile.cancel(); }
-        if let Some(socket) = self.socket.take() { let _ = socket.shutdown(Shutdown::Both); }
         if let Some(job) = self.proxy_job.take().and_then(|job| job.upgrade()) { let _ = job.terminate(); }
-        if let Some(job) = self.job.take() { let _ = job.terminate(); }
-        // kill may report that the owned process already exited; wait still reaps it.
-        if let Some(server) = self.server.as_mut() { let _ = server.kill(); let _ = server.wait(); }
         if let Some(observer) = self.observer.take() { let _ = observer.join(); }
     }
 }
@@ -187,14 +179,6 @@ fn background_command(executable: &std::ffi::OsStr) -> OwnedCommand {
     command
 }
 
-fn server_args(endpoint: &str, verifier: &str, no_remote_control: bool, remote_client_name: Option<&str>) -> Vec<String> {
-    let mut args: Vec<String> = ["app-server", "--listen", endpoint, "--ws-auth", "capability-token", "--ws-token-sha256", verifier]
-        .into_iter().map(str::to_owned).collect();
-    if no_remote_control { args.push("--no-remote-control".into()); }
-    if let Some(name) = remote_client_name { args.extend(["--remote-control-client-name".into(), name.into()]); }
-    args
-}
-
 fn help_supports_option(bytes: &[u8], option: &str) -> Result<bool, String> {
     let help = std::str::from_utf8(bytes).map_err(|e| format!("Codex app-server help is not valid UTF-8: {e}"))?;
     if !help.lines().any(|line| line.trim_start().strip_prefix("Usage:").or_else(|| line.trim_start().strip_prefix("사용법:")).is_some_and(|usage| usage.split_ascii_whitespace().any(|token| token == "app-server"))) {
@@ -214,35 +198,6 @@ fn help_supports_option(bytes: &[u8], option: &str) -> Result<bool, String> {
             && tail.split_ascii_whitespace().next().is_some_and(|token| token.trim_end_matches(',') == option))))
 }
 
-#[cfg(test)]
-fn help_supports_no_remote_control(bytes: &[u8]) -> Result<bool, String> { help_supports_option(bytes, "--no-remote-control") }
-
-fn server_capabilities(exe: &OsString, cwd: &Path, cancelled: Option<&Arc<AtomicBool>>) -> Result<(bool, bool), String> {
-    // 실행 파일별 캐시를 두지 않아 같은 경로의 교체나 설정 변경도 다음
-    // launch에서 실제 도움말로 판별한다. 실패를 미지원으로 삼키지 않는다.
-    let args = vec!["app-server".into(), "--help".into()];
-    let output = extensions::command_stdout_until(exe, cwd, &args, Instant::now() + HELP_TIMEOUT, cancelled)
-        .map_err(|error| format!("Cannot inspect app-server startup capabilities: {error}"))?;
-    Ok((help_supports_option(&output, "--no-remote-control")?, help_supports_option(&output, "--remote-control-client-name")?))
-}
-
-fn tui_command(exe: &OsString, cwd: &Path, endpoint: &str, token: &str, id: Option<&str>) -> CommandBuilder {
-    let mut command = CommandBuilder::new(exe);
-    if let Some(id) = id {
-        command.arg("resume");
-        command.arg(id);
-    }
-    command.arg("--remote");
-    command.arg(endpoint);
-    command.arg("--remote-auth-token-env");
-    command.arg(TOKEN_ENV);
-    command.arg("--cd");
-    command.arg(cwd.as_os_str());
-    command.cwd(cwd);
-    command.env(TOKEN_ENV, token);
-    // No model override: the official TUI discovers its model catalog dynamically.
-    command
-}
 
 fn initialize() -> Value {
     json!({"clientInfo":{"name":"arcvera_studio","title":"Arcvera-Studio","version":env!("CARGO_PKG_VERSION")}})
@@ -267,42 +222,27 @@ fn timed_out(error: &tungstenite::Error) -> bool {
 
 struct Rpc<S: Read + Write> {
     ws: WebSocket<S>,
+    core_version: Option<String>,
     next_id: u64,
     cancelled: Option<Arc<AtomicBool>>,
     deadline: Option<Instant>,
 }
 
-fn adopt_root(threads: &[Value], cwd: &Path) -> Result<Option<Value>, String> {
-    let mut roots = threads.iter().filter(|thread| {
-        thread["parentThreadId"].is_null()
-            && thread["forkedFromId"].is_null()
-            && matches!(thread["source"].as_str(), Some("cli" | "vscode" | "appServer"))
-            && thread["threadSource"].as_str().map_or(true, |s| s == "user")
-            && thread["sessionId"].as_str() == thread["id"].as_str()
-            && thread["id"].as_str().is_some_and(|id| verified_thread(thread, id, cwd).is_ok())
-    });
-    let root = roots.next().cloned();
-    if roots.next().is_some() { return Err("Dedicated Codex server has multiple root threads; active thread is unknown".into()); }
-    Ok(root)
+fn read_state<S: Read + Write>(rpc: &mut Rpc<S>, selected: Option<&str>, cwd: &Path) -> Result<Option<Value>, String> {
+    let id = selected.ok_or("Core session has no selected thread")?;
+    let result = rpc.call("thread/read", json!({"threadId":id,"includeTurns":false}))?;
+    verified_thread(&result["thread"], id, cwd)?;
+    Ok(Some(result["thread"].clone()))
 }
 
-fn read_state<S: Read + Write>(rpc: &mut Rpc<S>, selected: Option<&str>, cwd: &Path) -> Result<Option<Value>, String> {
-    if let Some(id) = selected {
-        let result = rpc.call("thread/read", json!({"threadId":id,"includeTurns":false}))?;
-        verified_thread(&result["thread"], id, cwd)?;
-        return Ok(Some(result["thread"].clone()));
-    }
-    let loaded = rpc.call("thread/loaded/list", json!({}))?;
-    let ids = loaded["data"].as_array().ok_or("Codex loaded thread list has no data array")?;
-    if ids.len() > 100 { return Err("Dedicated Codex server has too many loaded threads to identify its root".into()); }
-    let mut threads = Vec::new();
-    for id in ids {
-        let id = id.as_str().ok_or("Invalid Codex loaded thread ID")?;
-        let result = rpc.call("thread/read", json!({"threadId":id,"includeTurns":false}))?;
-        threads.push(result["thread"].clone());
-    }
-    adopt_root(&threads, cwd)
+pub(crate) fn validate_core_executable(exe: &OsString, cancelled: &Arc<AtomicBool>) -> Result<(), String> {
+    let cwd = env::current_dir().map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + HELP_TIMEOUT;
+    shared::supports_shared_management(|args: &[&str]| extensions::command_stdout_until(
+        exe, &cwd, &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(), deadline, Some(cancelled)))
+        .map_err(|error| format!("Arcvera Core 1.x 실행 파일 검증 실패: {error}"))
 }
+
 impl<S: Read + Write> Rpc<S> {
     fn send(&mut self, value: Value) -> Result<(), String> {
         check_cancelled(self.cancelled.as_ref())?;
@@ -323,8 +263,22 @@ impl<S: Read + Write> Rpc<S> {
             Err(error) => Err(format!("Codex transport read failed: {error}")),
         }
     }
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    fn bind_core_version(&self, method: &str, params: &mut Value) -> Result<(), String> {
+        if method == "initialize" {
+            let version = self.core_version.as_deref().ok_or("Core version has not been verified")?;
+            shared::require_core_version(version)?;
+            let object = params.as_object_mut().ok_or("Core initialize parameters must be an object")?;
+            let capabilities = object.entry("capabilities").or_insert_with(|| json!({}));
+            let capabilities = capabilities.as_object_mut().ok_or("Core capabilities must be an object")?;
+            let extensions = capabilities.entry("extensions").or_insert_with(|| json!({}));
+            let extensions = extensions.as_object_mut().ok_or("Core capability extensions must be an object")?;
+            extensions.insert("arcvera/core".into(), json!({"version":version}));
+        }
+        Ok(())
+    }
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
         check_cancelled(self.cancelled.as_ref())?;
+        self.bind_core_version(method, &mut params)?;
         self.next_id += 1;
         let id = self.next_id;
         self.send(json!({"id":id,"method":method,"params":params}))?;
@@ -342,49 +296,6 @@ impl<S: Read + Write> Rpc<S> {
 
 fn check_cancelled(cancelled: Option<&Arc<AtomicBool>>) -> Result<(), String> {
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) { Err("Session startup was cancelled".into()) } else { Ok(()) }
-}
-
-fn connect(endpoint: &str, token: &str, server: &mut Child, job: &ProcessJob, cancelled: Option<Arc<AtomicBool>>) -> Result<Rpc<TcpStream>, String> {
-    let address = endpoint.trim_start_matches("ws://").parse().map_err(|e| format!("Invalid loopback endpoint: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(12);
-    loop {
-        check_cancelled(cancelled.as_ref())?;
-        if let Some(status) = server.try_wait().map_err(|e| format!("Cannot inspect Codex server: {e}"))? {
-            return Err(format!("Codex app-server exited before connecting ({status}); verify the CLI supports authenticated WebSockets"));
-        }
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) {
-            // Authenticate the OS peer before constructing or sending a bearer credential.
-            // A released ephemeral port may have been claimed by an unrelated listener.
-            job.verify_tcp_peer(&stream)
-                .map_err(|error| format!("Codex app-server TCP peer ownership verification failed: {error}"))?;
-            let mut rpc = authenticated_socket(endpoint, token, stream)?;
-            rpc.cancelled = cancelled;
-            return Ok(rpc);
-        }
-        if Instant::now() >= deadline { return Err("Codex app-server did not become ready within 12 seconds".into()); }
-        thread::sleep(Duration::from_millis(80));
-    }
-}
-
-// The caller must verify the connected peer before this sends a credential.
-fn authenticated_socket(endpoint: &str, token: &str, stream: TcpStream) -> Result<Rpc<TcpStream>, String> {
-    stream.set_read_timeout(Some(Duration::from_millis(500))).map_err(|_| "Cannot set Codex read timeout")?;
-    stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|_| "Cannot set Codex write timeout")?;
-    let mut request = endpoint.into_client_request().map_err(|_| "Invalid Codex endpoint")?;
-    request.headers_mut().insert("Authorization", format!("Bearer {token}").parse().map_err(|_| "Invalid capability token")?);
-    let mut config = tungstenite::protocol::WebSocketConfig::default();
-    config.max_message_size = Some(MAX_FRAME);
-    config.max_frame_size = Some(MAX_FRAME);
-    // Handshake errors can contain the authorization header; never return them.
-    let (ws, _) = tungstenite::client::client_with_config(request, stream, Some(config))
-        .map_err(|_| "Codex authenticated WebSocket handshake failed".to_string())?;
-    Ok(Rpc {ws, next_id:0, cancelled:None, deadline:None})
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_connect_peer_fixture(endpoint: &str, server: &mut Child, job: &ProcessJob) -> Result<(), String> {
-    // Exercise the real connection path: the unrelated fixture listener must receive zero HTTP bytes.
-    connect(endpoint, "agent-grid-port-preemption-fixture", server, job, None).map(|_| ())
 }
 
 fn verified_thread(thread: &Value, requested: &str, cwd: &Path) -> Result<(), String> {
@@ -431,45 +342,6 @@ fn publish_status(previous: &mut Option<String>, state: String, on_event: &dyn F
     }
 }
 
-/// Both terminal sessions and short-lived catalog requests use the same owned,
-/// authenticated server. Browsing never creates/resumes a conversation.
-fn launch_server(exe: &OsString, cwd: &Path, thread_id: Option<&str>) -> Result<(CodexSession, Rpc<TcpStream>), String> {
-    launch_server_with_cancellation(exe, cwd, thread_id, None)
-}
-
-fn launch_server_with_cancellation(exe: &OsString, cwd: &Path, thread_id: Option<&str>, cancelled: Option<Arc<AtomicBool>>) -> Result<(CodexSession, Rpc<TcpStream>), String> {
-    check_cancelled(cancelled.as_ref())?;
-    let (no_remote_control, namespaced_remote) = server_capabilities(exe, cwd, cancelled.as_ref())?;
-    check_cancelled(cancelled.as_ref())?;
-    // Opt-in namespace isolates this owned process from all existing servers'
-    // enrollment records. Older CLIs remain usable with mobile mutations gated.
-    let remote_client_name = namespaced_remote.then(|| format!("arcvera-studio-{}", Uuid::new_v4().simple()));
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let endpoint = format!("ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
-    drop(listener);
-    // Two independent OS-random UUIDs provide 244 unpredictable bits; raw token stays in memory/child environment.
-    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let verifier = format!("{:x}", Sha256::digest(token.as_bytes()));
-    let mut process = background_command(exe.as_os_str());
-    process.args(server_args(&endpoint, &verifier, no_remote_control, remote_client_name.as_deref())).current_dir(&cwd)
-        .stdin(OwnedStdio::null()).stdout(OwnedStdio::null()).stderr(OwnedStdio::null());
-    let job = Arc::new(ProcessJob::new(false)?);
-    let (server, pending) = owned_process::spawn_suspended(&mut process, job.as_handle())?;
-    let mut session = CodexSession {
-        command: tui_command(exe, cwd, &endpoint, &token, thread_id), server:Some(server), job:Some(job),
-        stopped:Arc::new(AtomicBool::new(false)), socket:None, observer:None, mobile:None, shared:None, proxy_job:None, conversation:None,
-    };
-    session.mobile = Some(MobileConnection::new(endpoint.clone(), token.clone(), session.job.as_ref().unwrap(), session.stopped.clone(), namespaced_remote));
-    check_cancelled(cancelled.as_ref())?;
-    pending.resume()?;
-    let job = session.job.as_ref().ok_or("Codex server has no owned process job")?;
-    let mut rpc = connect(&endpoint, &token, session.server.as_mut().unwrap(), job, cancelled)?;
-    let initialized = rpc.call("initialize", initialize())?;
-    session.conversation = Some(ConversationConnection::from_initialize(conversation::Endpoint::Owned {address:endpoint.clone(),token:token.clone(),job:Arc::downgrade(session.job.as_ref().unwrap())}, session.stopped.clone(), &initialized));
-    rpc.send(json!({"method":"initialized","params":{}}))?;
-    Ok((session, rpc))
-}
-
 pub fn prepare(cwd: &Path, thread_id: Option<&str>, on_event: Arc<dyn Fn(CodexEvent) + Send + Sync>) -> Result<CodexSession, String> {
     prepare_with_executable(&executable()?, cwd, thread_id, on_event)
 }
@@ -482,26 +354,8 @@ pub(crate) fn prepare_with_cancellation(exe: &OsString, cwd: &Path, thread_id: O
     let cwd = cwd.canonicalize().map_err(|e| format!("Cannot open working directory: {e}"))?;
     if !cwd.is_dir() { return Err("Working directory must be a directory".into()); }
     if let Some(id) = thread_id { Uuid::parse_str(id).map_err(|_| "Saved Codex thread ID is not a UUID; refusing ambiguous name-based resume")?; }
-    if let Some(endpoint) = shared::SharedEndpoint::existing(exe, &cwd, Some(&cancelled))? {
-        return shared::prepare(&cwd, thread_id, endpoint, on_event, cancelled);
-    }
-    let (mut session, mut rpc) = launch_server_with_cancellation(exe, &cwd, thread_id, Some(cancelled))?;
-    if let Some(id) = thread_id {
-        let existing = rpc.call("thread/read", json!({"threadId":id,"includeTurns":false}))?;
-        verified_thread(&existing["thread"], id, &cwd)?;
-        on_event(CodexEvent::ThreadId(id.to_owned()));
-        on_event(CodexEvent::Status(status(&existing["thread"]["status"])));
-    }
-    // Fresh TUI owns thread/start; an empty pre-created thread may not have a resumable rollout.
-    // The observer subscribes to the existing thread; it never sends input or approval responses.
-    session.socket = Some(rpc.ws.get_ref().try_clone().map_err(|e| e.to_string())?);
-    let stopped = session.stopped.clone();
-    let selected = thread_id.map(str::to_owned);
-    let conversation = session.conversation.clone();
-    session.observer = Some(thread::spawn(move || {
-        observe(&mut rpc, selected, &cwd, &stopped, on_event.as_ref(),conversation.as_ref());
-    }));
-    Ok(session)
+    let endpoint = shared::SharedEndpoint::existing(exe, &cwd, Some(&cancelled))?;
+    shared::prepare(&cwd, thread_id, endpoint, on_event, cancelled)
 }
 
 fn observe<S: Read + Write>(rpc: &mut Rpc<S>, mut selected: Option<String>, cwd: &Path, stopped: &AtomicBool, on_event: &dyn Fn(CodexEvent), conversation: Option<&ConversationConnection>) {
@@ -606,7 +460,7 @@ impl Write for ProxyStream {
     fn flush(&mut self) -> io::Result<()> { self.input.flush() }
 }
 
-/// A short-lived connection to an *existing* official daemon. Never starts/stops it.
+/// A short-lived connection to an *existing* Arcvera Core daemon. Never starts/stops it.
 struct Proxy {
     child: Child,
     job: Option<Arc<ProcessJob>>,
@@ -646,18 +500,18 @@ impl Drop for ProxyExpiry {
 impl Drop for Proxy {
     fn drop(&mut self) {
         if self.finished { return; }
-        self.rpc.take(); // Drop stdin/receiver, unblocking a reader waiting to send.
-        self.expiry.take();
-        if let Some(job) = self.job.take() { let _ = job.terminate(); }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(reader) = self.reader.take() { let _ = reader.join(); }
+        // Descendants may retain stdout: terminate this proxy's entire owned
+        // Job before waiting for EOF, even on abandoned/error connections.
+        if let Err(error) = self.finish_inner() { eprintln!("Arcvera proxy cleanup failed: {error}"); }
     }
 }
 impl Proxy {
     /// Consumes only this proxy and confirms its own job/child/reader teardown.
     /// It never sends a daemon stop request or uses global process counts.
     fn finish(mut self) -> Result<(),String> {
+        self.finish_inner()
+    }
+    fn finish_inner(&mut self) -> Result<(),String> {
         self.finished=true;
         let deadline=Instant::now()+Duration::from_secs(3);
         let mut errors=Vec::new();
@@ -742,13 +596,13 @@ impl Proxy {
         let mut config = tungstenite::protocol::WebSocketConfig::default();
         config.max_message_size = Some(MAX_FRAME);
         config.max_frame_size = Some(MAX_FRAME);
-        // The URL supplies HTTP Upgrade metadata only; bytes travel through the official proxy.
+        // The URL supplies HTTP Upgrade metadata only; bytes travel through the Core proxy.
         let deadline = overall.unwrap_or_else(|| Instant::now() + Duration::from_secs(8)).min(Instant::now() + Duration::from_secs(8));
         let mut handshake = tungstenite::client::client_with_config("ws://localhost/", stream, Some(config));
         loop { match handshake {
             Ok((mut ws, _)) => {
                 ws.get_mut().timeout = Duration::from_millis(500);
-                proxy.rpc = Some(Rpc {ws,next_id:0,cancelled,deadline:overall});
+                proxy.rpc = Some(Rpc {ws,core_version:None,next_id:0,cancelled,deadline:overall});
                 return Ok(());
             }
             Err(tungstenite::HandshakeError::Interrupted(pending)) => {
@@ -775,6 +629,10 @@ impl Proxy {
 #[path="codex_worker_tests.rs"]
 pub(super) mod worker_failure_tests;
 
+#[cfg(all(test,windows))]
+#[path="codex_proxy_drop_tests.rs"]
+mod proxy_drop_tests;
+
 fn external(thread: &Value, observed_at: &str) -> Result<ExternalSession, String> {
     let id = thread["id"].as_str().ok_or("Codex thread list entry has no ID")?.to_owned();
     let cwd = thread["cwd"].as_str().ok_or("Codex thread list entry has no working directory")?.to_owned();
@@ -788,15 +646,13 @@ pub fn list_external() -> Result<Vec<ExternalSession>, String> {
 }
 
 pub fn list_external_with_executable(exe: &OsString) -> Result<Vec<ExternalSession>, String> {
-    let mut proxy = Proxy::open(exe)?;
-    proxy.call("initialize", initialize())?;
-    proxy.rpc.as_mut().unwrap().send(json!({"method":"initialized","params":{}}))?;
+    shared::with_rpc(exe, &env::current_dir().map_err(|error| error.to_string())?, |rpc| {
     let observed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis().to_string();
     let mut sessions = Vec::new();
     let mut cursor: Option<String> = None;
     // Bound discovery work and fail explicitly rather than silently truncating a large history.
     for _ in 0..100 {
-        let page = proxy.call("thread/list", json!({"limit":100,"cursor":cursor,"useStateDbOnly":true}))?;
+        let page = rpc.call("thread/list", json!({"limit":100,"cursor":cursor,"useStateDbOnly":true}))?;
         let data = page["data"].as_array().ok_or("Codex thread/list response has no data array")?;
         for thread in data { sessions.push(external(thread, &observed)?); }
         match page["nextCursor"].as_str() {
@@ -806,6 +662,7 @@ pub fn list_external_with_executable(exe: &OsString) -> Result<Vec<ExternalSessi
         }
     }
     Err("Codex thread discovery exceeded 100 pages; results were not returned partially".into())
+    })
 }
 
 #[cfg(test)]
@@ -815,6 +672,32 @@ mod startup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initialize_binds_verified_core_version_without_losing_client_capabilities() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut ws = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
+            let request: Value = match ws.read().unwrap() {
+                Message::Text(text) => serde_json::from_str(&text).unwrap(), _ => panic!("initialize required"),
+            };
+            assert_eq!(request["method"], "initialize");
+            assert_eq!(request["params"]["clientInfo"]["version"], "2.0.0");
+            assert_eq!(request["params"]["capabilities"]["experimentalApi"], true);
+            assert_eq!(request["params"]["capabilities"]["extensions"]["other"], json!({"enabled":true}));
+            assert_eq!(request["params"]["capabilities"]["extensions"]["arcvera/core"], json!({"version":"1.0.0+build.42"}));
+            ws.send(Message::Text(json!({"id":request["id"],"result":{}}).to_string().into())).unwrap();
+        });
+        let mut rpc = Rpc { ws:WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Client,None), core_version:None, next_id:0, cancelled:None, deadline:None };
+        assert!(rpc.call("initialize",json!({})).unwrap_err().contains("verified"));
+        rpc.core_version=Some("0.168.0".into());
+        assert!(rpc.call("initialize",json!({})).is_err());
+        rpc.core_version=Some("1.0.0+build.42".into());
+        rpc.call("initialize",json!({"clientInfo":{"version":"2.0.0"},"capabilities":{"experimentalApi":true,"extensions":{"other":{"enabled":true},"arcvera/core":{"version":"stale"}}}})).unwrap();
+        worker.join().unwrap();
+    }
     #[test]
     fn rpc_total_deadline_spans_multiple_calls_and_prevents_late_mutation() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -831,7 +714,7 @@ mod tests {
             assert!(ws.read().is_err(), "기한 뒤 mutation을 전송하면 안 된다");
         });
         let started = Instant::now();
-        let mut rpc = Rpc {ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(started+Duration::from_millis(200))};
+        let mut rpc = Rpc {core_version:Some("1.0.0+fixture".into()),ws:WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None),next_id:0,cancelled:None,deadline:Some(started+Duration::from_millis(200))};
         rpc.call("initialize", json!({})).unwrap();
         assert!(rpc.call("thread/read", json!({})).unwrap_err().contains("timed out"));
         assert!(started.elapsed() < Duration::from_millis(600));
@@ -857,7 +740,7 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let writes = Arc::new(AtomicUsize::new(0));
         let stream = PendingReply { cancelled: cancelled.clone(), reads: reads.clone(), writes: writes.clone() };
-        let mut rpc = Rpc { ws: WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:Some(cancelled), deadline:None };
+        let mut rpc = Rpc { core_version:Some("1.0.0+fixture".into()),ws: WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None), next_id:0, cancelled:Some(cancelled), deadline:None };
         let started = Instant::now();
         assert!(rpc.call("thread/read", json!({"threadId":"fixture"})).unwrap_err().contains("cancelled"));
         assert!(started.elapsed() < Duration::from_secs(1), "cancel must not wait for the 20-second RPC deadline");
@@ -890,40 +773,6 @@ mod tests {
         assert!(verified_thread(&value, "b", &cwd).is_err());
         assert!(verified_thread(&json!({"id":"a"}), "a", &cwd).is_err());
         assert!(verified_thread(&json!({"id":"a","cwd":cwd.join("missing-grid-test-directory")}), "a", &cwd).is_err());
-    }
-    #[test]
-    fn command_keeps_bearer_out_of_argv_and_preserves_exact_resume() {
-        let token = "secret-capability";
-        let digest = format!("{:x}", Sha256::digest(token.as_bytes()));
-        let args = server_args("ws://127.0.0.1:1234", &digest, false, None);
-        assert!(!args.iter().any(|a| a.contains(token)));
-        assert!(args.contains(&digest));
-        assert!(!args.iter().any(|arg| arg == "--no-remote-control"));
-        let isolated = server_args("ws://127.0.0.1:1234", &digest, true, None);
-        assert_eq!(&isolated[..args.len()], args.as_slice());
-        assert_eq!(isolated.last().unwrap(), "--no-remote-control");
-        assert!(!isolated.iter().any(|arg| arg.contains(token)));
-        let namespaced = server_args("ws://127.0.0.1:1234", &digest, true, Some("owned-process-uuid"));
-        assert_eq!(&namespaced[namespaced.len()-2..], ["--remote-control-client-name", "owned-process-uuid"]);
-        let cmd = tui_command(&OsString::from("codex"), Path::new("."), "ws://127.0.0.1:1234", token, Some("exact-id"));
-        let args: Vec<_> = cmd.get_argv().iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        assert_eq!(&args[1..3], ["resume", "exact-id"]);
-        assert!(!args.iter().any(|a| a.contains(token)));
-        assert!(args.contains(&TOKEN_ENV.into()));
-    }
-    #[test]
-    fn fresh_tui_creates_thread_and_observer_adopts_only_unambiguous_root() {
-        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
-        let cmd = tui_command(&OsString::from("codex"), &cwd, "ws://127.0.0.1:1234", "token", None);
-        assert!(!cmd.get_argv().iter().any(|arg| arg == "resume"));
-        // Keys and enum serialization match official v2/thread_data.rs, not the core's snake_case metadata.
-        let root = json!({"id":"root","sessionId":"root","cwd":cwd,"source":"vscode","threadSource":null,"parentThreadId":null,"forkedFromId":null});
-        let child = json!({"id":"child","sessionId":"root","cwd":cwd,"parentThreadId":"root","source":{"subAgent":"compact"},"threadSource":"subagent"});
-        assert_eq!(adopt_root(&[root.clone(), child], &cwd).unwrap().unwrap()["id"], "root");
-        assert!(adopt_root(&[], &cwd).unwrap().is_none());
-        assert!(adopt_root(&[root.clone(), json!({"id":"other","sessionId":"other","source":"cli","cwd":cwd})], &cwd).is_err());
-        assert!(adopt_root(&[json!({"id":"unknown","sessionId":"unknown","cwd":cwd,"source":"unknown"})], &cwd).unwrap().is_none());
-        assert!(adopt_root(&[json!({"id":"missing-source","sessionId":"missing-source","cwd":cwd})], &cwd).unwrap().is_none());
     }
     #[test]
     fn status_recovers_after_unknown_observation_and_deduplicates_only_current_state() {

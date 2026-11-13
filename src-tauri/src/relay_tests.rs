@@ -41,7 +41,9 @@ fn pending_request_count_and_bytes_are_bounded() {
 #[test]
 fn remote_authority_excludes_desktop_exit_executable_selection_and_os_launch() {
     let commands=super::super::relay_dispatch::COMMANDS;
-    assert_eq!(commands.len(),47);
+    // The 47 existing operations plus the read-only AGPL source-offer query.
+    assert_eq!(commands.len(),48);
+    assert!(commands.contains(&"software_license"));
     for blocked in ["complete_exit","unconfirmed_exit_available","set_codex_executable","set_app_server_executable","choose_codex_executable","choose_app_server_executable","apply_runtime_transition","open_external_url","relay_connect","relay_disconnect"] {assert!(!commands.contains(&blocked));}
     assert!(commands.contains(&"respond_pending_question"));assert!(commands.contains(&"session_write"));
 }
@@ -77,7 +79,7 @@ async fn wait_state(relay:&RelayState,expected:&str) {
 
 #[test]
 fn pinned_actual_remote_relay_roundtrip_shares_owned_engine_and_disconnects() {
-    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(),Ok("true"),"Native relay integration is CI-only; never run local Rust");
+    // This fixture owns its loopback relay process and temporary data on this PC.
     let mut fixture=Fixture::new();
     let script=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../verification/remote-integration/relay-fixture.mjs");
     let mut child=Command::new("node").arg(script).arg(&fixture.directory).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();

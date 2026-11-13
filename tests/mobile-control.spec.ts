@@ -5,7 +5,7 @@ async function workspace(page: Page) {
     const state = window as any;
     state.isTauri = true;
     let callback = 0;
-    state.mobileFixture = { calls: [], status: 'disabled', isolated: true, shared: false, hold: false, failure: false, release: () => {} };
+    state.mobileFixture = { calls: [], status: 'disabled', shared: true, hold: false, failure: false, release: () => {} };
     state.__TAURI_INTERNALS__ = {
       transformCallback: () => ++callback, unregisterCallback() {},
       async invoke(command: string, args: any = {}) {
@@ -24,7 +24,7 @@ async function workspace(page: Page) {
           if (fixture.failure) throw new Error('이 실행 파일은 원격 제어를 지원하지 않습니다');
           if (args.action === 'enable') fixture.status = 'connected';
           if (args.action === 'disable') fixture.status = 'disabled';
-          return { isolated: fixture.isolated, shared: fixture.shared, mutationsAllowed: fixture.isolated || fixture.shared, status: { status: fixture.status, serverName: '시험 서버', environmentId: 'test-environment' },
+          return { shared: fixture.shared, mutationsAllowed: fixture.shared, status: { status: fixture.status, serverName: '시험 서버', environmentId: 'test-environment' },
             pairing: args.action === 'pair' ? { manualCode: 'TEST-CODE-ONLY', expiresAt: Math.floor(Date.now() / 1000) + 120, environmentId: 'test-environment' } : null };
         }
         return null;
@@ -70,11 +70,11 @@ test('unsupported mobile controls report the error without changing a running se
   expect(await page.evaluate(() => (window as any).mobileFixture.calls.filter((item: any) => ['start_session', 'session_stop', 'session_write'].includes(item.command)))).toEqual([]);
 });
 
-test('legacy CLI status explains isolation and prevents mobile mutations before a failed request', async ({ page }) => {
+test('unconfirmed shared status prevents mutations and directs users to Core settings', async ({ page }) => {
   await workspace(page);
-  await page.evaluate(() => { (window as any).mobileFixture.isolated = false; });
+  await page.evaluate(() => { (window as any).mobileFixture.shared = false; });
   await page.locator('#mobile-control-refresh').click();
-  await expect(page.locator('#mobile-control-compatibility')).toContainText('--remote-control-client-name');
+  await expect(page.locator('#mobile-control-compatibility')).toContainText('Arcvera Core');
   await expect(page.locator('#mobile-control-enable')).toBeDisabled();
   await expect(page.locator('#mobile-control-disable')).toBeDisabled();
   await expect(page.locator('#mobile-control-pair')).toBeDisabled();
@@ -104,9 +104,9 @@ test('late pairing after close stays cleared and app exit waits for the pending 
   await expect(page.locator('#mobile-control-pairing')).toBeHidden();
 });
 
-test('기존 공유 등록은 격리 여부와 별도로 제어를 허용하고 전체 서버 범위를 표시한다', async ({ page }) => {
+test('기존 공유 등록은 제어를 허용하고 전체 서버 범위를 표시한다', async ({ page }) => {
   await workspace(page);
-  await page.evaluate(() => { (window as any).mobileFixture.isolated = false; (window as any).mobileFixture.shared = true; });
+  await page.evaluate(() => { (window as any).mobileFixture.shared = false; (window as any).mobileFixture.shared = true; });
   await page.locator('#mobile-control-refresh').click();
   await expect(page.locator('#mobile-control-compatibility')).toBeHidden();
   await expect(page.locator('#mobile-control-scope')).toContainText('모든 대화');
