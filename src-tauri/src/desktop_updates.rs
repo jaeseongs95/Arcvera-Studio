@@ -83,7 +83,7 @@ fn parse_release(bytes: &[u8]) -> Result<(String, Version), String> {
 
 fn parse_codex_version(text: &str) -> Option<Version> {
     if text.len() > 256 { return None; }
-    let version = Version::parse(text.strip_prefix("codex-cli ").unwrap_or(text)).ok()?;
+    let version = Version::parse(text.strip_prefix("codex-cli ").or_else(|| text.strip_prefix("arcvera ")).unwrap_or(text)).ok()?;
     (version.major == 1 && version.pre.is_empty()).then_some(version)
 }
 
@@ -730,6 +730,16 @@ mod tests {
         assert!(parse_codex_release_tag(&"v".repeat(129)).is_none());
         let tag = parse_release_tag(br#"{"tag_name":"v1.1.0","draft":false,"prerelease":false}"#).unwrap();
         assert_eq!(compare_codex_versions("1.0.0", &tag), CodexComparison::Available);
+    }
+
+    #[test]
+    fn arcvera_version_update_comparison_preserves_full_identity() {
+        assert_eq!(compare_codex_versions("arcvera 1.0.1", "v1.0.1"), CodexComparison::Current);
+        assert_eq!(compare_codex_versions("arcvera 1.0.1+build.005", "v1.0.1+build.005"), CodexComparison::Current);
+        assert_eq!(compare_codex_versions("arcvera 1.0.1+build.005", "v1.0.1+build.006"), CodexComparison::ReleaseIdentityMismatch);
+        for invalid in ["Arcvera 1.0.1", "arcvera  1.0.1", "arcvera-cli 1.0.1", "arcvera 01.0.1", "arcvera 1.0.1\t", "arcvera 1.0.1-rc.1", "arcvera 2.0.0"] {
+            assert_eq!(compare_codex_versions(invalid, "v1.0.1"), CodexComparison::UnsupportedRuntime, "{invalid:?}");
+        }
     }
 
     #[test]

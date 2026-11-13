@@ -14,7 +14,7 @@ by project, arrange terminals in a resizable grid and return to saved work.
 *Design preview captured from an isolated browser fixture. The terminals contain
 sample output; this image does not demonstrate native runtime or performance.*
 
-Version **2.0.0** requires a stable Arcvera Core 1.x release. Official Codex and earlier Core
+Version **2.0.1** requires a stable Arcvera Core 1.x release. Official Codex and earlier Core
 runtimes are no longer supported. Existing settings, authentication and
 conversations are retained.
 See [rename compatibility](docs/rebranding.md) and [release notes](docs/release-notes.md).
@@ -40,7 +40,7 @@ Existing settings, authentication and conversations are retained. If you previou
    extract the **whole ZIP**. Check the download against the release's `SHA256SUMS.txt`,
    then launch the installed app or `arcvera-studio.exe`.
 3. **Select your CLI.** Open **⚙ Settings → Executable settings** and choose the
-   native `codex.exe` or installed `opendiy-codex-launcher.exe`. A server executable
+   native Core `arcvera.exe`. A server executable
    is selected automatically; specifying one separately is optional. Changing
    the CLI path preserves open terminals. Selecting an app-server file explicitly replaces
    the managed server when safe and reconnects eligible idle conversations with their drafts.

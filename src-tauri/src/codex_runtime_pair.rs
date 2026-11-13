@@ -26,7 +26,8 @@ fn bounded_text<'a>(text: &'a str, label: &str, limit: usize) -> Result<&'a str,
 pub(super) fn normalized_version(text: &str) -> Result<String, String> {
     bounded_text(text, "버전", 256)?;
     let version = text.strip_prefix("codex-cli ")
-        .or_else(|| text.strip_prefix("codex-app-server ")).unwrap_or(text);
+        .or_else(|| text.strip_prefix("codex-app-server "))
+        .or_else(|| text.strip_prefix("arcvera ")).unwrap_or(text);
     let numeric = |part: &str| !part.is_empty() && part.bytes().all(|c| c.is_ascii_digit())
         && (part.len() == 1 || !part.starts_with('0'));
     let identifiers = |part: &str, prerelease: bool| part.split('.').all(|piece| {
@@ -339,6 +340,22 @@ mod tests {
         let report = inspect_fixture(R36, R36, Ok(serde_json::to_vec(&value).unwrap())).0.unwrap();
         assert_eq!(report.state, "unavailable");
         assert!(report.message.unwrap().contains("CLI 버전"));
+    }
+
+    #[test]
+    fn arcvera_version_actual_cli_and_server_outputs_use_same_strict_identity() {
+        assert_eq!(executable_version(b"arcvera 1.0.1\n").unwrap(), "1.0.1");
+        assert_eq!(executable_version(b"codex-app-server 1.0.1\n").unwrap(), "1.0.1");
+        assert_eq!(shared::executable_core_version(b"arcvera 1.0.1\n").unwrap(), "1.0.1");
+        assert_eq!(executable_version(b"arcvera 1.0.1+build.005\n").unwrap(), "1.0.1+build.005");
+        assert_ne!(executable_version(b"arcvera 1.0.1+build.005\n").unwrap(), executable_version(b"codex-app-server 1.0.1+build.006\n").unwrap());
+        for invalid in ["Arcvera 1.0.1", "arcvera  1.0.1", "arcvera-cli 1.0.1", "arcvera arcvera 1.0.1", "arcvera 01.0.1", "arcvera 1.0.1+", "arcvera 1.0.1\t"] {
+            assert!(normalized_version(invalid).is_err(), "{invalid:?}");
+        }
+        for invalid in [b"arcvera 1.0.1\n\n".as_slice(), b"arcvera 1.0.1-rc.1\n", b"arcvera 2.0.0\n"] {
+            assert!(executable_version(invalid).is_err(), "{invalid:?}");
+            assert!(shared::executable_core_version(invalid).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]

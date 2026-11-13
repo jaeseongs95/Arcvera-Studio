@@ -1,5 +1,34 @@
 # Release notes
 
+## 2.0.1 — 2026-11-13
+
+### English
+
+Recognize the exact `arcvera ` prefix reported by the Arcvera Core CLI. Desktop
+2.0.0 could reject Core 1.0.1 during shared-server preparation and classify its
+version as unsupported during update checks. Both consumers now accept the
+published CLI format while retaining strict version syntax, stable Core 1.x
+requirements and full build-metadata identity checks.
+
+After updating Desktop, select the Core package's `bin/arcvera.exe` under
+Executable settings and retry server preparation. Explicit server replacement
+continues to require a matching CLI/server package and the existing confirmation
+and activity checks. Existing settings, authentication and conversations are
+retained.
+
+### 한국어
+
+Arcvera Core CLI가 출력하는 정확한 `arcvera ` 접두사를 인식합니다. Desktop
+2.0.0은 Core 1.0.1의 공유 서버 준비를 거부하거나 업데이트 검사에서 지원하지 않는
+버전으로 판정할 수 있었습니다. 두 소비 경로가 공개 CLI의 출력 형식을 수용하도록
+수정했으며, 엄격한 버전 문법·Core 1.x 정식 버전 요구·빌드 메타데이터를 포함한 전체
+식별값 검사는 유지합니다.
+
+Desktop 업데이트 후 실행 파일 설정에서 Core 패키지의 `bin/arcvera.exe`를 선택하고
+서버 준비를 다시 시도하세요. 명시적으로 서버를 교체할 때는 기존과 같이 일치하는
+CLI·서버 패키지와 확인 절차·진행 작업 검사가 필요합니다. 기존 설정·인증·대화는
+유지됩니다.
+
 ## 2.0.0 — 2026-11-12
 
 ### English

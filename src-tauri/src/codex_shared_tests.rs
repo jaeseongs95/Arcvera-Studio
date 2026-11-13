@@ -56,6 +56,16 @@ fn startup_commands_case(replies: Vec<Result<Vec<u8>, String>>, started: Result<
     (result, calls.into_inner())
 }
 #[test]
+fn arcvera_actual_cli_output_reuses_supported_running_server() {
+    let socket = env::current_dir().unwrap().join("startup-fixture.sock");
+    let running = json!({"status":"running", "socketPath":socket, "appServerVersion":"1.0.1"});
+    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()),
+        Ok(b"arcvera 1.0.1\n".to_vec()), Ok(serde_json::to_vec(&running).unwrap())], Err("시작 금지".into()));
+    assert_eq!(result.unwrap(), running);
+    assert_eq!(calls, ["app-server --help", "app-server daemon start --help", "--version", "app-server daemon version"]);
+}
+
+#[test]
 fn startup_reuses_core_and_rejects_unsupported_runtime() {
     let socket = env::current_dir().unwrap().join("startup-fixture.sock").to_str().unwrap().to_owned();
     let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(b"codex-cli 1.0.0+fixture\n".to_vec()), Ok(startup_status("running", &socket))], Err("시작 금지".into()));
