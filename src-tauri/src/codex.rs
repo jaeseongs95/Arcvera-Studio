@@ -500,17 +500,18 @@ impl Drop for ProxyExpiry {
 impl Drop for Proxy {
     fn drop(&mut self) {
         if self.finished { return; }
-        self.rpc.take(); // Drop stdin/receiver, unblocking a reader waiting to send.
-        self.expiry.take();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(reader) = self.reader.take() { let _ = reader.join(); }
+        // Descendants may retain stdout: terminate this proxy's entire owned
+        // Job before waiting for EOF, even on abandoned/error connections.
+        if let Err(error) = self.finish_inner() { eprintln!("Arcvera proxy cleanup failed: {error}"); }
     }
 }
 impl Proxy {
     /// Consumes only this proxy and confirms its own job/child/reader teardown.
     /// It never sends a daemon stop request or uses global process counts.
     fn finish(mut self) -> Result<(),String> {
+        self.finish_inner()
+    }
+    fn finish_inner(&mut self) -> Result<(),String> {
         self.finished=true;
         let deadline=Instant::now()+Duration::from_secs(3);
         let mut errors=Vec::new();
@@ -627,6 +628,10 @@ impl Proxy {
 #[cfg(all(test,windows))]
 #[path="codex_worker_tests.rs"]
 pub(super) mod worker_failure_tests;
+
+#[cfg(all(test,windows))]
+#[path="codex_proxy_drop_tests.rs"]
+mod proxy_drop_tests;
 
 fn external(thread: &Value, observed_at: &str) -> Result<ExternalSession, String> {
     let id = thread["id"].as_str().ok_or("Codex thread list entry has no ID")?.to_owned();

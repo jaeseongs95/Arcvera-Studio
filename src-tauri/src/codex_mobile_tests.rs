@@ -10,23 +10,44 @@ impl MobileConnection {
         self.run_stream_version(action, stream, timeout, Some("1.0.0+fixture"))
     }
     fn run_stream_version(&self, action: MobileAction, stream: TcpStream, timeout: Duration, version: Option<&str>) -> Result<MobileReply, String> {
-        stream.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        // Handshake setup is synchronous; the short RPC polling interval must
+        // not expire while the fixture server is still scheduling its reply.
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         stream.set_write_timeout(Some(timeout)).unwrap();
         let (ws, _) = tungstenite::client("ws://localhost/", stream).map_err(|e| e.to_string())?;
+        ws.get_ref().set_read_timeout(Some(Duration::from_millis(10))).unwrap();
         let mut rpc = Rpc { core_version:version.map(str::to_owned), ws, next_id:0, cancelled:Some(self.0.stopped.clone()), deadline:Some(Instant::now()+timeout) };
         self.run_rpc_until(action, &mut rpc, Instant::now()+timeout)
     }
 }
 fn fixture(operation: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (MobileConnection, TcpStream, JoinHandle<()>) {
+    fixture_with_handshake_delay(Duration::ZERO, operation)
+}
+fn fixture_with_handshake_delay(delay: Duration, operation: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> (MobileConnection, TcpStream, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let worker = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        thread::sleep(delay);
         let ws = tungstenite::accept(stream).unwrap();
         operation(ws);
     });
     (fixture_connection(format!("ws://{address}")), TcpStream::connect(address).unwrap(), worker)
+}
+
+#[test]
+fn delayed_handshake_does_not_use_the_rpc_poll_interval() {
+    let (connection, stream, worker) = fixture_with_handshake_delay(Duration::from_millis(100), |mut ws| {
+        initialize_fixture(&mut ws);
+        let request = read(&mut ws);
+        assert_eq!(request["method"], "remoteControl/status/read");
+        reply(&mut ws, &request, status_value());
+        assert!(ws.read().is_err());
+    });
+    let result = connection.run_stream(MobileAction::Status, stream, Duration::from_secs(2));
+    worker.join().unwrap();
+    assert_eq!(result.unwrap().status.unwrap().status, "connected");
 }
 fn read(ws: &mut WebSocket<TcpStream>) -> Value {
     loop {

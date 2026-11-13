@@ -15,13 +15,25 @@ Version 2.0.0 and every subsequent version use AGPL-3.0-or-later. The earlier
 MIT notice and third-party licenses are preserved. Settings includes the
 license text and a link to the matching release's free Corresponding Source.
 See [source and redistribution instructions](../SOURCE.md). The validation
-counts below describe the earlier functional candidate; they do not establish
-validation of the rebuilt AGPL package.
+counts below identify their tested candidate and scope; local source checks do
+not establish validation of the final rebuilt package.
 
 Desktop now requires the stable Arcvera Core 1.x contract. Official Codex, earlier Core
 versions and per-session server fallback are no longer supported. Every shared
 connection includes the exact validated server version, including build metadata,
 in its initialization capabilities. Core rejects a mismatched contract.
+
+Abandoned and failed proxy connections now use the same bounded cleanup as
+explicit completion. Cleanup terminates the proxy's own process Job before
+waiting for its reader, preventing descendants that inherit stdout from keeping
+the reader blocked. The shared Core server remains outside that Job.
+
+The updated source passed 485 native tests on the local Windows PC, with seven
+existing opt-in tests ignored. Two unchanged regression cases fail on the prior
+cleanup and pass on the fix, checking inherited stdout, real reader completion,
+owned Job cleanup and original process handles. A delayed WebSocket handshake
+case also passed after separating fixture setup from RPC polling. The earlier
+full run's three fixture handshake failures remain recorded.
 
 Existing settings, authentication and conversations are retained. Select the
 Core CLI and server in Executable settings. Each must be a stable 1.x version;
@@ -37,6 +49,11 @@ The 60-second PTY workload passed 236 checks; the short entrypoint passed seven.
 These use isolated peers and local shell fixtures. Windows CI also passed the
 native integration harness and 591 browser fixture checks, with one existing
 opt-in browser check skipped.
+
+Additional local browser coverage uses a mocked native bridge and engine. Eight
+cases passed in the original run; the two timed-out cases passed after disabling
+the test server's file watcher, with the same 94 frontend, test and configuration
+inputs. This is combined evidence from two runs, not one ten-case passing run.
 
 Native GUI, physical IME, authenticated model turns, physical phone control and
 long-duration T62 workloads remain unverified. The earlier CI
@@ -59,12 +76,25 @@ Desktop은 Microsoft 런타임 DLL·설치기를 동봉하거나 자동으로 �
 2.0.0과 이후 모든 버전에는 AGPL-3.0-or-later를 적용합니다. 기존 MIT 고지와
 타사 라이선스는 보존합니다. 설정에서 라이선스 전문을 읽고 동일 버전의 무료
 대응 소스 릴리스를 열 수 있습니다. [소스·재배포 안내](../SOURCE.md)를 참고하세요.
-아래 검증 수치는 이전 기능 후보의 결과이며, 새 AGPL 패키지 검증을 뜻하지 않습니다.
+아래 검증 수치는 각 시험 대상과 범위를 구분한 결과이며, 로컬 소스 검사가 최종
+재빌드 패키지의 검증을 뜻하지는 않습니다.
 
 Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 Codex, 이전 Core 버전과
 개별 서버 대체 실행은 지원하지 않습니다. 모든 공유 연결은 빌드 메타데이터를
 포함한 검증된 서버의 전체 버전을 초기화 기능 정보에 전달합니다. Core는 계약이
 일치하지 않는 연결을 거부합니다.
+
+중도 반환하거나 오류가 발생한 proxy 연결도 명시적 종료와 동일한 제한 시간 내
+정리 절차를 사용합니다. reader를 기다리기 전에 해당 proxy가 소유한 프로세스
+Job을 종료하여, stdout을 상속한 자손 프로세스로 인해 reader가 계속 대기하는
+경로를 수정합니다. 공유 Core 서버는 해당 Job에 포함되지 않습니다.
+
+수정된 소스는 이 PC의 Windows 환경에서 네이티브 시험 485개를 통과했으며,
+기존 opt-in 시험 7개는 제외 상태를 유지합니다. 동일한 회귀 시험 두 개가 이전
+정리 코드에서 실패하고 수정 코드에서 통과하여 stdout 상속, 실제 reader 종료,
+소유 Job 정리와 원래 프로세스 핸들을 확인했습니다. 시험 준비 단계와 RPC 폴링을
+분리한 뒤 지연된 WebSocket 핸드셰이크 시험도 통과했습니다. 이전 전체 실행에서
+발생한 fixture 핸드셰이크 실패 세 건은 기록에 보존합니다.
 
 기존 설정·인증·대화는 유지됩니다. 실행 파일 설정에서 Core CLI와 서버를 선택하세요.
 각각 1.x 정식 버전이면 버전이 달라도 사용할 수 있습니다. 명시적으로 서버를 교체할 때는
@@ -78,6 +108,11 @@ Desktop은 Arcvera Core 1.x 정식 버전의 계약을 요구합니다. 공식 C
 60초 부하는 236개, 짧은 진입점은 7개 검사를 통과했습니다. 이 시험에는 격리된
 통신 상대와 로컬 셸 fixture를 사용합니다. Windows CI에서도 네이티브 통합 harness와
 브라우저 fixture 검사 591개가 통과했고, 기존 opt-in 브라우저 검사 1개는 제외했습니다.
+
+추가 로컬 브라우저 시험은 네이티브 연결과 엔진을 모의합니다. 최초 실행에서
+8개가 통과했고, 시간 초과한 2개는 시험 서버의 파일 감시기를 끈 뒤 통과했습니다.
+프런트엔드·시험·설정 입력 94개는 동일합니다. 이는 두 실행을 결합한 근거이며,
+10개가 한 실행에서 모두 통과한 결과는 아닙니다.
 
 네이티브 GUI, 실제 IME, 인증된 모델 요청, 실제 휴대전화 제어와 장시간 T62 부하는
 미검증입니다. 과거 CI의 `ERR_NO_BUFFER_SPACE` 실패 원인은 미확정이며, 후속 실행의
