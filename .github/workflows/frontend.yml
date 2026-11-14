@@ -4,6 +4,11 @@ on:
   push:
     branches: [feature/desktop-2.1.0-core110]
   workflow_dispatch:
+    inputs:
+      build_fixtures:
+        description: 'Build isolated executables after the defect change set is ready for real integration'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -127,9 +132,11 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-mcp-approval-boundary.ps1
       - name: Build a source-bound isolated development executable
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_fixtures }}
         shell: pwsh
         run: ./scripts/build-native-fixture.ps1
       - name: Build an isolated release-profile diagnostic comparator
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_fixtures }}
         shell: pwsh
         run: ./scripts/build-native-fixture.ps1 -FixtureProfile release
       - name: Preserve native unit evidence
