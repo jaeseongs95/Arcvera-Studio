@@ -5,6 +5,66 @@ use std::{fs, path::PathBuf};
 const MANIFEST_LIMIT: u64 = 16 * 1024;
 const EXECUTABLE_LIMIT: u64 = 1024 * 1024 * 1024;
 
+// Explicit own-fixture diagnostics only. No domain values enter trace records.
+#[derive(Clone, Copy, Default)]
+struct RuntimePreviewTrace { enabled: bool }
+#[derive(Clone, Copy)]
+enum RuntimeTracePhase { PairProbe, UpdateHelp, PackageProbe, FileHash, FileRead, FileSha256, PreviewTotal }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeTraceOutcome { Ok, Err, Blocked, NotRun }
+struct RuntimeTraceEvent { phase: RuntimeTracePhase, elapsed: Duration, outcome: RuntimeTraceOutcome, bytes: Option<u64> }
+
+impl RuntimeTraceEvent {
+    fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        let phase = match self.phase {
+            RuntimeTracePhase::PairProbe => "pair_probe", RuntimeTracePhase::UpdateHelp => "update_help",
+            RuntimeTracePhase::PackageProbe => "package_probe", RuntimeTracePhase::FileHash => "file_hash",
+            RuntimeTracePhase::FileRead => "file_read", RuntimeTracePhase::FileSha256 => "file_sha256",
+            RuntimeTracePhase::PreviewTotal => "preview_total",
+        };
+        let outcome = match self.outcome {
+            RuntimeTraceOutcome::Ok => "ok", RuntimeTraceOutcome::Err => "err",
+            RuntimeTraceOutcome::Blocked => "blocked", RuntimeTraceOutcome::NotRun => "not_run",
+        };
+        match self.bytes {
+            Some(bytes) => writeln!(writer, "runtime_preview_trace phase={phase} elapsed_ms={} outcome={outcome} bytes={bytes}", self.elapsed.as_millis()),
+            None => writeln!(writer, "runtime_preview_trace phase={phase} elapsed_ms={} outcome={outcome}", self.elapsed.as_millis()),
+        }
+    }
+    fn emit(self) {
+        // A failed diagnostic sink must not replace the original Result.
+        let _ = self.write_to(&mut io::stderr().lock());
+    }
+}
+impl RuntimePreviewTrace {
+    fn from_setting(setting: Option<&std::ffi::OsStr>) -> Self {
+        Self { enabled: setting == Some(std::ffi::OsStr::new("1")) }
+    }
+    fn from_environment() -> Self { Self::from_setting(env::var_os("ARCVERA_STUDIO_RUNTIME_TRACE").as_deref()) }
+    fn start(self) -> Option<Instant> { self.enabled.then(Instant::now) }
+    fn measure<T>(self, phase: RuntimeTracePhase, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.measure_with(phase, work, RuntimeTraceEvent::emit)
+    }
+    fn measure_with<T>(self, phase: RuntimeTracePhase, work: impl FnOnce() -> Result<T, String>,
+        emit: impl FnOnce(RuntimeTraceEvent)) -> Result<T, String> {
+        let started = self.start();
+        let result = work();
+        if let Some(started) = started {
+            emit(RuntimeTraceEvent { phase, elapsed: started.elapsed(),
+                outcome: if result.is_ok() { RuntimeTraceOutcome::Ok } else { RuntimeTraceOutcome::Err }, bytes: None });
+        }
+        result
+    }
+}
+
+fn runtime_preview_outcome(result: &Result<RuntimeTransitionPreview, String>) -> RuntimeTraceOutcome {
+    match result {
+        Ok(report) if report.can_apply => RuntimeTraceOutcome::Ok,
+        Ok(_) => RuntimeTraceOutcome::Blocked,
+        Err(_) => RuntimeTraceOutcome::Err,
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeTransitionPreview {
@@ -52,29 +112,69 @@ fn bind(hash: &mut Sha256, bytes: &[u8]) {
 // 디렉터리 열거 없이 manifest와 두 실행 파일만 읽는다. OS의 동기 open/read 자체를
 // 중단하는 보장은 없으며, 각 read 전후에 전체 deadline과 취소를 확인한다.
 fn file_hash(path: &Path, cancelled: &Arc<AtomicBool>, deadline: Instant) -> Result<Vec<u8>, String> {
-    checkpoint(cancelled, deadline)?;
-    let mut file = fs::File::open(path).map_err(|error| format!("실행 파일을 확인할 수 없습니다: {error}"))?;
-    let before = file.metadata().map_err(|error| format!("실행 파일 정보를 확인할 수 없습니다: {error}"))?;
-    if !before.is_file() || before.len() == 0 || before.len() > EXECUTABLE_LIMIT {
-        return Err("실행 파일은 크기가 1 GiB 이하인 일반 파일이어야 합니다.".into());
-    }
-    let mut hash = Sha256::new();
-    let mut count = 0u64;
-    let mut block = [0u8; 64 * 1024];
-    loop {
+    file_hash_traced(path, cancelled, deadline, RuntimePreviewTrace::default())
+}
+
+fn file_hash_traced(path: &Path, cancelled: &Arc<AtomicBool>, deadline: Instant, trace: RuntimePreviewTrace) -> Result<Vec<u8>, String> {
+    file_hash_observed(path, cancelled, deadline, trace, |events| { for event in events { event.emit(); } })
+}
+
+fn file_hash_observed(path: &Path, cancelled: &Arc<AtomicBool>, deadline: Instant, trace: RuntimePreviewTrace,
+    emit: impl FnOnce([RuntimeTraceEvent; 3])) -> Result<Vec<u8>, String> {
+    let started = trace.start();
+    let (mut read_elapsed, mut sha_elapsed) = (Duration::ZERO, Duration::ZERO);
+    let (mut read_attempted, mut sha_attempted) = (false, false);
+    let (mut read_bytes, mut hashed_bytes) = (0u64, 0u64);
+    let result = (|| {
         checkpoint(cancelled, deadline)?;
-        let read = file.read(&mut block).map_err(|error| format!("실행 파일 해시 조회 실패: {error}"))?;
-        checkpoint(cancelled, deadline)?;
-        if read == 0 { break; }
-        count += read as u64;
-        if count > EXECUTABLE_LIMIT { return Err("확인 중 실행 파일 크기가 1 GiB를 초과했습니다.".into()); }
-        hash.update(&block[..read]);
+        let mut file = fs::File::open(path).map_err(|error| format!("실행 파일을 확인할 수 없습니다: {error}"))?;
+        let before = file.metadata().map_err(|error| format!("실행 파일 정보를 확인할 수 없습니다: {error}"))?;
+        if !before.is_file() || before.len() == 0 || before.len() > EXECUTABLE_LIMIT {
+            return Err("실행 파일은 크기가 1 GiB 이하인 일반 파일이어야 합니다.".into());
+        }
+        let mut hash = Sha256::new();
+        let mut count = 0u64;
+        let mut block = [0u8; 64 * 1024];
+        loop {
+            checkpoint(cancelled, deadline)?;
+            let read_started = trace.start();
+            let read = file.read(&mut block);
+            if let Some(started) = read_started {
+                read_attempted = true; read_elapsed += started.elapsed();
+                if let Ok(count) = &read { read_bytes += *count as u64; }
+            }
+            let read = read.map_err(|error| format!("실행 파일 해시 조회 실패: {error}"))?;
+            checkpoint(cancelled, deadline)?;
+            if read == 0 { break; }
+            count += read as u64;
+            if count > EXECUTABLE_LIMIT { return Err("확인 중 실행 파일 크기가 1 GiB를 초과했습니다.".into()); }
+            let sha_started = trace.start();
+            hash.update(&block[..read]);
+            if let Some(started) = sha_started {
+                sha_attempted = true; sha_elapsed += started.elapsed(); hashed_bytes += read as u64;
+            }
+        }
+        let after = file.metadata().map_err(|error| format!("실행 파일 정보를 재확인할 수 없습니다: {error}"))?;
+        if count != before.len() || after.len() != before.len() || after.modified().ok() != before.modified().ok() {
+            return Err("확인 중 실행 파일이 바뀌었습니다. 다시 확인하세요.".into());
+        }
+        let sha_started = trace.start();
+        let digest = hash.finalize().to_vec();
+        if let Some(started) = sha_started { sha_attempted = true; sha_elapsed += started.elapsed(); }
+        Ok(digest)
+    })();
+    if let Some(started) = started {
+        let outcome = if result.is_ok() { RuntimeTraceOutcome::Ok } else { RuntimeTraceOutcome::Err };
+        // ceiling: three completion records per file, never per read/chunk.
+        emit([
+            RuntimeTraceEvent { phase: RuntimeTracePhase::FileHash, elapsed: started.elapsed(), outcome, bytes: Some(hashed_bytes) },
+            RuntimeTraceEvent { phase: RuntimeTracePhase::FileRead, elapsed: read_elapsed,
+                outcome: if read_attempted { outcome } else { RuntimeTraceOutcome::NotRun }, bytes: Some(read_bytes) },
+            RuntimeTraceEvent { phase: RuntimeTracePhase::FileSha256, elapsed: sha_elapsed,
+                outcome: if sha_attempted { outcome } else { RuntimeTraceOutcome::NotRun }, bytes: Some(hashed_bytes) },
+        ]);
     }
-    let after = file.metadata().map_err(|error| format!("실행 파일 정보를 재확인할 수 없습니다: {error}"))?;
-    if count != before.len() || after.len() != before.len() || after.modified().ok() != before.modified().ok() {
-        return Err("확인 중 실행 파일이 바뀌었습니다. 다시 확인하세요.".into());
-    }
-    Ok(hash.finalize().to_vec())
+    result
 }
 
 struct PackageEvidence {
@@ -107,6 +207,11 @@ fn manifest_matches(bytes: &[u8], version: &str) -> Result<&'static str, String>
 
 fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str,
     cancelled: &Arc<AtomicBool>, deadline: Instant) -> Result<PackageEvidence, String> {
+    package_evidence_traced(exe, server, kind, version, cancelled, deadline, RuntimePreviewTrace::default())
+}
+
+fn package_evidence_traced(exe: &OsString, server: &OsString, kind: &str, version: &str,
+    cancelled: &Arc<AtomicBool>, deadline: Instant, trace: RuntimePreviewTrace) -> Result<PackageEvidence, String> {
     checkpoint(cancelled, deadline)?;
     let cli = Path::new(exe).canonicalize().map_err(|_| "선택한 CLI의 실제 경로를 확인할 수 없습니다.")?;
     let server = Path::new(server).canonicalize().map_err(|_| "선택한 앱서버의 실제 경로를 확인할 수 없습니다.")?;
@@ -137,8 +242,8 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
         || root.join(entrypoint).canonicalize().map_err(|_| "패키지 CLI 진입점의 실제 경로를 확인할 수 없습니다.")? != cli {
         return Err("선택한 CLI가 패키지 manifest의 CLI 진입점과 다릅니다.".into());
     }
-    let cli_hash = file_hash(&cli, cancelled, deadline)?;
-    let server_hash = if server == cli { cli_hash.clone() } else { file_hash(&server, cancelled, deadline)? };
+    let cli_hash = file_hash_traced(&cli, cancelled, deadline, trace)?;
+    let server_hash = if server == cli { cli_hash.clone() } else { file_hash_traced(&server, cancelled, deadline, trace)? };
     checkpoint(cancelled, deadline)?;
     Ok(PackageEvidence { root, cli, server, manifest, cli_hash, server_hash, runtime_helper_hash: None })
 }
@@ -149,7 +254,13 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
 fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str,
     managed_cli: Option<&str>, cancelled: &Arc<AtomicBool>, deadline: Instant,
 ) -> Result<PackageEvidence, String> {
-    match package_evidence(exe, server, kind, version, cancelled, deadline) {
+    replacement_package_evidence_traced(exe, server, kind, version, managed_cli, cancelled, deadline, RuntimePreviewTrace::default())
+}
+
+fn replacement_package_evidence_traced(exe: &OsString, server: &OsString, kind: &str, version: &str,
+    managed_cli: Option<&str>, cancelled: &Arc<AtomicBool>, deadline: Instant, trace: RuntimePreviewTrace,
+) -> Result<PackageEvidence, String> {
+    match package_evidence_traced(exe, server, kind, version, cancelled, deadline, trace) {
         Ok(evidence) => Ok(evidence),
         Err(original) => {
             let Some(managed_cli) = managed_cli else { return Err(original); };
@@ -162,7 +273,7 @@ fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, v
             let installed_cli = Path::new(managed_cli).canonicalize().map_err(|_| original.clone())?;
             let Some(installed_bin) = installed_cli.parent() else { return Err(original); };
             let installed_server = installed_bin.join("codex-app-server.exe");
-            let mut evidence = package_evidence(&installed_cli.as_os_str().to_owned(), &installed_server.as_os_str().to_owned(), kind, version, cancelled, deadline)
+            let mut evidence = package_evidence_traced(&installed_cli.as_os_str().to_owned(), &installed_server.as_os_str().to_owned(), kind, version, cancelled, deadline, trace)
                 .map_err(|_| original.clone())?;
             // The validated installed manifest chooses the CLI name. Identical
             // bytes under another name cannot substitute for that entrypoint.
@@ -176,8 +287,8 @@ fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, v
                 (selected_server.clone(), evidence.server.clone(), false),
                 (selected_bin.join("codex-code-mode-host.exe"), installed_bin.join("codex-code-mode-host.exe"), true),
             ] {
-                let selected_hash = file_hash(&selected, cancelled, deadline)?;
-                if selected_hash != file_hash(&installed, cancelled, deadline)? {
+                let selected_hash = file_hash_traced(&selected, cancelled, deadline, trace)?;
+                if selected_hash != file_hash_traced(&installed, cancelled, deadline, trace)? {
                     return Err("선택한 실행 파일과 설치된 전체 패키지의 파일이 다릅니다. 해당 버전의 전체 ZIP에서 CLI와 서버를 선택하세요. 기존 서버는 종료하지 않았습니다.".into());
                 }
                 if is_helper { evidence.runtime_helper_hash = Some(selected_hash); }
@@ -322,17 +433,28 @@ pub(crate) fn preview_replacement(exe: &OsString, server: &OsString, kind: &str,
 }
 
 fn preview_mode(exe: &OsString, server: &OsString, kind: &str, cancelled: &Arc<AtomicBool>, replace_existing: bool) -> Result<RuntimeTransitionPreview, String> {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let pair = runtime_pair::inspect_until(exe, server, kind, cancelled, deadline)?;
-    checkpoint(cancelled, deadline)?;
-    let version = pair.cli_version.clone();
-    let managed_cli = pair.managed_cli_executable.clone();
-    let cwd = env::current_dir().map_err(|error| format!("전환 확인 폴더 조회 실패: {error}"))?;
-    preview_commands_mode(exe, server, kind, pair, cancelled, deadline, replace_existing,
-        || if replace_existing { replacement_package_evidence(exe, server, kind, &version, managed_cli.as_deref(), cancelled, deadline) }
-            else { package_evidence(exe, server, kind, &version, cancelled, deadline) },
-        |args, deadline| extensions::command_stdout_until(exe, &cwd,
-            &args.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>(), deadline, Some(cancelled)))
+    let trace = RuntimePreviewTrace::from_environment();
+    let started = trace.start();
+    let result = (|| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let pair = trace.measure(RuntimeTracePhase::PairProbe,
+            || runtime_pair::inspect_until(exe, server, kind, cancelled, deadline))?;
+        checkpoint(cancelled, deadline)?;
+        let version = pair.cli_version.clone();
+        let managed_cli = pair.managed_cli_executable.clone();
+        let cwd = env::current_dir().map_err(|error| format!("전환 확인 폴더 조회 실패: {error}"))?;
+        preview_commands_mode(exe, server, kind, pair, cancelled, deadline, replace_existing,
+            || trace.measure(RuntimeTracePhase::PackageProbe, || if replace_existing {
+                replacement_package_evidence_traced(exe, server, kind, &version, managed_cli.as_deref(), cancelled, deadline, trace)
+            } else { package_evidence_traced(exe, server, kind, &version, cancelled, deadline, trace) }),
+            |args, deadline| trace.measure(RuntimeTracePhase::UpdateHelp, || extensions::command_stdout_until(exe, &cwd,
+                &args.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>(), deadline, Some(cancelled))))
+    })();
+    if let Some(started) = started {
+        RuntimeTraceEvent { phase: RuntimeTracePhase::PreviewTotal, elapsed: started.elapsed(),
+            outcome: runtime_preview_outcome(&result), bytes: None }.emit();
+    }
+    result
 }
 
 pub(crate) fn parse_update_output(bytes: &[u8]) -> Result<RuntimeTransitionReply, String> {
@@ -884,5 +1006,97 @@ mod tests {
                 &package.0.join("raw/codex-app-server.exe").into_os_string(), "standalone", VERSION,
                 Some(&package.manager("arcvera.exe")), &cancelled, deadline).is_err());
         }
+    }
+
+    #[test]
+    fn runtime_trace_requires_exact_explicit_opt_in_without_changing_environment() {
+        use std::ffi::OsStr;
+        for setting in [None, Some(""), Some("0"), Some("true"), Some(" 1"), Some("1 ")] {
+            assert!(!RuntimePreviewTrace::from_setting(setting.map(OsStr::new)).enabled);
+        }
+        assert!(RuntimePreviewTrace::from_setting(Some(OsStr::new("1"))).enabled);
+        assert!(!RuntimePreviewTrace::default().enabled);
+    }
+
+    #[test]
+    fn runtime_trace_format_contains_only_static_labels_times_and_optional_byte_count() {
+        let event = RuntimeTraceEvent { phase: RuntimeTracePhase::FileHash,
+            elapsed: Duration::from_millis(12), outcome: RuntimeTraceOutcome::Err, bytes: Some(65536) };
+        let mut bytes = Vec::new();
+        event.write_to(&mut bytes).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(),
+            "runtime_preview_trace phase=file_hash elapsed_ms=12 outcome=err bytes=65536\n");
+        let mut calls = 0;
+        let result = RuntimePreviewTrace::default().measure_with(RuntimeTracePhase::PackageProbe,
+            || Ok::<_, String>("private domain payload"), |_| calls += 1);
+        assert_eq!(result.unwrap(), "private domain payload");
+        assert_eq!(calls, 0, "disabled traces must not reach the sink");
+    }
+
+    #[test]
+    fn runtime_trace_completes_success_and_error_without_replacing_domain_results() {
+        struct FailingWriter;
+        impl io::Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> { Err(io::ErrorKind::BrokenPipe.into()) }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let trace = RuntimePreviewTrace { enabled: true };
+        let mut outcomes = Vec::new();
+        let success = trace.measure_with(RuntimeTracePhase::UpdateHelp, || Ok::<_, String>(17), |event| {
+            outcomes.push(event.outcome);
+            let _ = event.write_to(&mut FailingWriter);
+        });
+        let failure = trace.measure_with(RuntimeTracePhase::PairProbe,
+            || Err::<(), _>("private sentinel error".to_owned()), |event| {
+                outcomes.push(event.outcome);
+                let mut bytes = Vec::new(); event.write_to(&mut bytes).unwrap();
+                assert!(!String::from_utf8(bytes).unwrap().contains("sentinel"));
+            });
+        assert_eq!(success, Ok(17));
+        assert_eq!(failure, Err("private sentinel error".to_owned()));
+        assert_eq!(outcomes, [RuntimeTraceOutcome::Ok, RuntimeTraceOutcome::Err]);
+    }
+
+    #[test]
+    fn runtime_trace_file_aggregates_keep_hash_and_failure_boundaries() {
+        let package = D85Package::new("bin/arcvera.exe");
+        let path = PathBuf::from(package.cli("arcvera.exe"));
+        let trace = RuntimePreviewTrace { enabled: true };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut records = Vec::new();
+        let hash = file_hash_observed(&path, &cancelled, Instant::now() + Duration::from_secs(20), trace,
+            |events| records.extend(events)).unwrap();
+        assert_eq!(hash, Sha256::digest(b"d85-cli").to_vec());
+        assert_eq!(records.len(), 3);
+        assert_eq!(records.iter().map(|event| event.bytes).collect::<Vec<_>>(), [Some(7); 3]);
+        assert!(records.iter().all(|event| event.outcome == RuntimeTraceOutcome::Ok));
+        let mut calls = 0;
+        assert_eq!(file_hash_observed(&path, &cancelled, Instant::now() + Duration::from_secs(20),
+            RuntimePreviewTrace::default(), |_| calls += 1).unwrap(), hash);
+        assert_eq!(calls, 0, "existing disabled file fixtures must not reach the sink");
+        for (path, cancelled, deadline) in [
+            (path.clone(), Arc::new(AtomicBool::new(true)), Instant::now() + Duration::from_secs(20)),
+            (path.clone(), Arc::new(AtomicBool::new(false)), Instant::now()),
+            (path.with_file_name("missing-private-sentinel.exe"), cancelled.clone(), Instant::now() + Duration::from_secs(20)),
+        ] {
+            let mut records = Vec::new();
+            assert!(file_hash_observed(&path, &cancelled, deadline, trace, |events| records.extend(events)).is_err());
+            assert_eq!(records.len(), 3);
+            assert_eq!(records[0].outcome, RuntimeTraceOutcome::Err);
+            assert!(records[1..].iter().all(|event| event.outcome == RuntimeTraceOutcome::NotRun));
+        }
+    }
+
+    #[test]
+    fn runtime_trace_preview_classification_does_not_promote_blocked_or_error_to_success() {
+        let allowed = Ok(fixture(pair(), evidence(), help()));
+        let blocked = Ok(fixture(pair(), evidence(), help_without("      --no-force\n")));
+        let error = Err("private preview error".to_owned());
+        assert_eq!(runtime_preview_outcome(&allowed), RuntimeTraceOutcome::Ok);
+        assert_eq!(runtime_preview_outcome(&blocked), RuntimeTraceOutcome::Blocked);
+        assert_eq!(runtime_preview_outcome(&error), RuntimeTraceOutcome::Err);
+        assert!(allowed.unwrap().can_apply);
+        assert!(!blocked.unwrap().can_apply);
+        assert_eq!(error.unwrap_err(), "private preview error");
     }
 }

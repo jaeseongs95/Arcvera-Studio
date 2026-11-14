@@ -249,3 +249,103 @@ test('TP08: CLI rejects missing/unknown/duplicate/out-of-range options without e
     assert.ok(!stderr.includes(secret));
   }
 });
+
+test('TP09: Core timing-only prefix and exact successful payload complete the same bound call', async (t) => {
+  for (const seconds of ['0.0000', '0.5000', '9999999999.9999']) {
+    await t.test(seconds, async (t) => {
+      const provider = await start(t);
+      await first(provider);
+      const body = output();
+      body.input[0].output.unshift({ type: 'input_text', text: `Wall time: ${seconds} seconds\nOutput:` });
+      const response = await provider.post(body);
+      assert.equal(response.status, 200);
+      const events = eventsFromSse(await response.text());
+      assert.equal(events[1].item.content[0].text, 'desktop-local-tool-provider-fixture');
+      assert.equal(events[2].type, 'response.completed');
+      assert.equal(events[2].response.usage.total_tokens, 0);
+      assert.deepEqual(await provider.exited, { value: 0, signal: null });
+      await assert.rejects(fetch(`${provider.origin}/health`, { signal: AbortSignal.timeout(1000) }));
+      const receipts = provider.events().filter((event) => event.event === 'synthetic-response');
+      assert.equal(receipts.length, 2);
+      assert.equal(receipts[1].toolResultConfirmed, true);
+      assert.equal(receipts[1].sha256, createHash('sha256').update(JSON.stringify(body)).digest('hex'));
+      assert.ok(!provider.stdout().includes('Wall time:'));
+      assert.ok(!provider.stdout().includes('desktop-local-fixture'));
+      assert.equal(provider.stderr(), '');
+    });
+  }
+});
+
+test('TP12: bounded optional wire id is opaque and never replaces call authority', async (t) => {
+  for (const [kind, id, timing] of [['bare', 'tool_output_1', false], ['timing', secret, true], ['byte-bound', 'é'.repeat(128), true]]) {
+    await t.test(kind, async (t) => {
+      const provider = await start(t); await first(provider);
+      const body = output(); body.input[0].id = id;
+      if (timing) body.input[0].output.unshift({ type:'input_text', text:'Wall time: 0.0090 seconds\nOutput:' });
+      const response = await provider.post(body); assert.equal(response.status, 200);
+      assert.ok(!provider.stdout().includes(id));
+    });
+  }
+  const bad = { null:null, number:1, boolean:false, object:{}, array:[], empty:'', blank:' ', limit:'é'.repeat(129), control:'x\u0000', bidi:'x\u202e' };
+  for (const [kind, id] of Object.entries(bad)) await t.test(kind, async (t) => {
+    const provider = await start(t); await first(provider);
+    const body = output(); body.input[0].id=id;
+    await rejected(await provider.post(body),422);
+    assert.equal(provider.events().filter(event=>event.toolResultConfirmed).length,0);
+  });
+  for (const kind of ['call-id','payload','unknown-key']) await t.test(kind,async(t)=>{
+    const provider=await start(t);await first(provider);const body=output();body.input[0].id='tool_output_1';
+    if(kind==='call-id')body.input[0].call_id='other';
+    if(kind==='payload')body.input[0].output[0].text='other';
+    if(kind==='unknown-key')body.input[0].private=secret;
+    await rejected(await provider.post(body),422);
+  });
+});
+
+test('TP10/11: only the exact bounded Core timing frame may precede the exact result', async (t) => {
+  const badHeaders = {
+    'fraction-short': 'Wall time: 0.500 seconds\nOutput:',
+    'fraction-long': 'Wall time: 0.50000 seconds\nOutput:',
+    'integer-long': 'Wall time: 10000000000.0000 seconds\nOutput:',
+    'leading-zero': 'Wall time: 00.5000 seconds\nOutput:',
+    negative: 'Wall time: -0.5000 seconds\nOutput:',
+    'plus-sign': 'Wall time: +0.5000 seconds\nOutput:',
+    exponent: 'Wall time: 5e-1 seconds\nOutput:',
+    nan: 'Wall time: NaN seconds\nOutput:',
+    infinity: 'Wall time: Infinity seconds\nOutput:',
+    units: 'Wall time: 0.5000 milliseconds\nOutput:',
+    crlf: 'Wall time: 0.5000 seconds\r\nOutput:',
+    'trailing-newline': 'Wall time: 0.5000 seconds\nOutput:\n',
+    'extra-text': `Wall time: 0.5000 seconds\nOutput:${secret}`,
+    prefix: `${secret}Wall time: 0.5000 seconds\nOutput:`,
+    control: 'Wall time: 0.5000 seconds\nOutput:\u0000',
+  };
+  const shapes = ['metadata-key', 'metadata-type', 'metadata-value', 'metadata-null', 'missing-result',
+    'duplicate-metadata', 'reversed', 'excess', 'call-id', 'result-text', 'result-key', 'output-key'];
+  for (const kind of [...Object.keys(badHeaders), ...shapes]) {
+    await t.test(kind, async (t) => {
+      const provider = await start(t);
+      await first(provider);
+      const body = output();
+      const item = body.input[0];
+      const header = { type: 'input_text', text: badHeaders[kind] ?? 'Wall time: 0.5000 seconds\nOutput:' };
+      item.output.unshift(header);
+      if (kind === 'metadata-key') header.private = secret;
+      if (kind === 'metadata-type') header.type = 'output_text';
+      if (kind === 'metadata-value') header.text = secret;
+      if (kind === 'metadata-null') item.output[0] = null;
+      if (kind === 'missing-result') item.output.pop();
+      if (kind === 'duplicate-metadata') item.output[1] = structuredClone(header);
+      if (kind === 'reversed') item.output.reverse();
+      if (kind === 'excess') item.output.push(structuredClone(header));
+      if (kind === 'call-id') item.call_id = secret;
+      if (kind === 'result-text') item.output[1].text = secret;
+      if (kind === 'result-key') item.output[1].private = secret;
+      if (kind === 'output-key') item.private = secret;
+      await rejected(await provider.post(body), 422);
+      assert.equal(provider.events().filter((event) => event.toolResultConfirmed).length, 0);
+      assert.ok(!provider.stdout().includes('Wall time:'));
+      assert.ok(!provider.stdout().includes('desktop-local-fixture'));
+    });
+  }
+});

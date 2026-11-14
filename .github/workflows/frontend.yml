@@ -124,6 +124,9 @@ jobs:
       - name: Build a source-bound isolated development executable
         shell: pwsh
         run: ./scripts/build-native-fixture.ps1
+      - name: Build an isolated release-profile diagnostic comparator
+        shell: pwsh
+        run: ./scripts/build-native-fixture.ps1 -FixtureProfile release
       - name: Preserve native unit evidence
         if: always()
         uses: actions/upload-artifact@v4

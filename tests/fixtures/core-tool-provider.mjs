@@ -62,12 +62,27 @@ function advertised(body) {
   }
   return count === 1;
 }
-function exactResult(item) {
-  if (!isObject(item) || Object.keys(item).some((key) => !['type', 'call_id', 'output'].includes(key))) return false;
-  if (item.call_id !== CALL_ID || !Array.isArray(item.output) || item.output.length !== 1) return false;
-  const content = item.output[0];
+function exactInputText(content) {
   return isObject(content) && Object.keys(content).length === 2 && content.type === 'input_text'
-    && content.text === 'desktop-local-fixture';
+    && typeof content.text === 'string';
+}
+function exactTiming(content) {
+  if (!exactInputText(content)) return false;
+  // Core d6026cbd core/src/tools/context.rs:235-247 prepends this separate
+  // metadata item. Accept only a bounded nonnegative Duration representation.
+  const match = /^Wall time: ((?:0|[1-9][0-9]{0,9})\.[0-9]{4}) seconds\nOutput:$/.exec(content.text);
+  // JS $ may match before a final newline: require a whole-string match too.
+  return match !== null && match[0] === content.text && Number.isFinite(Number(match[1]));
+}
+function exactResult(item) {
+  if (!isObject(item) || Object.keys(item).some((key) => !['type', 'id', 'call_id', 'output'].includes(key))) return false;
+  if (Object.hasOwn(item, 'id') && (typeof item.id !== 'string' || item.id.trim().length === 0
+    || Buffer.byteLength(item.id) > 256 || /[\p{Cc}\p{Cf}]/u.test(item.id))) return false;
+  if (item.call_id !== CALL_ID || !Array.isArray(item.output)) return false;
+  const contents = item.output;
+  if (contents.length !== 1 && (contents.length !== 2 || !exactTiming(contents[0]))) return false;
+  const content = contents[contents.length - 1];
+  return exactInputText(content) && content.text === 'desktop-local-fixture';
 }
 function accepted(body) {
   if (!isObject(body) || !Array.isArray(body.input)) return false;
