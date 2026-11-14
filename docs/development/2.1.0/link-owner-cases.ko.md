@@ -1,5 +1,11 @@
 # 터미널 링크 클릭 소유권
 
+## 준비 조회와 종료 경쟁 회귀
+
+전체 CI 43600272698의 종료 경쟁 시험은 새 `resume --help` 준비 조회를 합성 CLI가 실제 TUI 실행으로 처리하여 관측 proxy 연결 전에 실패했다. 합성 CLI에 옵션이 없는 정상 resume 도움말 응답을 추가한다. 제품 기한이나 종료·재전송 방지 assertion은 변경하지 않는다. 동일 `shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutdown`의 stop/shutdown 두 경로를 다시 검증한다. 이는 시험 CLI 계약 수정이며 실제 Core 링크 중복 해결의 증거가 아니다.
+
+수정 뒤 위 기존 시험은 로컬 Windows에서 1 PASS/0 FAIL/0 ignored, Cargo exit 0으로 두 경로를 통과했다. 근거: `desktop210-integration-20261114/d93-resume-help-green/{stdout.log,result.json}`. 전체 CI의 최초 574 PASS/1 FAIL/7 ignored 결과는 보존하고 후속 전체 회귀와 구분한다.
+
 [English](link-owner-cases.md)
 
 현재 상태: 아래 모드 기반 규칙은 원인 판별용 prototype으로만 보존했다. xterm만 감지하고 Core는 인식하지 못하는 URL에서 열기가 사라질 수 있어 제품 변경을 원복했으며, 해결 완료로 판단하지 않는다. Core와 세션별 `--terminal-link-owner=tui|host` 지원 확인 및 HTTP(S) 마우스 링크 단일 소유 계약을 검토한다. Core standalone과 비HTTP·비마우스 인증 요청은 보존해야 한다. prototype과 41개 source 시험 결과는 `desktop210-integration-20261114/d93-mode-prototype` 및 `d93-green-01`에 남긴다.

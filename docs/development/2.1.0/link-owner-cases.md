@@ -1,5 +1,11 @@
 # Terminal link click ownership
 
+## Preparation query and shutdown-race regression
+
+The shutdown-race test in full CI 43600272698 failed before its observer proxy connected: the synthetic CLI treated the new `resume --help` preparation query as a long-lived TUI launch. Add a valid resume help response that advertises no link-owner option. Preserve production deadlines and every shutdown/retransmission assertion. Recheck both stop and shutdown paths in the same `shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutdown` test. This fixes the test CLI contract; it is not evidence that real Core link duplication is resolved.
+
+After the correction, that existing test passed both paths on local Windows: 1 passed, 0 failed, 0 ignored, Cargo exit 0. Evidence: `desktop210-integration-20261114/d93-resume-help-green/{stdout.log,result.json}`. Preserve the original full-CI result of 574 passed, 1 failed, 7 ignored separately from subsequent complete regression runs.
+
 [한국어](link-owner-cases.ko.md)
 
 Current status: the mode-based rules below are preserved only as a diagnostic prototype. An xterm-detected URL that Core does not recognize could stop opening, so the product changes were restored and are not considered a completed fix. A session-scoped `--terminal-link-owner=tui|host` capability and single ownership of mouse HTTP(S) links are under discussion with Core. Preserve standalone Core, non-HTTP links and non-mouse authentication requests. The prototype and its 41 source-fixture results remain in `desktop210-integration-20261114/d93-mode-prototype` and `d93-green-01`.
