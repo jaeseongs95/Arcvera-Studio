@@ -49,6 +49,8 @@ jobs:
       RUST_TEST_THREADS: 1
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -65,11 +67,56 @@ jobs:
       - run: npm run build
       - name: Compile non-test adapter paths
         run: cargo check --lib --locked --manifest-path src-tauri/Cargo.toml
+      - name: Prove D85 against the unchanged regression cases
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:CARGO_TERM_COLOR = 'never'
+          # Only the transition from the observed baseline needs a paired run.
+          $baseline = (git rev-parse HEAD^).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Missing baseline commit' }
+          if ($baseline -ne '916417d6b4c93fe253be3f94412fd05328c42936') { Write-Host 'D85 paired baseline not applicable; ordinary regressions still run'; return }
+          $path = 'src-tauri/src/codex_runtime_transition.rs'
+          $fixedBytes = [IO.File]::ReadAllBytes($path)
+          $utf8 = [Text.UTF8Encoding]::new($false, $true)
+          $fixed = $utf8.GetString($fixedBytes)
+          $oldLines = @(git show "${baseline}:$path")
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline source unavailable' }
+          $old = ($oldLines -join "`n") + "`n"
+          $marker = '#[cfg(test)]'
+          $fixedOffset = $fixed.IndexOf($marker, [StringComparison]::Ordinal)
+          $oldOffset = $old.IndexOf($marker, [StringComparison]::Ordinal)
+          if ($fixedOffset -lt 0 -or $oldOffset -lt 0) { throw 'Missing inline regression module' }
+          $cases = $fixed.Substring($fixedOffset)
+          $before = $old.Substring(0, $oldOffset) + $cases
+          $sha = { param($bytes) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() }
+          $fixedSha = & $sha $fixedBytes
+          $caseSha = & $sha ($utf8.GetBytes($cases))
+          New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
+          try {
+            [IO.File]::WriteAllText($path, $before, $utf8)
+            if ((& $sha ($utf8.GetBytes(([IO.File]::ReadAllText($path)).Substring($oldOffset)))) -ne $caseSha) { throw 'Before test bytes differ' }
+            cargo test --lib --locked --manifest-path src-tauri/Cargo.toml runtime_transition::tests::d85_ -- --test-threads=1 2>&1 | Tee-Object -FilePath artifacts/native-adapters/d85-before.log
+            $redExit = $LASTEXITCODE
+            $redCases = @([regex]::Matches([IO.File]::ReadAllText('artifacts/native-adapters/d85-before.log'), '(?m)^test [\w:]+(d85_\w+) \.\.\. (ok|FAILED)') | ForEach-Object { @{ name=$_.Groups[1].Value; result=$_.Groups[2].Value } })
+          } finally {
+            [IO.File]::WriteAllBytes($path, $fixedBytes)
+          }
+          if ((& $sha ([IO.File]::ReadAllBytes($path))) -ne $fixedSha) { throw 'Fixed source restoration failed' }
+          $expectedFailures = @('d85_manifest_entrypoints_bind_current_and_legacy_full_and_cli','d85_runtime_only_reuses_the_manifest_bound_current_and_legacy_cli','d85_postcheck_preserves_current_cli_name_and_all_runtime_only_file_identities') | Sort-Object
+          $actualFailures = @($redCases | Where-Object result -eq 'FAILED' | ForEach-Object name | Sort-Object)
+          if ($redExit -eq 0 -or $redCases.Count -ne 8 -or (Compare-Object $expectedFailures $actualFailures)) { throw 'Before did not fail at the expected three package boundaries; inspect preserved output' }
+          cargo test --lib --locked --manifest-path src-tauri/Cargo.toml runtime_transition::tests::d85_ -- --test-threads=1 2>&1 | Tee-Object -FilePath artifacts/native-adapters/d85-fixed.log
+          $greenExit = $LASTEXITCODE
+          $greenCases = @([regex]::Matches([IO.File]::ReadAllText('artifacts/native-adapters/d85-fixed.log'), '(?m)^test [\w:]+(d85_\w+) \.\.\. (ok|FAILED)') | ForEach-Object { @{ name=$_.Groups[1].Value; result=$_.Groups[2].Value } })
+          @{ baseline=$baseline; candidate=(git rev-parse HEAD); beforeSourceSha256=(& $sha ($utf8.GetBytes($before))); fixedSourceSha256=$fixedSha; testModuleSha256=$caseSha; beforeExit=$redExit; fixedExit=$greenExit; beforeCases=$redCases; fixedCases=$greenCases; scope='Windows filesystem/native-unit fixtures; no real Core or GUI replacement' } | ConvertTo-Json -Depth 5 | Set-Content artifacts/native-adapters/d85-proof.json -Encoding utf8NoBOM
+          if ($greenExit -ne 0 -or $greenCases.Count -ne 8 -or @($greenCases | Where-Object result -ne 'ok').Count -ne 0) { throw 'Fixed package regressions failed' }
       - name: MCP and conversation adapter unit checks
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
-          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::')) {
+          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::', 'runtime_transition')) {
             $name = $filter.Replace(':', '-').Trim('-')
             cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -19,7 +19,7 @@ pub struct RuntimeTransitionPreview {
 }
 
 #[derive(Debug)]
-struct ReplacementIdentity { kind: String, cli: Vec<u8>, server: Vec<u8>, helper: Option<Vec<u8>> }
+struct ReplacementIdentity { kind: String, cli_name: String, cli: Vec<u8>, server: Vec<u8>, helper: Option<Vec<u8>> }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +83,7 @@ struct PackageEvidence {
     runtime_helper_hash: Option<Vec<u8>>,
 }
 
-fn manifest_matches(bytes: &[u8], version: &str) -> Result<(), String> {
+fn manifest_matches(bytes: &[u8], version: &str) -> Result<&'static str, String> {
     if bytes.len() as u64 > MANIFEST_LIMIT { return Err("패키지 정보 파일이 허용 크기를 넘었습니다. 새 전체 패키지를 선택하세요.".into()); }
     let value: Value = serde_json::from_slice(bytes).map_err(|_| "패키지 정보 파일을 읽을 수 없습니다. 새 전체 패키지를 선택하세요.")?;
     let target = match env::consts::ARCH {
@@ -91,11 +91,18 @@ fn manifest_matches(bytes: &[u8], version: &str) -> Result<(), String> {
         "aarch64" => "aarch64-pc-windows-msvc",
         _ => return Err("이 Windows 아키텍처의 패키지 전환을 지원하지 않습니다.".into()),
     };
-    if value["layoutVersion"].as_u64() != Some(1) || value["entrypoint"] != "bin/codex.exe"
+    // These exact relative entrypoints are the current public package and the
+    // legacy layout. Never interpret an arbitrary manifest path as executable.
+    let entrypoint = match value["entrypoint"].as_str() {
+        Some("bin/arcvera.exe") => "bin/arcvera.exe",
+        Some("bin/codex.exe") => "bin/codex.exe",
+        _ => return Err("패키지 CLI 진입점이 지원되는 bin/arcvera.exe 또는 bin/codex.exe가 아닙니다.".into()),
+    };
+    if value["layoutVersion"].as_u64() != Some(1)
         || value["version"].as_str() != Some(version) || value["target"] != target {
         return Err("패키지 구성·전체 버전·Windows 실행 대상이 선택한 CLI와 일치하지 않습니다. 새 전체 패키지를 선택하세요.".into());
     }
-    Ok(())
+    Ok(entrypoint)
 }
 
 fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str,
@@ -105,17 +112,14 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
     let server = Path::new(server).canonicalize().map_err(|_| "선택한 앱서버의 실제 경로를 확인할 수 없습니다.")?;
     let bin = cli.parent().ok_or("CLI의 bin 폴더가 없습니다.")?;
     let named = |path: &Path, name: &str| path.file_name().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case(name));
-    if !named(&cli, "codex.exe") || !named(bin, "bin") || match kind {
+    if !(named(&cli, "arcvera.exe") || named(&cli, "codex.exe")) || !named(bin, "bin") || match kind {
         "standalone" => server.parent() != Some(bin) || !named(&server, "codex-app-server.exe"),
         "cli" => server != cli,
         _ => true,
     } {
-        return Err("공유 서버를 교체하려면 전체 ZIP을 푼 폴더의 bin/codex.exe를 CLI로, 같은 bin/codex-app-server.exe를 서버로 선택하세요. 실행 파일만 있는 배포본은 CLI의 공유 서버 교체 명령으로 적용할 수 없습니다. 기존 공유 서버는 종료하지 않았습니다.".into());
+        return Err("공유 서버를 교체하려면 전체 ZIP의 manifest가 지정한 bin/arcvera.exe 또는 bin/codex.exe를 CLI로, 같은 bin/codex-app-server.exe를 서버로 선택하세요. 실행 파일만 있는 배포본은 CLI의 공유 서버 교체 명령으로 적용할 수 없습니다. 기존 공유 서버는 종료하지 않았습니다.".into());
     }
     let root = bin.parent().ok_or("CLI 패키지 폴더가 없습니다.")?.to_path_buf();
-    if root.join("bin/codex.exe").canonicalize().map_err(|_| "패키지 CLI 경로를 확인할 수 없습니다.")? != cli {
-        return Err("선택한 CLI가 패키지의 bin/codex.exe와 다릅니다.".into());
-    }
     let manifest_path = root.join("codex-package.json").canonicalize()
         .map_err(|_| "필수 정보 파일이 있는 전체 패키지를 선택하세요. 개별 실행 파일은 자동 설치하지 않습니다.")?;
     if manifest_path.parent() != Some(root.as_path()) { return Err("패키지 정보 파일이 패키지 밖을 가리킵니다.".into()); }
@@ -126,7 +130,13 @@ fn package_evidence(exe: &OsString, server: &OsString, kind: &str, version: &str
     let mut manifest = Vec::new();
     file.take(MANIFEST_LIMIT + 1).read_to_end(&mut manifest).map_err(|error| format!("패키지 정보 파일 읽기 실패: {error}"))?;
     checkpoint(cancelled, deadline)?;
-    manifest_matches(&manifest, version)?;
+    let entrypoint = manifest_matches(&manifest, version)?;
+    let entrypoint_name = Path::new(entrypoint).file_name().and_then(|name| name.to_str())
+        .ok_or("패키지 CLI 진입점 이름을 확인할 수 없습니다.")?;
+    if !named(&cli, entrypoint_name)
+        || root.join(entrypoint).canonicalize().map_err(|_| "패키지 CLI 진입점의 실제 경로를 확인할 수 없습니다.")? != cli {
+        return Err("선택한 CLI가 패키지 manifest의 CLI 진입점과 다릅니다.".into());
+    }
     let cli_hash = file_hash(&cli, cancelled, deadline)?;
     let server_hash = if server == cli { cli_hash.clone() } else { file_hash(&server, cancelled, deadline)? };
     checkpoint(cancelled, deadline)?;
@@ -147,7 +157,6 @@ fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, v
             let selected_server = Path::new(server).canonicalize().map_err(|_| original.clone())?;
             let Some(selected_bin) = selected_cli.parent() else { return Err(original); };
             if kind != "standalone" || selected_server != selected_bin.join("codex-app-server.exe")
-                || selected_cli != selected_bin.join("codex.exe")
                 || selected_bin.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("bin"))
                 || selected_bin.join("codex-package.json").try_exists().map_err(|_| original.clone())? { return Err(original); }
             let installed_cli = Path::new(managed_cli).canonicalize().map_err(|_| original.clone())?;
@@ -155,12 +164,23 @@ fn replacement_package_evidence(exe: &OsString, server: &OsString, kind: &str, v
             let installed_server = installed_bin.join("codex-app-server.exe");
             let mut evidence = package_evidence(&installed_cli.as_os_str().to_owned(), &installed_server.as_os_str().to_owned(), kind, version, cancelled, deadline)
                 .map_err(|_| original.clone())?;
-            for name in ["codex.exe", "codex-app-server.exe", "codex-code-mode-host.exe"] {
-                let selected_hash = file_hash(&selected_bin.join(name), cancelled, deadline)?;
-                if selected_hash != file_hash(&installed_bin.join(name), cancelled, deadline)? {
+            // The validated installed manifest chooses the CLI name. Identical
+            // bytes under another name cannot substitute for that entrypoint.
+            let cli_name = evidence.cli.file_name().and_then(|name| name.to_str()).ok_or_else(|| original.clone())?;
+            if !selected_cli.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case(cli_name))
+                || selected_bin.join(cli_name).canonicalize().map_err(|_| original.clone())? != selected_cli {
+                return Err(original);
+            }
+            for (selected, installed, is_helper) in [
+                (selected_cli.clone(), evidence.cli.clone(), false),
+                (selected_server.clone(), evidence.server.clone(), false),
+                (selected_bin.join("codex-code-mode-host.exe"), installed_bin.join("codex-code-mode-host.exe"), true),
+            ] {
+                let selected_hash = file_hash(&selected, cancelled, deadline)?;
+                if selected_hash != file_hash(&installed, cancelled, deadline)? {
                     return Err("선택한 실행 파일과 설치된 전체 패키지의 파일이 다릅니다. 해당 버전의 전체 ZIP에서 CLI와 서버를 선택하세요. 기존 서버는 종료하지 않았습니다.".into());
                 }
-                if name == "codex-code-mode-host.exe" { evidence.runtime_helper_hash = Some(selected_hash); }
+                if is_helper { evidence.runtime_helper_hash = Some(selected_hash); }
             }
             Ok(evidence)
         }
@@ -245,7 +265,9 @@ fn preview_commands_mode(exe: &OsString, server: &OsString, kind: &str, pair: Ru
         if let Some(helper) = &evidence.runtime_helper_hash { bind(&mut hash, helper); }
         report.package_root = Some(evidence.root.to_str().ok_or("패키지 폴더가 올바른 문자열이 아닙니다.")?.to_owned());
         report.management_executable = Some(evidence.cli.to_str().ok_or("관리 CLI 경로가 올바른 문자열이 아닙니다.")?.to_owned());
-        report.target_identity = Some(ReplacementIdentity { kind: kind.to_owned(), cli: evidence.cli_hash, server: evidence.server_hash, helper: evidence.runtime_helper_hash });
+        let cli_name = evidence.cli.file_name().and_then(|name| name.to_str())
+            .ok_or("패키지 CLI 파일 이름을 확인할 수 없습니다.")?.to_owned();
+        report.target_identity = Some(ReplacementIdentity { kind: kind.to_owned(), cli_name, cli: evidence.cli_hash, server: evidence.server_hash, helper: evidence.runtime_helper_hash });
         report.can_apply = true;
         // 이 preview는 전체 패키지 무결성을 인증하지 않는다. 트리 검증은 CLI 책임이다.
         report.reason = Some(if replace_existing {
@@ -277,6 +299,9 @@ pub(crate) fn verify_replacement_target(expected: &RuntimeTransitionPreview, pai
     let deadline = Instant::now() + Duration::from_secs(20);
     let actual = package_evidence(&cli.as_os_str().to_owned(), &server.into_os_string(), &identity.kind,
         &expected.pair.cli_version, cancelled, deadline)?;
+    if !actual.cli.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case(&identity.cli_name)) {
+        return Err("교체 후 관리 패키지의 CLI 진입점 이름이 선택한 패키지와 다릅니다.".into());
+    }
     if actual.cli_hash != identity.cli || actual.server_hash != identity.server {
         return Err("교체 후 관리 패키지의 실행 파일이 선택한 파일과 다릅니다.".into());
     }
@@ -704,5 +729,160 @@ mod tests {
         assert_eq!(same.cli_hash, same.server_hash);
         fs::write(root.join("codex-package.json"), vec![b' '; MANIFEST_LIMIT as usize + 1]).unwrap();
         assert!(check(&server, "standalone").is_err());
+    }
+
+    // D85 regressions use only pre-existing APIs so the same tests compile in
+    // before-with-regression.rs. No real executable, HOME or daemon is used.
+    struct D85Package(PathBuf);
+    impl Drop for D85Package {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+    impl D85Package {
+        fn new(entrypoint: &str) -> Self {
+            let fixture = Self(env::temp_dir().join(format!("desktop-d85-{}", Uuid::new_v4())));
+            for directory in ["installed/bin", "raw", "other/bin"] {
+                fs::create_dir_all(fixture.0.join(directory)).unwrap();
+            }
+            for directory in ["installed/bin", "raw", "other/bin"] {
+                for (name, bytes) in [("arcvera.exe", b"d85-cli".as_slice()), ("codex.exe", b"d85-cli".as_slice()),
+                    ("codex-app-server.exe", b"d85-server".as_slice()), ("codex-code-mode-host.exe", b"d85-helper".as_slice())] {
+                    fs::write(fixture.0.join(directory).join(name), bytes).unwrap();
+                }
+            }
+            fixture.manifest(entrypoint);
+            fixture
+        }
+        fn manifest(&self, entrypoint: &str) {
+            fs::write(self.0.join("installed/codex-package.json"), serde_json::to_vec(&json!({
+                "layoutVersion": 1, "entrypoint": entrypoint, "version": VERSION,
+                "target": format!("{}-pc-windows-msvc", env::consts::ARCH),
+            })).unwrap()).unwrap();
+        }
+        fn cli(&self, name: &str) -> OsString { self.0.join("installed/bin").join(name).into_os_string() }
+        fn server(&self) -> OsString { self.cli("codex-app-server.exe") }
+        fn manager(&self, name: &str) -> String { self.0.join("installed/bin").join(name).to_str().unwrap().into() }
+        fn full(&self, name: &str, kind: &str) -> Result<PackageEvidence, String> {
+            let cli = self.cli(name);
+            let server = if kind == "cli" { cli.clone() } else { self.server() };
+            package_evidence(&cli, &server, kind, VERSION, &Arc::new(AtomicBool::new(false)),
+                Instant::now() + Duration::from_secs(20))
+        }
+        fn raw(&self, name: &str) -> Result<PackageEvidence, String> {
+            replacement_package_evidence(&self.0.join("raw").join(name).into_os_string(),
+                &self.0.join("raw/codex-app-server.exe").into_os_string(), "standalone", VERSION,
+                Some(&self.manager(name)), &Arc::new(AtomicBool::new(false)), Instant::now() + Duration::from_secs(20))
+        }
+    }
+
+    #[test]
+    fn d85_manifest_entrypoints_bind_current_and_legacy_full_and_cli() {
+        for name in ["arcvera.exe", "codex.exe"] {
+            let package = D85Package::new(&format!("bin/{name}"));
+            let full = package.full(name, "standalone").expect("manifest-bound full package must be accepted");
+            assert_eq!(full.cli, Path::new(&package.cli(name)).canonicalize().unwrap());
+            assert_eq!(full.server, Path::new(&package.server()).canonicalize().unwrap());
+            assert_eq!(full.cli_hash, Sha256::digest(b"d85-cli").to_vec());
+            assert_eq!(full.server_hash, Sha256::digest(b"d85-server").to_vec());
+            assert_eq!(full.manifest, fs::read(package.0.join("installed/codex-package.json")).unwrap());
+            let cli = package.full(name, "cli").expect("manifest-bound CLI mode must be accepted");
+            assert_eq!(cli.cli, cli.server);
+            assert_eq!(cli.cli_hash, cli.server_hash);
+        }
+    }
+
+    #[test]
+    fn d85_manifest_selection_mismatch_is_rejected_even_for_identical_cli_bytes() {
+        for (manifest, selected) in [("bin/arcvera.exe", "codex.exe"), ("bin/codex.exe", "arcvera.exe")] {
+            let package = D85Package::new(manifest);
+            assert!(package.full(selected, "standalone").is_err());
+            assert!(package.full(selected, "cli").is_err());
+        }
+    }
+
+    #[test]
+    fn d85_manifest_rejects_traversal_unsupported_names_and_other_bins() {
+        let package = D85Package::new("bin/arcvera.exe");
+        for entrypoint in ["../bin/arcvera.exe", "bin/../bin/arcvera.exe", "bin\\arcvera.exe", "/bin/arcvera.exe",
+            "C:/bin/arcvera.exe", "bin/other.exe", "arcvera.exe", "bin/ARCVERA.EXE"] {
+            package.manifest(entrypoint);
+            assert!(package.full("arcvera.exe", "standalone").is_err(), "{entrypoint}");
+        }
+        package.manifest("bin/arcvera.exe");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let other_server = package.0.join("other/bin/codex-app-server.exe").into_os_string();
+        assert!(package_evidence(&package.cli("arcvera.exe"), &other_server, "standalone", VERSION, &cancelled, deadline).is_err());
+        let other_cli = package.0.join("other/bin/arcvera.exe").into_os_string();
+        assert!(package_evidence(&other_cli, &package.server(), "standalone", VERSION, &cancelled, deadline).is_err());
+    }
+
+    #[test]
+    fn d85_runtime_only_reuses_the_manifest_bound_current_and_legacy_cli() {
+        for name in ["arcvera.exe", "codex.exe"] {
+            let package = D85Package::new(&format!("bin/{name}"));
+            let evidence = package.raw(name).expect("identical runtime-only package must reuse its bound installed CLI");
+            assert_eq!(evidence.cli, Path::new(&package.cli(name)).canonicalize().unwrap());
+            assert_eq!(evidence.runtime_helper_hash, Some(Sha256::digest(b"d85-helper").to_vec()));
+        }
+    }
+
+    #[test]
+    fn d85_runtime_only_rejects_each_changed_file_and_missing_helper() {
+        let package = D85Package::new("bin/arcvera.exe");
+        for (name, bytes) in [("arcvera.exe", b"d85-cli".as_slice()), ("codex-app-server.exe", b"d85-server".as_slice()),
+            ("codex-code-mode-host.exe", b"d85-helper".as_slice())] {
+            let file = package.0.join("raw").join(name);
+            fs::write(&file, b"changed same-version executable").unwrap();
+            assert!(package.raw("arcvera.exe").is_err(), "{name}");
+            fs::write(file, bytes).unwrap();
+        }
+        fs::remove_file(package.0.join("raw/codex-code-mode-host.exe")).unwrap();
+        assert!(package.raw("arcvera.exe").is_err());
+    }
+
+    #[test]
+    fn d85_runtime_only_cannot_fall_back_to_another_manifest_cli_name() {
+        let package = D85Package::new("bin/codex.exe");
+        let raw_cli = package.0.join("raw/arcvera.exe").into_os_string();
+        let raw_server = package.0.join("raw/codex-app-server.exe").into_os_string();
+        assert!(replacement_package_evidence(&raw_cli, &raw_server, "standalone", VERSION,
+            Some(&package.manager("codex.exe")), &Arc::new(AtomicBool::new(false)),
+            Instant::now() + Duration::from_secs(20)).is_err());
+    }
+
+    #[test]
+    fn d85_postcheck_preserves_current_cli_name_and_all_runtime_only_file_identities() {
+        let package = D85Package::new("bin/arcvera.exe");
+        let expected = fixture(pair(), package.raw("arcvera.exe").unwrap(), help());
+        let mut observed = pair();
+        observed.state = "matched".into(); observed.managed_version = Some(VERSION.into());
+        observed.running_version = Some(VERSION.into()); observed.managed_cli_executable = Some(package.manager("arcvera.exe"));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        assert!(verify_replacement_target(&expected, &observed, &cancelled).is_ok());
+        for (name, bytes) in [("arcvera.exe", b"d85-cli".as_slice()), ("codex-app-server.exe", b"d85-server".as_slice()),
+            ("codex-code-mode-host.exe", b"d85-helper".as_slice())] {
+            let file = package.0.join("installed/bin").join(name);
+            fs::write(&file, b"changed same-version installed executable").unwrap();
+            assert!(verify_replacement_target(&expected, &observed, &cancelled).is_err(), "{name}");
+            fs::write(file, bytes).unwrap();
+        }
+        // Both CLI names already exist with identical bytes. A manifest/name
+        // switch must not authorize a different executable identity.
+        package.manifest("bin/codex.exe");
+        observed.managed_cli_executable = Some(package.manager("codex.exe"));
+        assert!(verify_replacement_target(&expected, &observed, &cancelled).is_err());
+    }
+
+    #[test]
+    fn d85_package_reads_keep_cancellation_and_expired_deadline_guards() {
+        let package = D85Package::new("bin/arcvera.exe");
+        for (cancelled, deadline) in [(true, Instant::now() + Duration::from_secs(20)), (false, Instant::now())] {
+            let cancelled = Arc::new(AtomicBool::new(cancelled));
+            assert!(package_evidence(&package.cli("arcvera.exe"), &package.server(), "standalone", VERSION,
+                &cancelled, deadline).is_err());
+            assert!(replacement_package_evidence(&package.0.join("raw/arcvera.exe").into_os_string(),
+                &package.0.join("raw/codex-app-server.exe").into_os_string(), "standalone", VERSION,
+                Some(&package.manager("arcvera.exe")), &cancelled, deadline).is_err());
+        }
     }
 }
