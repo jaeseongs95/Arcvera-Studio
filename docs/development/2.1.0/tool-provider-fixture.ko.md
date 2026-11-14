@@ -2,7 +2,7 @@
 
 [English](tool-provider-fixture.md) · [한국어](tool-provider-fixture.ko.md)
 
-상태: **test-only fixture, Node 시험 60 PASS / 0 FAIL, 보완 fixture의 실제 Core/Native 통합 NOT_RUN**. 제품 코드가 import하지 않는 독립 loopback fixture다. 사용자 목표 원문은 “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.”이다. 이 fixture는 실제 모델·과금·provider cache의 증거가 아니다.
+상태: **test-only fixture, Node 시험 77 PASS / 0 FAIL, 공개 Core1.0.1 stdio/MCP 기준 사례 PASS, Core1.1·Desktop GUI 통합 NOT_RUN**. 제품 코드가 import하지 않는 독립 loopback fixture다. 사용자 목표 원문은 “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.”이다. 이 fixture는 실제 모델·과금·provider cache의 증거가 아니다.
 
 ## 정본과 최소 계약
 

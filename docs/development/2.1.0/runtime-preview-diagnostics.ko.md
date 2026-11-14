@@ -45,6 +45,10 @@
 
 ## 작성 후 인계
 
+부모 실제 관측(e99, 같은 CLI442612736/server340826624 bytes, 원20초, 세션0 read-only): debug는 pair540ms/help69ms/read355ms/SHA19006ms/전체20001ms에서 두번째 파일의 부분 hash 후 deadline 오류였다. release는 pair512/help68/read232/SHA509/전체1327ms로 두 파일 모두 확인한 뒤 canApply=true였다. 두 자체 앱 exit0, 확인된 own Core 시작·종료와 최종stopped, 운영 앱 identity 보존을 확인했다. 표적43562379004 및 전체43562383034 CI도 통과했다. 단위 전환39개 중 새 계측5개가 포함된다.
+
+이 통제 재현에서 주 예산 소모 지점은 debug SHA 구간이다. 각 구간은 wall time이라 스케줄링을 완전히 분리하지 않으며, 원 a18은 idle TUI 상태·다른 파일 사본이라 그 실행의 정확한 단계 시간을 소급하지 않는다. Root는 제품20초·검사·해시를 바꾸지 않고 최종 배포와 같은 최적화 비교품으로 원 GUI 교체·재연결 독립 재검수를 요청했다. 원 Native 수용은 아직 미완이다. 원시 경로는 `desktop210-integration-20261114/preview-comparison.json`, `preview-debug-e99-01`, `preview-release-e99-01`이며 debug lifecycle scope 오기는 원출력과 clarification을 함께 보존했다.
+
 부모 CI는 `build-native-fixture.ps1`의 기존 기본 debug 빌드를 유지하고, 별도 `-FixtureProfile release` 실행물도 만든다. release 비교품은 `release-profile/` 하위의 독립 manifest·resource·config와 `fixture<commit12>release` identifier를 사용한다. 이는 최종 배포품이나 설치가 아니라 같은 소스의 최적화 조건을 확인할 격리 비교품이다. 두 프로필 모두 원래 20초와 검증 guard를 사용하며 수집 시 부모가 같은 CLI/server 파일, 동일 SHA, 부하·캐시 조건과 실제 trace/result를 함께 기록한다. 실행물·프로필 이름만으로 가설을 확정하지 않는다.
 
 고정 phase 계측과 inline 단위 시험 5개를 작성했다. 기존 D85 8개와 나머지 assertion은 유지했다. 정적 diff/범위·UTF-8/LF 및 guard 대조 결과와 최종 파일 SHA256은 Ready 보고에 남긴다. 빌드·시험·실제 trace 수집은 **NOT_RUN**이다. H1/H2/H3는 여전히 가설이며 부모의 같은 조건 관측과 기존 회귀를 기다린다.

@@ -2,7 +2,7 @@
 
 [English](tool-provider-fixture.md) · [한국어](tool-provider-fixture.ko.md)
 
-Status: **test-only fixture; Node tests 60 PASS / 0 FAIL; real Core/Native integration with the corrected fixture NOT_RUN**. This standalone loopback fixture is not imported by product code. Original user goal: “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.” English summary: deliver Desktop2.1 with the CLI owner and agree its scope. This fixture does not establish real model, billing, or provider-cache behavior.
+Status: **test-only fixture; Node tests 77 PASS / 0 FAIL; public Core1.0.1 stdio/MCP baseline PASS; Core1.1/Desktop GUI integration NOT_RUN**. This standalone loopback fixture is not imported by product code. Original user goal: “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.” English summary: deliver Desktop2.1 with the CLI owner and agree its scope. This fixture does not establish real model, billing, or provider-cache behavior.
 
 ## Authority and minimal contract
 
