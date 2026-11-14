@@ -7,6 +7,8 @@ mod subagents;
 mod async_questions;
 #[path = "codex_context.rs"]
 mod context;
+#[path = "codex_context_composition.rs"]
+mod composition;
 pub use subagents::SubagentRequest;
 use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf, sync::Weak};
 
@@ -39,6 +41,7 @@ pub enum ConversationRequest {
     Poll,
     ContextStatus,
     ContextSettings,
+    ContextComposition { expected_thread_id: String, snapshot_id: Option<String>, cursor: Option<u64> },
     PermissionStatus,
     ReloadMcp { expected_thread_id: String },
     McpStatus { expected_thread_id: String, server_name: String, cursor: Option<String> },
@@ -510,7 +513,7 @@ impl ConversationConnection {
         if let ConversationRequest::HooksStatus { expected_thread_id } = &request {
             return self.runtime_extension_request(thread_id, expected_thread_id, cwd, runtime_extensions::RuntimeExtensionRequest::HooksStatus {});
         }
-        if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::PermissionStatus | ConversationRequest::SetContextWindow {..}) {
+        if matches!(request, ConversationRequest::ContextSettings | ConversationRequest::ContextComposition {..} | ConversationRequest::PermissionStatus | ConversationRequest::SetContextWindow {..}) {
             return self.context_settings_request(thread_id, request);
         }
         if matches!(request, ConversationRequest::ContextStatus) {
@@ -862,6 +865,10 @@ fn cursor(value: &Option<String>) -> Result<(), String> {
 }
 fn validate_request(request: &ConversationRequest) -> Result<(), String> {
     match request {
+        ConversationRequest::ContextComposition { expected_thread_id, snapshot_id, cursor } => {
+            valid_id(expected_thread_id)?;
+            composition::validate(snapshot_id.as_deref(), cursor.unwrap_or(0))
+        },
         ConversationRequest::ReloadMcp { expected_thread_id } | ConversationRequest::McpStatus { expected_thread_id, .. } | ConversationRequest::HooksStatus { expected_thread_id } => valid_id(expected_thread_id),
         ConversationRequest::SetContextWindow {model_context_window,expected_model_context_window} => {context::validate_window(*model_context_window)?;context::validate_window(*expected_model_context_window)},
         ConversationRequest::Page {cursor: value} | ConversationRequest::Models {cursor: value} => cursor(value),

@@ -25,7 +25,7 @@ jobs:
         run: npm run build
       - run: npx playwright install chromium
       - name: Context and extension frontend regressions
-        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/mcp-manager.spec.ts tests/mcp-runtime.spec.ts tests/hook-runtime.spec.ts tests/hook-runtime-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
+        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/context-composition.spec.ts tests/mcp-manager.spec.ts tests/mcp-runtime.spec.ts tests/hook-runtime.spec.ts tests/hook-runtime-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
         env:
           PLAYWRIGHT_JUNIT_OUTPUT_FILE: artifacts/frontend-validation/junit.xml
           AGENT_GRID_TEST_OUTPUT: artifacts/frontend-validation/results

@@ -34,6 +34,9 @@ fn view(state: &State, value: &Settings) -> Value {
 impl ConversationConnection {
     pub(super) fn context_settings_request(&self,thread_id: &str,request: ConversationRequest) -> Result<Value,String> {
         valid_id(thread_id)?; validate_request(&request)?;
+        if let ConversationRequest::ContextComposition { expected_thread_id, .. } = &request {
+            if expected_thread_id != thread_id { return Err("대화가 변경되어 컨텍스트 구성을 조회하지 않았습니다.".into()); }
+        }
         // Bounded concurrency: a second request never waits behind network I/O.
         // This lock belongs to this session connection, not another session.
         let mut state=self.0.context_settings.try_lock().map_err(|_|"이 세션의 컨텍스트 설정 요청이 이미 진행 중입니다.")?;
@@ -69,6 +72,11 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
     if matches!(request,ConversationRequest::PermissionStatus) {
         let value=read_permissions(control,rpc,thread_id,cancelled,deadline)?;
         live(control,cancelled)?;
+        return Ok(value);
+    }
+    if let ConversationRequest::ContextComposition { snapshot_id, cursor, .. } = request {
+        let value = composition::exchange(rpc, thread_id, snapshot_id.as_deref(), cursor.unwrap_or(0))?;
+        live(control, cancelled)?;
         return Ok(value);
     }
     let value=rpc.call(SETTINGS,json!({"threadId":thread_id}))?;

@@ -278,7 +278,12 @@ impl<S: Read + Write> Rpc<S> {
         }
         Ok(())
     }
-    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let message = self.call_envelope(method, params)?;
+        response(&message, self.next_id).ok_or_else(|| "Codex returned an invalid RPC response".to_owned())?
+    }
+    // Structured errors remain private to the adapter; callers never parse error prose.
+    fn call_envelope(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
         check_cancelled(self.cancelled.as_ref())?;
         self.bind_core_version(method, &mut params)?;
         self.next_id += 1;
@@ -288,7 +293,7 @@ impl<S: Read + Write> Rpc<S> {
         while Instant::now() < deadline {
             check_cancelled(self.cancelled.as_ref())?;
             if let Some(message) = self.read()? {
-                if let Some(result) = response(&message, id) { return result; }
+                if is_response_for(&message, id) { return Ok(message); }
             }
         }
         // A lost mutation reply is an unknown result, never a reason to create a fresh thread.

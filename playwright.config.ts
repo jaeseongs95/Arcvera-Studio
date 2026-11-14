@@ -13,7 +13,7 @@ if (networkDiagnostics) mkdirSync(networkDirectory, { recursive: true });
 // These fixtures import source modules or intercept Vite module responses.
 // Keep mixed files together so their fault-injection paths remain available.
 const sourceFixtures = [
-  'context-capabilities', 'context-controls', 'conversation-integration',
+  'context-capabilities', 'context-controls', 'context-composition', 'conversation-integration',
   'conversation', 'cron-manager', 'external-links', 'link-drag',
   'project-management', 'project-switch-scroll', 'project-tabs',
   'question-center-limits', 'question-center', 'saved-cron', 'startup-runtime',
