@@ -41,6 +41,32 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
   await maskedScreenshot('native-hook-runtime.png');
   await page.locator('#extensions-close').click();
   await page.locator('#settings-close').click();
+  let composition;
+  const compositionExpectation = process.env.AGENT_GRID_NATIVE_COMPOSITION_EXPECT;
+  if (compositionExpectation) {
+    assert(['available', 'unavailable'].includes(compositionExpectation), 'Explicit composition availability expectation is required');
+    const result = await call({ type: 'contextComposition', expectedThreadId: selected.threadId, cursor: 0 });
+    if (compositionExpectation === 'available') {
+      assert.equal(result.supported, true); assert.equal(result.snapshot.threadId, selected.threadId);
+      assert.equal(typeof result.snapshot.snapshotId, 'string'); assert.match(result.snapshot.contextIndexRevision, /^\d+$/);
+      assert(Array.isArray(result.snapshot.fragments) && result.snapshot.fragments.length <= 25);
+    } else {
+      assert.equal(result.supported, false); assert(['unsupported', 'unavailable'].includes(result.reason));
+      assert.equal(result.snapshot, undefined);
+    }
+    let wrongCompositionTargetRejected = false;
+    try { await call({ type: 'contextComposition', expectedThreadId: 'stale-other-thread', cursor: 0 }); } catch { wrongCompositionTargetRejected = true; }
+    assert(wrongCompositionTargetRejected);
+    const stillAvailable = await call({ type: 'mcpStatus', expectedThreadId: selected.threadId, serverName: server.name });
+    assert.equal(stillAvailable.toolsState, 'available', 'The legacy missing RPC must not stop or replace the working runtime');
+    await page.locator(`.terminal-card[data-id="${selected.id}"] .context-usage`).click();
+    await until(() => page.locator('.session-context-dialog .context-composition-status').textContent(), text =>
+      compositionExpectation === 'available' ? /스냅샷|조각/.test(text) : /지원|미확인/.test(text), 'actual composition result shown without fabricated counts');
+    if (compositionExpectation === 'unavailable') assert.equal(await page.locator('.session-context-dialog .context-composition-fragments > li').count(), 0);
+    await maskedScreenshot('native-context-composition.png');
+    await page.locator('.session-context-dialog').getByRole('button', { name: '닫기', exact: true }).click();
+    composition = { expectation: compositionExpectation, supported: result.supported, reason: result.reason, wrongTargetRejected: true, runtimeRemainsAvailable: true, actualPanelObserved: true };
+  }
   let providerRequests;
   if (process.env.AGENT_GRID_NATIVE_PROVIDER_ORIGIN) {
     const url = new URL(process.env.AGENT_GRID_NATIVE_PROVIDER_ORIGIN);
@@ -52,6 +78,6 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
   for (const previous of before) { const current = after.find(session => session.id === previous.id); assert(current?.active && current.generation === previous.generation && current.threadId === previous.threadId); }
   return { threadId: selected.threadId, nativeGeneration: selected.generation, serverName: server.name, toolsState: tools.toolsState,
     observedToolCount: tools.toolNames.length, hookCount: hooks.hooks.items.length, hookGate: hooks.executionGate,
-    staleThreadRejected: true, nativePanelsObserved: true, sessionIdsGenerationsAndThreadsPreserved: true, modelTurnSent: false, providerRequests,
+    staleThreadRejected: true, nativePanelsObserved: true, composition, sessionIdsGenerationsAndThreadsPreserved: true, modelTurnSent: false, providerRequests,
     limitations: ['Core1.0.1 baseline, not Core1.1.0', 'No tool invocation or hook handler execution', 'No per-thread reload/config version transition was tested'] };
 }

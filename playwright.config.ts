@@ -23,7 +23,8 @@ const sourceFixtures = [
 export default defineConfig({
   testDir: './tests',
   testMatch: sourceOnly ? sourceFixtures : undefined,
-  testIgnore: bundled ? sourceFixtures : undefined,
+  // node:test integration fixtures have their own runner and must not execute in Playwright workers.
+  testIgnore: ['**/*.test.mjs', ...(bundled ? sourceFixtures : [])],
   workers: 1,
   reporter: networkDiagnostics ? [['dot'], ['./tests/network-diagnostics-reporter.mjs']] : undefined,
   outputDir: process.env.AGENT_GRID_TEST_OUTPUT ?? 'test-results',
