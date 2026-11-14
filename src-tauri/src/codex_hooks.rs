@@ -72,7 +72,7 @@ fn parse_hook(value: &Value) -> Result<ExtensionHook, String> {
 fn same_directory(first: &Path, second: &Path) -> bool {
     first == second || first.canonicalize().ok().zip(second.canonicalize().ok()).is_some_and(|(a, b)| a == b)
 }
-fn parse(value: &Value, directory: &Path) -> Result<ExtensionHooks, String> {
+pub(super) fn parse(value: &Value, directory: &Path) -> Result<ExtensionHooks, String> {
     let entries = rows(value, "data")?;
     if entries.len() != 1 { return Err("Hook response must contain exactly the requested project entry".into()); }
     let entry = &entries[0];

@@ -72,6 +72,12 @@ for (const startingView of ['terminal', 'conversation'] as const) {
     await page.evaluate(() => { (window as any).contextSnapshot = { revision: 1, threadId: 'original-thread', connected: true, guiConnected: false, active: false, canCompact: true, reason: null, compacting: false, tokenUsageFresh: true, tokenUsage: { last: { totalTokens: 40000 }, modelContextWindow: 100000 } }; });
     await card.locator('.context-usage').click();
     await expect(card.locator('.context-usage')).toHaveText('40%');
+    // Inspection now opens even when this runtime cannot expose size settings.
+    // Close the real modal before testing the unchanged background compaction flow.
+    const inspector = page.getByRole('dialog', { name: '세션 컨텍스트 크기' });
+    await expect(inspector).toBeVisible();
+    await inspector.getByRole('button', { name: '닫기', exact: true }).click();
+    await expect(inspector).toHaveCount(0);
     if (startingView === 'conversation') {
       await card.locator('.conversation-toggle').click();
       await card.locator('.conversation-input').fill('압축 후에도 보존할 초안');

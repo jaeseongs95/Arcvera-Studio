@@ -13,17 +13,18 @@ if (networkDiagnostics) mkdirSync(networkDirectory, { recursive: true });
 // These fixtures import source modules or intercept Vite module responses.
 // Keep mixed files together so their fault-injection paths remain available.
 const sourceFixtures = [
-  'context-capabilities', 'context-controls', 'conversation-integration',
+  'context-capabilities', 'context-controls', 'context-composition', 'conversation-integration',
   'conversation', 'cron-manager', 'external-links', 'link-drag',
   'project-management', 'project-switch-scroll', 'project-tabs',
   'question-center-limits', 'question-center', 'saved-cron', 'startup-runtime',
-  'subagent-manager', 'terminal-flow', 'weekly-usage', 'permission-status', 'mcp-manager', 'update-settings',
+  'subagent-manager', 'terminal-flow', 'weekly-usage', 'permission-status', 'mcp-manager', 'mcp-runtime', 'hook-runtime', 'hook-runtime-manager', 'update-settings',
 ].map(name => `**/${name}.spec.ts`);
 
 export default defineConfig({
   testDir: './tests',
   testMatch: sourceOnly ? sourceFixtures : undefined,
-  testIgnore: bundled ? sourceFixtures : undefined,
+  // node:test integration fixtures have their own runner and must not execute in Playwright workers.
+  testIgnore: ['**/*.test.mjs', ...(bundled ? sourceFixtures : [])],
   workers: 1,
   reporter: networkDiagnostics ? [['dot'], ['./tests/network-diagnostics-reporter.mjs']] : undefined,
   outputDir: process.env.AGENT_GRID_TEST_OUTPUT ?? 'test-results',

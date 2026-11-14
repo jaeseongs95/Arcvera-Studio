@@ -400,7 +400,7 @@
             let mut socket = WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Server, None);
             let request = read_request(&mut socket);
             assert_eq!(request["method"], "initialize");
-            assert_eq!(request["params"]["clientInfo"]["version"], "2.0.0");
+            assert_eq!(request["params"]["clientInfo"]["version"], env!("CARGO_PKG_VERSION"));
             assert_eq!(request["params"]["capabilities"]["extensions"]["arcvera/core"]["version"], "1.0.0+fixture");
             reply(&mut socket, &request, json!({}));
         });
@@ -642,7 +642,7 @@
     }
     fn conversation_bootstrap(socket: &mut WebSocket<TcpStream>,cwd: &Path,compact: Option<Value>,initialize_interrupt: Option<Value>,passive_interrupt: Option<Value>) {
         let init=read_request(socket);assert_eq!(init["method"],"initialize");let mut initialized=supported_initialize();
-        assert_eq!(init["params"]["clientInfo"]["version"], "2.0.0");
+        assert_eq!(init["params"]["clientInfo"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(init["params"]["capabilities"]["extensions"]["arcvera/core"]["version"], "1.0.0+fixture");
         let malformed=initialize_interrupt.as_ref().is_some_and(|value|!value.is_boolean());
         if let Some(capability)=initialize_interrupt {initialized["supportsExpectedTurnInterrupt"]=capability;}reply(socket,&init,initialized);if malformed {return;}
@@ -885,6 +885,208 @@
             assert!(validate_response(&json!({"method":"item/commandExecution/requestApproval","params":params}),&json!({"decision":"accept"})).is_err());
         }
         assert_eq!(ConversationConnection::approval_decisions(&json!({})),["accept","decline","cancel"]);
+    }
+    fn mcp_tool_approval_request() -> Value {
+        json!({"id":71,"method":"mcpServer/elicitation/request","params":{
+            "origin":"core","threadId":"original","turnId":"tool-turn","serverName":"review-server","mode":"form",
+            "message":"Review this tool call","requestedSchema":{"type":"object","properties":{}},
+            "_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"review_tool",
+                "tool_params":{"path":"<img src=x onerror=alert(1)>","nested":{"enabled":true}},
+                "persist":["session","always"]}}})
+    }
+    #[test]
+    fn mcp_tool_approval_exact_actions_send_once_and_preserve_resolution_boundary() {
+        for action in ["accept","decline","cancel"] {
+            let(control,mut rpc,listener)=fixture();
+            let expected=json!({"action":action,"content":null,"_meta":null});let sent=expected.clone();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                assert_eq!(read_request(&mut socket),json!({"id":71,"result":sent}));
+                assert_closed_without_input(&mut socket);
+            });
+            observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();
+            assert_eq!(control.pending_snapshot().unwrap().2[0]["mcpToolApprovalAvailable"],true);
+            let projection=ConversationConnection::mcp_tool_approval(&control.pending_snapshot().unwrap().2[0]["params"]).unwrap();
+            assert_eq!(projection["origin"],"core");
+            assert_eq!(projection["serverName"],"review-server");assert_eq!(projection["toolName"],"review_tool");
+            assert_eq!(projection["arguments"]["nested"]["enabled"],true);
+            assert!(projection.get("persist").is_none());assert!(projection.get("callId").is_none());
+            let respond=||ConversationRequest::Respond{request_id:"71".into(),result:expected.clone()};
+            execute(&control.0,&mut rpc,"original",respond(),&AtomicBool::new(false)).unwrap();
+            assert!(execute(&control.0,&mut rpc,"original",respond(),&AtomicBool::new(false)).is_err());
+            let pending=control.pending_snapshot().unwrap().2;assert_eq!(pending.len(),1);assert_eq!(pending[0]["responded"],true);
+            observe_message(&control.0,"original",json!({"method":"serverRequest/resolved","params":{"threadId":"original","requestId":71}})).unwrap();
+            assert!(control.pending_snapshot().unwrap().2.is_empty());
+            observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();
+            assert!(control.pending_snapshot().unwrap().2.is_empty(),"late replay must not reopen an answered approval");
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn mcp_tool_approval_rejects_non_tool_and_unreviewable_requests() {
+        let valid=mcp_tool_approval_request();
+        assert!(ConversationConnection::mcp_tool_approval(&valid["params"]).is_some());
+        let mut invalid=Vec::new();
+        for (field,value) in [("mode",json!("url")),("mode",json!("browser")),("mode",Value::Null),("threadId",json!("")),
+            ("turnId",json!("")),("turnId",json!("bad\nturn")),("serverName",json!("")),("serverName",json!("x".repeat(257)))] {
+            let mut request=valid.clone();request["params"][field]=value;invalid.push(request);
+        }
+        for (field,value) in [("codex_approval_kind",json!("oauth")),("codex_approval_kind",json!("browser")),("codex_approval_kind",json!("tool_suggestion")),("codex_approval_kind",Value::Null),
+            ("tool_name",json!("")),("tool_name",json!("bad\ntool")),("tool_params",Value::Null),
+            ("tool_params",json!([])),("tool_params",json!({"value":{"__detail":true,"bytes":100000}})),
+            ("tool_params",json!({"value":"x".repeat(16*1024)}))] {
+            let mut request=valid.clone();request["params"]["_meta"][field]=value;invalid.push(request);
+        }
+        let mut missing=valid.clone();missing["params"]["_meta"].as_object_mut().unwrap().remove("tool_params");invalid.push(missing);
+        for field in ["threadId","turnId","serverName","mode","_meta"] {
+            let mut request=valid.clone();request["params"].as_object_mut().unwrap().remove(field);invalid.push(request);
+        }
+        for field in ["tool_name","codex_approval_kind"] {
+            let mut request=valid.clone();request["params"]["_meta"].as_object_mut().unwrap().remove(field);invalid.push(request);
+        }
+        for request in invalid {
+            assert!(ConversationConnection::mcp_tool_approval(&request["params"]).is_none());
+            assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_err());
+            let(control,_rpc,_listener)=fixture();observe_message(&control.0,"original",request.clone()).unwrap();
+            if let Some(pending)=control.pending_snapshot().unwrap().2.first() {assert_eq!(pending["mcpToolApprovalAvailable"],false);}
+        }
+        let(control,_rpc,_listener)=fixture();let mut foreign=valid.clone();foreign["params"]["threadId"]=json!("foreign");
+        observe_message(&control.0,"original",foreign).unwrap();assert!(control.pending_snapshot().unwrap().2.is_empty());
+        let mut unknown=valid;unknown["method"]=json!("future/elicitation");
+        assert!(validate_response(&unknown,&json!({"action":"accept","content":null,"_meta":null})).is_err());
+    }
+    #[test]
+    fn mcp_tool_approval_invalid_response_never_sends_or_consumes_pending() {
+        let(control,mut rpc,listener)=fixture();
+        let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);});
+        observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();
+        for result in [json!({"decision":"accept"}),json!({"action":"accept"}),
+            json!({"action":"acceptForSession","content":null,"_meta":null}),
+            json!({"action":"always","content":null,"_meta":null}),
+            json!({"action":"future","content":null,"_meta":null}),
+            json!({"action":"accept","content":{},"_meta":null}),
+            json!({"action":"accept","content":null,"_meta":{"persist":"always"}}),
+            json!({"action":"accept","content":null,"_meta":null,"persist":"session"})] {
+            assert!(execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{request_id:"71".into(),result},&AtomicBool::new(false)).is_err());
+            assert_ne!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+        }
+        drop(rpc);server.join().unwrap();
+    }
+    #[test]
+    fn mcp_tool_approval_requires_literal_top_level_core_origin_in_both_owners() {
+        let origins=[("missing",None),("null",Some(Value::Null)),("server",Some(json!("mcpServer"))),
+            ("future",Some(json!("future"))),("case",Some(json!("Core"))),("padded",Some(json!("core "))),
+            ("boolean",Some(json!(true))),("number",Some(json!(1))),("object",Some(json!({"core":true}))),("array",Some(json!(["core"])))] ;
+        for (case,origin) in origins {
+            for gui_owned in [false,true] {
+                let(control,mut rpc,listener)=fixture();
+                let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);});
+                let mut request=mcp_tool_approval_request();
+                if let Some(value)=origin.clone() {request["params"]["origin"]=value;} else {request["params"].as_object_mut().unwrap().remove("origin");}
+                request["params"]["_meta"]["origin"]=json!("core");
+                request["params"]["_meta"]["core"]=json!(true);
+                request["params"]["_meta"]["codex_approval_origin"]=json!("core");
+                assert!(ConversationConnection::mcp_tool_approval(&request["params"]).is_none(),"untrusted origin classified: {case}");
+                assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_err(),"untrusted origin accepted: {case}");
+                control.observer_message("original",request.clone()).unwrap();
+                if gui_owned {observe_message(&control.0,"original",request.clone()).unwrap();observe_message(&control.0,"original",request.clone()).unwrap();}
+                {let mut events=control.0.events.lock().unwrap();events.observer_connected=true;events.connected=gui_owned;}
+                *control.0.input.lock().unwrap()=gui_owned;control.0.owned.store(gui_owned,Ordering::Release);
+                let snapshot=control.pending_snapshot().unwrap().2;
+                assert_eq!(snapshot.len(),1);assert_eq!(snapshot[0]["metadataAvailable"],true);
+                assert_eq!(snapshot[0]["mcpToolApprovalAvailable"],false,"origin availability: {case}");
+                for _ in 0..2 {
+                    assert!(execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})},&AtomicBool::new(false)).is_err());
+                    assert_ne!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+                    assert!(!control.0.events.lock().unwrap().answered.contains("71"));
+                }
+                control.observer_message("original",json!({"method":"serverRequest/resolved","params":{"threadId":"original","requestId":71}})).unwrap();
+                let core_replay=mcp_tool_approval_request();
+                control.observer_message("original",core_replay.clone()).unwrap();observe_message(&control.0,"original",core_replay).unwrap();
+                assert!(control.pending_snapshot().unwrap().2.is_empty(),"origin cannot reopen resolved identity");
+                drop(rpc);server.join().unwrap();
+            }
+        }
+    }
+    #[test]
+    fn mcp_origin_requirement_does_not_change_ordinary_response_contracts() {
+        for method in ["item/commandExecution/requestApproval","item/fileChange/requestApproval"] {
+            let request=json!({"method":method,"params":{"origin":"mcpServer","availableDecisions":["accept","decline","cancel"]}});
+            assert!(validate_response(&request,&json!({"decision":"accept"})).is_ok());
+            assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_err());
+        }
+        let request=json!({"method":"item/tool/requestUserInput","params":{"origin":"mcpServer","questions":[{"id":"question","question":"ordinary input"}]}});
+        assert!(validate_response(&request,&json!({"answers":{"question":{"answers":["answer"]}}})).is_ok());
+    }
+    #[test]
+    fn mcp_tool_approval_wrong_current_thread_and_cancellation_do_not_consume_pending() {
+        for cancelled in [false,true] {
+            let(control,mut rpc,listener)=fixture();
+            let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);});
+            observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();
+            assert!(execute(&control.0,&mut rpc,if cancelled {"original"} else {"changed-thread"},ConversationRequest::Respond{
+                request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})},&AtomicBool::new(cancelled)).is_err());
+            assert_ne!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn mcp_tool_approval_external_owner_and_stopped_connection_never_send() {
+        for external in [true,false] {
+            let(control,mut rpc,listener)=fixture();
+            let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);});
+            if external {control.observer_message("original",mcp_tool_approval_request()).unwrap();}
+            else {observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();control.0.stopped.store(true,Ordering::Release);}
+            assert!(control.request("original",Path::new("."),ConversationRequest::Respond{request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})}).is_err());
+            if external {assert!(execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})},&AtomicBool::new(false)).is_err());}
+            drop(rpc);server.join().unwrap();
+        }
+    }
+    #[test]
+    fn mcp_tool_approval_numeric_review_ceiling_checks_original_number_variants() {
+        let cases=[
+            ("u64-safe","9007199254740991",true),("u64-adjacent","9007199254740992",false),
+            ("u64-original-rounded","9007199254740993",false),("u64-max","18446744073709551615",false),
+            ("i64-safe","-9007199254740991",true),("i64-adjacent","-9007199254740992",false),
+            ("i64-min","-9223372036854775808",false),("f64-safe","9007199254740991.0",true),
+            ("f64-adjacent","9007199254740992.0",false),("f64-large","1e100",false),
+            ("f64-negative-large","-1e100",false),("negative-zero-integer","-0",false),
+            ("negative-zero-float","-0.0",false),("zero","0",true),("float-zero","0.0",true),
+            ("fraction","0.25",true),("negative-fraction","-0.125",true),("small-fraction","1e-100",true),
+        ];
+        for (case,raw,allowed) in cases {
+            let number=serde_json::from_str::<Value>(raw).unwrap();
+            if case=="u64-original-rounded" {assert!(number.as_u64()==Some(9_007_199_254_740_993),"fixture must retain original u64 before GUI conversion");}
+            if case.starts_with("negative-zero") {assert!(number.as_f64().is_some_and(|value|value==0.0&&value.is_sign_negative()),"fixture must retain the negative sign before review");}
+            let mut request=mcp_tool_approval_request();request["params"]["_meta"]["tool_params"]=json!({"nested":[{"value":number}]});
+            assert!(ConversationConnection::mcp_tool_approval(&request["params"]).is_some()==allowed,"request classification mismatch: {case}");
+            assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_ok()==allowed,"response validation mismatch: {case}");
+            let control=ConversationConnection::new(Endpoint::Unavailable,Arc::new(AtomicBool::new(false)));
+            observe_message(&control.0,"original",request).unwrap();
+            assert!(control.pending_snapshot().unwrap().2[0]["mcpToolApprovalAvailable"]==json!(allowed),"Native availability mismatch: {case}");
+        }
+    }
+    #[test]
+    fn mcp_tool_approval_numeric_rejection_never_sends_or_consumes_pending() {
+        for (case,raw,allowed) in [("original-u64","9007199254740993",false),("negative-zero","-0.0",false),
+            ("large-finite","1e100",false),("finite-fraction","0.25",true)] {
+            let(control,mut rpc,listener)=fixture();
+            let server=thread::spawn(move||{
+                let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);
+                if allowed {assert_eq!(read_request(&mut socket),json!({"id":71,"result":{"action":"accept","content":null,"_meta":null}}));}
+                assert_closed_without_input(&mut socket);
+            });
+            let number=serde_json::from_str::<Value>(raw).unwrap();
+            let mut request=mcp_tool_approval_request();request["params"]["_meta"]["tool_params"]=json!({"nested":[{"value":number}]});
+            observe_message(&control.0,"original",request).unwrap();
+            let response=execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{
+                request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})},&AtomicBool::new(false));
+            assert!(response.is_ok()==allowed,"transport admission mismatch: {case}");
+            assert!((control.pending_snapshot().unwrap().2[0]["responded"]==true)==allowed,"response slot mismatch: {case}");
+            drop(rpc);server.join().unwrap();
+        }
     }
     #[test]
     fn unsupported_passive_observer_and_gui_never_call_resume_or_create_a_thread() {
@@ -1537,3 +1739,29 @@
             drop(rpc);remove_staged_send_fixture(context,attachment,root);
         }
     }
+#[test]
+fn runtime_extensions_ipc_binds_the_reviewed_thread_and_rejects_extra_fields() {
+    let valid = json!({"type":"reloadMcp","expectedThreadId":"original"});
+    assert!(serde_json::from_value::<ConversationRequest>(valid.clone()).is_ok());
+    for extra in ["method", "threadId", "cwd"] {
+        let mut request = valid.clone(); request[extra] = json!("arbitrary");
+        assert!(serde_json::from_value::<ConversationRequest>(request).is_err());
+    }
+    assert!(serde_json::from_value::<ConversationRequest>(json!({"type":"reloadMcp"})).is_err());
+    let status = json!({"type":"mcpStatus","expectedThreadId":"original","serverName":"fixture","cursor":null});
+    assert!(serde_json::from_value::<ConversationRequest>(status).is_ok());
+    let hooks = json!({"type":"hooksStatus","expectedThreadId":"original"});
+    assert!(serde_json::from_value::<ConversationRequest>(hooks.clone()).is_ok());
+    for extra in ["method", "threadId", "cwd"] {
+        let mut invalid = hooks.clone(); invalid[extra] = json!("arbitrary");
+        assert!(serde_json::from_value::<ConversationRequest>(invalid).is_err());
+    }
+    assert!(serde_json::from_value::<ConversationRequest>(json!({"type":"hooksStatus"})).is_err());
+    let control = ConversationConnection::new(Endpoint::Unavailable, Arc::new(AtomicBool::new(false)));
+    for request in [ConversationRequest::ReloadMcp { expected_thread_id: "different".into() },
+        ConversationRequest::McpStatus { expected_thread_id: "different".into(), server_name: "fixture".into(), cursor: None },
+        ConversationRequest::HooksStatus { expected_thread_id: "different".into() }] {
+        let error = control.request("original", Path::new("."), request).unwrap_err();
+        assert!(error.contains("검토한 대화가 변경"), "reject stale review before creating any runtime connection");
+    }
+}

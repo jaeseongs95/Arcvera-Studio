@@ -1,5 +1,131 @@
 # Release notes
 
+## 2.1.0 — Unreleased / 미공개
+
+### English
+
+The development candidate adds reviewed user-base MCP editing/removal, scoped
+current-conversation MCP inspection and explicit reconnection requests. Versioned
+writes preserve protected and unrelated settings; a reconnection acknowledgement
+is distinct from observed connection or tool availability.
+
+Supported MCP tool approvals add an explicit one-time allow, decline or cancel
+action in conversation view and the question inbox. Native validation retains
+request ownership and rejects remembered-policy responses or unreviewable
+arguments. Controls reflect polling failures instead of appearing actionable with
+an unavailable connection. A controlled public Core1.0.1 test completed one
+conversation-view approval, MCP execution and the same turn with normal owned
+cleanup. This used a synthetic local model. Final Core1.1 integration and the
+privileged-approval origin boundary (D92) remain unresolved. See the
+[fixture and GUI evidence](development/2.1.0/tool-provider-fixture.md).
+
+The current consumer requires Core-published `origin: core` before exposing special
+MCP tool approvals. Requests from older Core versions without this field remain
+unsupported. The earlier Core1.0.1 roundtrip does not validate this new boundary;
+the matching Core1.1 producer and consumer still require joint verification.
+
+Current-thread Hook inspection uses a read-only metadata projection. Configuration
+enablement, trust, execution eligibility and application are separate states.
+Unavailable runtime metadata remains unknown. Reopening the extension manager
+cannot let an earlier close event erase the new conversation's view.
+
+Development validation includes synthetic frontend/native regressions and isolated
+public Core 1.0.1 reads, configuration CRUD and two-thread Native GUI checks with a
+local provider catalog. Those checks sent no model turn and used no real account
+authentication. They do not establish Core 1.1 integration, provider cache behavior,
+long-duration stability or a final installer. See [Hook and Native evidence](development/2.1.0/hook-verification.md).
+
+The context-composition and cache/TTL viewer is implemented against the typed
+candidate contract, including separately labelled prepared-request byte components.
+Its actual Core1.1 values and behavior remain unverified. Release readiness is
+pending the final Core1.1 schema and executable, same-candidate integration,
+final Windows artifacts and independent review. No
+2.1.0 release is published by this note.
+
+### 한국어
+
+개발 후보에 검토를 거치는 사용자 base MCP 수정·삭제, 현재 대화에 한정한 MCP
+조회와 명시적 재연결 요청을 추가했습니다. 버전 검사를 거친 쓰기는 보호 값과
+무관한 설정을 보존하며, 재연결 접수와 실제 연결·도구 발견은 구분합니다.
+
+지원되는 MCP 도구 승인에 대화 화면·질문함의 명시적 일회 허용·거절·취소를 추가했습니다.
+Native 검증은 요청 소유권을 유지하고 기억·정책 저장 응답이나 검토할 수 없는 인수를
+거절합니다. 조회가 실패하면 연결 불명 상태에 맞게 컨트롤을 갱신합니다. 자체 공개
+Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn 완료와 정상 정리를
+확인했습니다. 합성 로컬 모델 범위이며 최종 Core1.1 통합과 특권 승인 출처 경계(D92)는
+미해결입니다. [fixture·GUI 근거](development/2.1.0/tool-provider-fixture.ko.md)를 참고하세요.
+
+현재 소비자는 Core가 발행한 `origin: core`가 있어야 MCP 전용 승인을 제공합니다.
+이 필드가 없는 이전 Core 요청은 미지원으로 남습니다. 앞선 Core1.0.1 왕복 결과는
+이 새 경계의 검증이 아니며, 같은 Core1.1 생산자·소비자의 공동 검증이 필요합니다.
+
+현재 대화의 Hook 조회는 읽기 전용 메타데이터만 표시합니다. 구성의 사용 설정,
+신뢰, 실행 가능 여부와 적용 상태를 구분하며 확인할 수 없는 runtime 정보는
+미확인으로 남깁니다. 확장 창을 다시 열 때 이전 close 이벤트가 새 대화의
+조회 상태를 지우지 않도록 수정했습니다.
+
+개발 검증에는 합성 frontend/native 회귀와 격리된 공개 Core 1.0.1의 실제 읽기,
+구성 CRUD, 로컬 provider catalog를 사용한 두 대화의 Native GUI 검사가 포함됩니다.
+해당 검사는 모델 요청이나 실제 계정 인증을 사용하지 않았습니다. Core 1.1 통합,
+실제 provider cache, 장시간 안정성과 최종 설치 패키지는 검증하지 않았습니다.
+[Hook·Native 근거](development/2.1.0/hook-verification.ko.md)를 참고하세요.
+
+컨텍스트 구성·cache/TTL 화면은 typed 후보 계약을 바탕으로 구현했으며 준비 요청의
+JSON 구성요소 바이트를 별도로 표시합니다. 실제 Core1.1 값과 동작은 아직 미검증입니다.
+공개 준비에는 최종 Core1.1 schema·실행물과 같은 후보 짝의 통합,
+최종 Windows 실행물과 독립 검토가 남아 있습니다. 이 기록으로 2.1.0을
+공개한 것은 아닙니다.
+
+## 2.0.1 — 2026-11-13
+
+### English
+
+Recognize the exact `arcvera ` prefix reported by the Arcvera Core CLI. Desktop
+2.0.0 could reject Core 1.0.1 during shared-server preparation and classify its
+version as unsupported during update checks. Both consumers now accept the
+published CLI format while retaining strict version syntax, stable Core 1.x
+requirements and full build-metadata identity checks.
+
+First-time preparation also recognizes the current `arcvera.exe` managed package
+path. Existing package metadata, inaccessible state and broken links continue to
+select the preserving startup mode; installation is rechecked under Core's lock.
+
+After updating Desktop, select the Core package's `bin/arcvera.exe` under
+Executable settings and retry server preparation. Explicit server replacement
+continues to require a matching CLI/server package and the existing confirmation
+and activity checks. Existing settings, authentication and conversations are
+retained.
+
+Windows verification covers strict parsing and preservation regressions, plus
+isolated preparation, two-session binding, reuse and normal shutdown with the
+released Core 1.0.1 package. Broader control checks in fresh profiles stop at
+sign-in or folder-trust onboarding; these prompts were not answered. Real-account
+sign-in, model turns, native GUI interaction and long-duration use remain
+unverified by this hotfix's isolated checks.
+
+### 한국어
+
+Arcvera Core CLI가 출력하는 정확한 `arcvera ` 접두사를 인식합니다. Desktop
+2.0.0은 Core 1.0.1의 공유 서버 준비를 거부하거나 업데이트 검사에서 지원하지 않는
+버전으로 판정할 수 있었습니다. 두 소비 경로가 공개 CLI의 출력 형식을 수용하도록
+수정했으며, 엄격한 버전 문법·Core 1.x 정식 버전 요구·빌드 메타데이터를 포함한 전체
+식별값 검사는 유지합니다.
+
+최초 준비에서도 현재 관리 패키지의 `arcvera.exe` 경로를 인식합니다. 기존 패키지
+메타데이터·접근 불가 상태·끊어진 링크가 있으면 보존 시작 방식을 유지하며,
+설치 여부는 Core의 잠금 안에서 다시 검사합니다.
+
+Desktop 업데이트 후 실행 파일 설정에서 Core 패키지의 `bin/arcvera.exe`를 선택하고
+서버 준비를 다시 시도하세요. 명시적으로 서버를 교체할 때는 기존과 같이 일치하는
+CLI·서버 패키지와 확인 절차·진행 작업 검사가 필요합니다. 기존 설정·인증·대화는
+유지됩니다.
+
+Windows 검증에는 엄격한 버전 해석과 기존 상태 보존 회귀, 공개 Core 1.0.1 패키지의
+격리된 준비·두 세션 바인딩·재사용·정상 종료가 포함됩니다. 새 프로필의 확장 제어
+검사는 로그인 또는 폴더 신뢰 안내에서 대기했으며 해당 질문에 답하지 않았습니다.
+실제 계정 로그인·모델 요청·네이티브 GUI 조작·장시간 사용은 이번 격리 검사에서
+검증하지 않았습니다.
+
 ## 2.0.0 — 2026-11-12
 
 ### English

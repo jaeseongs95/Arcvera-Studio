@@ -1,6 +1,7 @@
 import { locale, onLanguageChange, t } from './i18n';
 import { appendLinkifiedText } from './external-links';
 import { MAX_WORKSPACE_SESSIONS } from './model';
+import { MCP_TOOL_APPROVAL_ACTIONS, mcpToolApprovalResponse, readMcpToolApproval, type McpToolApproval } from './mcp-tool-approval';
 import './question-center.css';
 
 export interface PendingQuestion {
@@ -10,6 +11,7 @@ export interface PendingQuestion {
   canRespond: boolean; responded?: boolean; metadataAvailable?: boolean;
   questions?: { id: string; header?: string; question: string; options?: { label: string; description?: string }[] | null; isOther?: boolean; isSecret?: boolean }[];
   approval?: { options: { id: string; label: string }[] };
+  mcpToolApproval?: McpToolApproval;
 }
 interface QuestionCenterHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -53,7 +55,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
   const drafts = new Map<string, Draft>();
   const rows = new Map<string, { node: HTMLElement; signature: string }>();
   const abort = new AbortController();
-  let items: PendingQuestion[] = []; let readFailed = false; let listIncomplete = false; let lastCheckedAt: number | undefined; let disposed = false; let exiting = false; let nativeVisible = true; let epoch = 0;
+  let items: PendingQuestion[] = []; let readFailed = false; let listIncomplete = false; let mcpMetadataComplete = false; let lastCheckedAt: number | undefined; let disposed = false; let exiting = false; let nativeVisible = true; let epoch = 0;
   let timer: ReturnType<typeof setTimeout> | undefined; let running: Promise<void> | undefined; let lastStarted = -Infinity;
   const responses = new Set<Promise<void>>();
   const text = (tag: string, content: string) => {
@@ -93,7 +95,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
     for (const [id, row] of rows) if (!remaining.has(id)) { row.node.remove(); rows.delete(id); drafts.delete(id); }
     items.forEach((item, index) => {
       const id = key(item); const draft = drafts.get(id) ?? { values: {} }; drafts.set(id, draft);
-      const signature = JSON.stringify([item, draft.phase, draft.openFailed]);
+      const signature = JSON.stringify([item, draft.phase, draft.openFailed, Object.hasOwn(item, 'mcpToolApproval') ? [readFailed, mcpMetadataComplete] : null]);
       let row = rows.get(id);
       if (!row || force || row.signature !== signature) {
         const node = buildRow(item, draft, index); row?.node.replaceWith(node); row = { node, signature }; rows.set(id, row);
@@ -115,7 +117,17 @@ export function createQuestionCenter(host: QuestionCenterHost) {
       const notice = text('p', t('연결이 끊겨 마지막 확인 내용을 표시합니다. 원래 세션에서 상태를 확인하세요.', 'Connection lost. Showing the last confirmed details. Check the status in the original session.'));
       notice.className = 'question-metadata-status'; notice.setAttribute('role', 'status'); row.append(notice);
     }
-    const locked = !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting;
+    const mcp = Object.hasOwn(item, 'mcpToolApproval');
+    const toolApproval = readMcpToolApproval(item.mcpToolApproval);
+    const reviewableTool = !!toolApproval && toolApproval.threadId === item.threadId;
+    const locked = !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting
+      || (mcp && (!reviewableTool || item.metadataAvailable !== true || readFailed || !mcpMetadataComplete));
+    if (mcp && toolApproval && reviewableTool) {
+      const review = text('pre', `${t('서버', 'Server')}: ${toolApproval.serverName}\n${t('도구', 'Tool')}: ${toolApproval.toolName}\n${t('인수', 'Arguments')}:\n${JSON.stringify(toolApproval.arguments)}`);
+      review.className = 'mcp-tool-approval-review'; review.style.whiteSpace = 'pre-wrap'; review.style.overflowWrap = 'anywhere'; row.append(review);
+    } else if (mcp) {
+      row.append(text('p', t('도구 승인 내용을 모두 확인할 수 없어 응답할 수 없습니다. 원래 세션에서 확인하세요.', 'Tool approval details are incomplete. Check the original session before responding.')));
+    }
     const form = document.createElement('form');
     if (item.kind === 'question') for (const [questionIndex, question] of (item.questions ?? []).entries()) {
       const field = document.createElement('fieldset'); field.disabled = locked;
@@ -146,6 +158,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
       : draft.phase === 'sending' ? t('응답 전송 중…', 'Sending response…')
       : item.responded || draft.phase === 'sent' ? t('응답을 보냈습니다. 서버의 해결 확인을 기다립니다.', 'Response sent. Waiting for server confirmation.')
       : item.kind === 'unsupported' ? t('질문 원문을 제공하지 않는 세션입니다. 원래 세션을 열어 확인하고 응답하세요.', 'Question details are unavailable. Open the original session to review and respond.')
+      : mcp && (!mcpMetadataComplete || readFailed) ? t('도구 승인 상태를 확인할 수 없어 응답을 제한했습니다. 원래 세션에서 확인하세요.', 'Tool approval status is unavailable. Check the original session before responding.')
       : !item.canRespond ? t('여기서 응답할 수 없습니다. 원래 세션에서 확인하세요.', 'Cannot respond here. Check the original session.') : '');
     rowStatus.className = 'question-response-status'; rowStatus.setAttribute('role', 'status');
     if (item.kind === 'question' && item.questions?.length) {
@@ -161,7 +174,12 @@ export function createQuestionCenter(host: QuestionCenterHost) {
         void respond(item, draft, { answers });
       };
     }
-    if (item.kind === 'approval') for (const option of item.approval?.options ?? []) {
+    if (item.kind === 'approval' && mcp && reviewableTool) for (const action of MCP_TOOL_APPROVAL_ACTIONS) {
+      const control = text('button', action === 'accept' ? t('이번만 허용', 'Allow once') : action === 'decline' ? t('거절', 'Decline') : t('취소', 'Cancel')) as HTMLButtonElement;
+      control.type = 'button'; control.className = 'quiet-button'; control.disabled = locked;
+      control.onclick = () => { if (!locked && !draft.phase) void respond(item, draft, mcpToolApprovalResponse(action)); }; form.append(control);
+    }
+    if (item.kind === 'approval' && !mcp) for (const option of item.approval?.options ?? []) {
       const labels: Record<string, [string, string]> = { accept: ['승인', 'Approve'], decline: ['거절', 'Decline'], cancel: ['취소', 'Cancel'], acceptForSession: ['이 세션에서 승인', 'Approve for this session'] };
       const translated = labels[option.id];
       const label = translated && ['승인', '거절', '취소', '이 세션에서 승인'].includes(option.label) ? t(...translated) : option.label;
@@ -176,7 +194,9 @@ export function createQuestionCenter(host: QuestionCenterHost) {
   function respond(item: PendingQuestion, draft: Draft, result: Record<string, unknown>) {
     if (disposed || exiting || draft.phase || item.responded || !item.canRespond || !item.requestId) return Promise.resolve();
     draft.phase = 'sending'; draft.openFailed = false; render();
-    const operation = Promise.resolve().then(() => host.call('respond_pending_question', { sessionId: item.sessionId, generation: item.generation, requestId: item.requestId, ...result })).then(() => {
+    const operation = Promise.resolve().then(() => Object.hasOwn(item, 'mcpToolApproval')
+      ? host.call('conversation_request', { id: item.sessionId, generation: item.generation, request: { type: 'respond', requestId: item.requestId, result } })
+      : host.call('respond_pending_question', { sessionId: item.sessionId, generation: item.generation, requestId: item.requestId, ...result })).then(() => {
       draft.phase = 'sent';
     }).catch(() => { draft.phase = 'uncertain'; }).finally(() => {
       responses.delete(operation); if (!disposed) { render(); poll(); }
@@ -195,7 +215,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
       if (!active() || token !== epoch) return;
       const complete = (value as { complete?: unknown })?.complete;
       if (complete !== undefined && typeof complete !== 'boolean') throw new Error('Invalid question completeness.');
-      items = readItems(value); listIncomplete = complete === false; readFailed = false; lastCheckedAt = Date.now(); render();
+      items = readItems(value); listIncomplete = complete === false; mcpMetadataComplete = complete === true; readFailed = false; lastCheckedAt = Date.now(); render();
     }).catch(() => { if (active() && token === epoch) { readFailed = true; render(); } }).finally(() => { running = undefined; schedule(); });
   }
   function visibility() { epoch++; clearTimer(); if (active()) poll(); }

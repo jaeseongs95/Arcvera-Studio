@@ -1,6 +1,7 @@
 import { bindAttribute, bindText, onLanguageChange, t } from './i18n';
 import './conversation.css';
 import { appendLinkifiedText } from './external-links';
+import { MCP_TOOL_APPROVAL_ACTIONS, MCP_TOOL_APPROVAL_METHOD, mcpToolApprovalFromRequest, mcpToolApprovalResponse } from './mcp-tool-approval';
 
 type Json = Record<string, any>;
 export interface ConversationOptions {
@@ -12,7 +13,7 @@ export interface ConversationOptions {
   onLinkError?(error: unknown): void;
 }
 interface Attachment { type: 'localImage' | 'file'; path: string; name?: string }
-interface RuntimeEvent { seq: number; method: string; params: Json; requestId?: string; responded?: boolean }
+interface RuntimeEvent { seq: number; method: string; params: Json; requestId?: string; responded?: boolean; guiOwned?: boolean; mcpToolApprovalAvailable?: boolean }
 interface Entry { id: string; role: string; text: string; status?: string; detail?: boolean; errorEvent?: { turnId: string; source: 'error' | 'completed'; pairable: boolean } }
 interface QuestionDraft { value: string; other?: string }
 const MAX_VISIBLE_ITEMS = 100;
@@ -369,15 +370,30 @@ export function createConversation(options: ConversationOptions) {
     finally { modelsLoading = false; if (alive(version)) updateControls(); }
   }
   function renderRequests() {
-    const signature = JSON.stringify(pendingRequests); if (signature === requestSignature) return; requestSignature = signature;
+    const signature = JSON.stringify([pendingRequests, connected]); if (signature === requestSignature) return; requestSignature = signature;
     requests.replaceChildren();
     for (const event of pendingRequests) {
       const panel = document.createElement('section'); panel.className = 'conversation-request';
       const title = document.createElement('strong'); title.textContent = event.method;
-      const description = document.createElement('pre'); appendLinkifiedText(description, JSON.stringify(event.params, null, 2), linkFailure); panel.append(title, description);
+      const toolApproval = mcpToolApprovalFromRequest(event.method, event.params);
+      const description = document.createElement('pre');
+      if (toolApproval) {
+        description.className = 'mcp-tool-approval-review';
+        description.textContent = `${t('서버', 'Server')}: ${toolApproval.serverName}\n${t('도구', 'Tool')}: ${toolApproval.toolName}\n${t('인수', 'Arguments')}:\n${JSON.stringify(toolApproval.arguments)}`;
+        description.style.whiteSpace = 'pre-wrap'; description.style.overflowWrap = 'anywhere';
+      } else appendLinkifiedText(description, JSON.stringify(event.params, null, 2), linkFailure);
+      panel.append(title, description);
       const id = event.requestId;
       if (!id) { const reason = document.createElement('p'); bindText(reason, '요청 식별자를 확인하지 못해 응답할 수 없습니다.', 'Cannot respond without a verified request ID.'); panel.append(reason); requests.append(panel); continue; }
-      if (event.method === 'item/commandExecution/requestApproval' || event.method === 'item/fileChange/requestApproval') {
+      if (event.method === MCP_TOOL_APPROVAL_METHOD && event.mcpToolApprovalAvailable === true && toolApproval && toolApproval.threadId === threadId && event.guiOwned === true) {
+        for (const action of MCP_TOOL_APPROVAL_ACTIONS) {
+          const control = document.createElement('button'); control.type = 'button'; control.className = 'quiet-button';
+          control.textContent = action === 'accept' ? t('이번만 허용', 'Allow once') : action === 'decline' ? t('거절', 'Decline') : t('취소', 'Cancel');
+          control.disabled = !connected;
+          control.onclick = () => { if (!disposed && visible && attached && connected) void respond(id, mcpToolApprovalResponse(action), panel); };
+          panel.append(control);
+        }
+      } else if (event.method === 'item/commandExecution/requestApproval' || event.method === 'item/fileChange/requestApproval') {
         const advertised = event.params.availableDecisions;
         const choices = !Object.prototype.hasOwnProperty.call(event.params, 'availableDecisions') ? ['accept', 'decline', 'cancel']
           : Array.isArray(advertised) ? ['accept', 'acceptForSession', 'decline', 'cancel'].filter(value => advertised.includes(value)) : [];
@@ -425,7 +441,12 @@ export function createConversation(options: ConversationOptions) {
         }
         const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'primary-button'; bindText(submit, '답변 보내기', 'Send answers'); form.append(submit);
         form.onsubmit = event => { event.preventDefault(); const answers = Object.fromEntries([...answerInputs].map(([key, value]) => [key, { answers: [value()] }])); void respond(id, { answers }, panel); }; panel.append(form);
-      } else { const reason = document.createElement('p'); bindText(reason, '이 요청 형식은 지원하지 않아 자동 응답하지 않습니다. 요청이 시작된 클라이언트에서 확인하세요.', 'This request type is unsupported and will not be answered automatically. Check the client where the request originated.'); panel.append(reason); }
+      } else {
+        const reason = document.createElement('p');
+        if (event.method === MCP_TOOL_APPROVAL_METHOD) bindText(reason, '이 MCP 요청은 현재 화면에서 안전하게 검토·응답할 수 없습니다. 원래 세션에서 확인하세요.', 'This MCP request cannot be fully reviewed or answered here. Check the original session.');
+        else bindText(reason, '이 요청 형식은 지원하지 않아 자동 응답하지 않습니다. 요청이 시작된 클라이언트에서 확인하세요.', 'This request type is unsupported and will not be answered automatically. Check the client where the request originated.');
+        panel.append(reason);
+      }
       if (event.responded || responding.has(id)) { panel.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select').forEach(control => { control.disabled = true; }); const waiting = document.createElement('small'); bindText(waiting, '응답을 보냈습니다. 서버의 처리 확인을 기다립니다.', 'Response sent. Waiting for server confirmation.'); panel.append(waiting); }
       requests.append(panel);
     }
@@ -530,7 +551,7 @@ export function createConversation(options: ConversationOptions) {
       const knownRequests = new Set(pendingRequests.map(event => event.requestId)); for (const id of questionDrafts.keys()) if (!knownRequests.has(id)) questionDrafts.delete(id);
       if (value.error) status('연결을 확인하지 못했습니다. 연결이 복구될 때까지 기다려 주세요. 초안은 보존됩니다.', 'Could not confirm the connection. Wait for it to recover. Your draft is preserved.');
       updateControls();
-    } catch (error) { if (alive(version) && foreground && revision === pollVersion) { connected = false; failure(error); updateControls(); } }
+    } catch (error) { if (alive(version) && foreground && revision === pollVersion) { connected = false; failure(error); renderRequests(); updateControls(); } }
     finally { if (alive(version) && foreground && attached && revision === pollVersion) polling = setTimeout(() => void poll(version, revision), 400); }
   }
   function adoptStartedTurn(turn: Json | undefined, version: number, activity: number) {

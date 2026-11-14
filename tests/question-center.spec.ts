@@ -12,7 +12,7 @@ const approval = {
 };
 const unsupported = { id: 'unknown', sessionId: 'terminal', generation: 1, kind: 'unsupported', canRespond: false, sessionTitle: '원문 없는 세션' };
 
-async function fixture(page: Page, items: unknown[] = [question, approval, unsupported], options: { holdPoll?: boolean; holdResponse?: boolean; hidden?: boolean; pollError?: string } = {}) {
+async function fixture(page: Page, items: unknown[] = [question, approval, unsupported], options: { holdPoll?: boolean; holdResponse?: boolean; hidden?: boolean; pollError?: string; complete?: boolean } = {}) {
   await page.clock.install({ time: new Date('2026-10-30T00:00:00Z') });
   await page.clock.pauseAt(new Date('2026-10-30T00:00:01Z'));
   await page.route('**/question-harness', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body></body></html>' }));
@@ -21,7 +21,7 @@ async function fixture(page: Page, items: unknown[] = [question, approval, unsup
     const { createQuestionCenter } = await import(modulePath);
     const languagePath = '/src/i18n.ts'; const { setLanguage } = await import(languagePath); setLanguage('ko');
     const f = (window as any).questionFixture = {
-      items, hidden: options.hidden ?? false, holdPoll: options.holdPoll ?? false, holdResponse: options.holdResponse ?? false,
+      items, hidden: options.hidden ?? false, holdPoll: options.holdPoll ?? false, holdResponse: options.holdResponse ?? false, complete: options.complete,
       calls: [] as { command: string; args?: any; time: number }[], opens: [] as string[], pollError: options.pollError ?? '', responseError: '', openError: '', active: 0, maxActive: 0,
       polls: [] as (() => void)[], responses: [] as (() => void)[], setLanguage,
       releasePoll() { this.polls.shift()?.(); }, releaseResponse() { this.responses.shift()?.(); },
@@ -34,7 +34,7 @@ async function fixture(page: Page, items: unknown[] = [question, approval, unsup
     } };
     f.widget = createQuestionCenter({ openSession(id: string) { f.opens.push(id); if (f.openError) throw new Error(f.openError); }, async call(command: string, args?: any) {
       f.calls.push({ command, args, time: performance.now() });
-      if (command === 'respond_pending_question') {
+      if (command === 'respond_pending_question' || (command === 'conversation_request' && args?.request?.type === 'respond')) {
         if (f.holdResponse) await new Promise<void>(resolve => f.responses.push(resolve));
         if (f.responseError) throw new Error(f.responseError); return {};
       }
@@ -50,6 +50,113 @@ async function fixture(page: Page, items: unknown[] = [question, approval, unsup
 const open = (page: Page) => page.getByRole('button', { name: /^질문함 ·/ }).click();
 const polls = (page: Page) => page.evaluate(() => (window as any).questionFixture.calls.filter((call: any) => call.command === 'list_pending_questions').length);
 const responses = (page: Page) => page.evaluate(() => (window as any).questionFixture.calls.filter((call: any) => call.command === 'respond_pending_question'));
+
+const mcpApproval = () => ({
+  id: 'mcp-approval', sessionId: 'session-one', threadId: 'thread-one', generation: 4, requestId: 'mcp-71',
+  kind: 'approval', canRespond: true, metadataAvailable: true,
+  mcpToolApproval: { origin: 'core', threadId: 'thread-one', turnId: 'tool-turn', serverName: 'review-server', toolName: 'review_tool',
+    arguments: { path: '<img src=x onerror="window.injected=true">', nested: { enabled: true } } },
+  approval: { options: [{ id: 'accept', label: '이번만 허용' }, { id: 'decline', label: '거절' }, { id: 'cancel', label: '취소' }] },
+});
+const mcpResponses = (page: Page) => page.evaluate(() => (window as any).questionFixture.calls.filter((call: any) => call.command === 'conversation_request'));
+
+for (const [name, value] of [
+  ['missing', undefined], ['null', null], ['server', 'mcpServer'], ['future', 'future'], ['case', 'Core'], ['padded', 'core '],
+  ['boolean', true], ['number', 1], ['object', { core: true }], ['array', ['core']],
+] as const) {
+  test(`D0092 question center rejects ${name} origin despite forged metadata and canRespond`, async ({ page }) => {
+    const item: any = mcpApproval();
+    if (name === 'missing') delete item.mcpToolApproval.origin; else item.mcpToolApproval.origin = value;
+    item.mcpToolApproval._meta = { origin: 'core', core: true, codex_approval_origin: 'core' };
+    await fixture(page, [item], { complete: true }); await open(page);
+    await expect(page.locator('.question-item .mcp-tool-approval-review')).toHaveCount(0);
+    await expect(page.locator('.question-item form button:enabled')).toHaveCount(0);
+    expect(await mcpResponses(page)).toHaveLength(0); expect(await responses(page)).toHaveLength(0);
+  });
+}
+
+for (const [action, label] of [['accept', '이번만 허용'], ['decline', '거절'], ['cancel', '취소']]) {
+  test(`D0087 question center MCP ${action} preserves exact Native request ownership`, async ({ page }) => {
+    await fixture(page, [mcpApproval()], { complete: true }); await open(page);
+    const row = page.locator('.question-item');
+    await expect(row.locator('.mcp-tool-approval-review')).toContainText('review-server');
+    await expect(row.locator('.mcp-tool-approval-review')).toContainText('review_tool');
+    await expect(row.locator('.mcp-tool-approval-review')).toContainText('<img src=x');
+    await expect(row.locator('img')).toHaveCount(0);
+    await expect(row.locator('form button')).toHaveCount(3);
+    await row.getByRole('button', { name: label, exact: true }).click();
+    await expect(row.getByRole('button', { name: label, exact: true })).toBeDisabled();
+    expect((await mcpResponses(page)).map((call: any) => call.args)).toEqual([{
+      id: 'session-one', generation: 4, request: { type: 'respond', requestId: 'mcp-71', result: { action, content: null, _meta: null } },
+    }]);
+    expect(await responses(page)).toHaveLength(0);
+    expect(await page.evaluate(() => (window as any).injected)).toBeUndefined();
+  });
+}
+
+for (const invalid of ['readonly', 'metadata', 'foreign', 'missing', 'detail', 'truncated', 'oversize', 'responded', 'incomplete', 'unknown-complete']) {
+  test(`D0087 question center blocks ${invalid} MCP approval`, async ({ page }) => {
+    const item: any = mcpApproval();
+    if (invalid === 'readonly') item.canRespond = false;
+    if (invalid === 'metadata') item.metadataAvailable = false;
+    if (invalid === 'foreign') item.mcpToolApproval.threadId = 'foreign-thread';
+    if (invalid === 'missing') delete item.mcpToolApproval.toolName;
+    if (invalid === 'detail') item.mcpToolApproval.arguments = { value: { __detail: true, bytes: 99999 } };
+    if (invalid === 'truncated') item.mcpToolApproval.arguments = { value: { hasMore: true } };
+    if (invalid === 'oversize') item.mcpToolApproval.arguments = { value: 'x'.repeat(16 * 1024) };
+    if (invalid === 'responded') item.responded = true;
+    await fixture(page, [item], { complete: invalid === 'incomplete' ? false : invalid === 'unknown-complete' ? undefined : true }); await open(page);
+    const enabled = page.locator('.question-item form button:enabled'); await expect(enabled).toHaveCount(0);
+    expect(await mcpResponses(page)).toHaveLength(0);
+  });
+}
+
+test('D0087 question center close and late failed reply never resends', async ({ page }) => {
+  await fixture(page, [mcpApproval()], { holdResponse: true, complete: true }); await open(page);
+  await page.getByRole('button', { name: '이번만 허용', exact: true }).click();
+  await expect.poll(async () => (await mcpResponses(page)).length).toBe(1);
+  await page.getByRole('button', { name: '질문함 닫기' }).click(); await open(page);
+  await expect(page.getByRole('button', { name: '이번만 허용', exact: true })).toBeDisabled();
+  await page.evaluate(() => { const f = (window as any).questionFixture; f.responseError = 'fixture lost reply'; f.releaseResponse(); });
+  await expect(page.locator('.question-response-status')).toContainText('응답 결과를 확인하지 못했습니다');
+  await page.clock.runFor(3_000);
+  await expect(page.getByRole('button', { name: '이번만 허용', exact: true })).toBeDisabled();
+  expect(await mcpResponses(page)).toHaveLength(1);
+});
+
+test('D0087 question center blocks MCP actions while metadata polling is unavailable', async ({ page }) => {
+  await fixture(page, [mcpApproval()], { complete: true }); await open(page);
+  await expect(page.getByRole('button', { name: '이번만 허용', exact: true })).toBeEnabled();
+  await page.evaluate(() => { (window as any).questionFixture.pollError = 'fixture unavailable'; });
+  await page.clock.runFor(3_000);
+  await expect(page.getByRole('button', { name: '이번만 허용', exact: true })).toBeDisabled();
+  expect(await mcpResponses(page)).toHaveLength(0);
+});
+
+for (const [name, json, allowed] of [
+  ['positive-safe', '9007199254740991', true], ['negative-safe', '-9007199254740991', true],
+  ['positive-outside', '9007199254740992', false], ['negative-outside', '-9007199254740992', false],
+  ['large-finite', '1e100', false], ['negative-zero', '-0.0', false],
+  ['zero', '0', true], ['fraction', '0.25', true], ['negative-fraction', '-0.125', true],
+] as const) {
+  test(`D0089 question center numeric review ${name}`, async ({ page }) => {
+    await fixture(page, [mcpApproval()], { complete: true });
+    await page.evaluate(json => {
+      (window as any).questionFixture.items[0].mcpToolApproval.arguments = { nested: [{ value: JSON.parse(json) }] };
+    }, json);
+    await page.clock.runFor(3_000); await open(page);
+    const row = page.locator('.question-item'); await expect(row).toHaveCount(1);
+    if (allowed) {
+      await expect(row.locator('.mcp-tool-approval-review')).toContainText(json);
+      await expect(row.locator('form button:enabled')).toHaveCount(3);
+      await row.getByRole('button', { name: '이번만 허용', exact: true }).click();
+      expect((await mcpResponses(page)).map((c: any) => c.args.request.result)).toEqual([{ action: 'accept', content: null, _meta: null }]);
+    } else {
+      await expect(row.locator('form button:enabled')).toHaveCount(0);
+      expect(await mcpResponses(page)).toHaveLength(0);
+    }
+  });
+}
 
 test('세션별 질문 항목만 중복 제거해 세고 원문 없는 세션과 승인·질문을 안전하게 구분한다', async ({ page }) => {
   await fixture(page, [question, question, approval, unsupported]);

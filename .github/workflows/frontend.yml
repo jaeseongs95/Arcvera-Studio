@@ -1,0 +1,149 @@
+name: Desktop frontend validation
+
+on:
+  push:
+    branches: [feature/desktop-2.1.0-core110]
+  workflow_dispatch:
+    inputs:
+      build_fixtures:
+        description: 'Build isolated executables after the defect change set is ready for real integration'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    # Private repositories execute validation only through workflow_dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Type-check and bundle the frontend
+        run: npm run build
+      - name: Local tool-provider fixture unit checks
+        run: node --test --test-reporter=spec tests/core-tool-provider.test.mjs
+      - run: npx playwright install chromium
+      - name: MCP one-time approval GUI regressions
+        run: npx playwright test tests/conversation.spec.ts tests/question-center.spec.ts --grep 'D0087|D0089|D0090' --workers=1 --reporter=line
+      - name: Context and extension frontend regressions
+        run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/context-composition.spec.ts tests/conversation-integration.spec.ts tests/mcp-manager.spec.ts tests/mcp-runtime.spec.ts tests/hook-runtime.spec.ts tests/hook-runtime-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: artifacts/frontend-validation/junit.xml
+          AGENT_GRID_TEST_OUTPUT: artifacts/frontend-validation/results
+      - name: Preserve frontend evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-frontend-validation
+          path: artifacts/frontend-validation/
+          if-no-files-found: warn
+          retention-days: 14
+  native-adapters:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      RUST_TEST_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: windows
+          cache-on-failure: true
+      - run: npm ci
+      - name: Generate required license resource
+        run: node scripts/notices.mjs
+      - run: npm run build
+      - name: Compile non-test adapter paths
+        run: cargo check --lib --locked --manifest-path src-tauri/Cargo.toml
+      - name: Prove D85 against the unchanged regression cases
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:CARGO_TERM_COLOR = 'never'
+          # Only the transition from the observed baseline needs a paired run.
+          $baseline = (git rev-parse HEAD^).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Missing baseline commit' }
+          if ($baseline -ne '916417d6b4c93fe253be3f94412fd05328c42936') { Write-Host 'D85 paired baseline not applicable; ordinary regressions still run'; return }
+          $path = 'src-tauri/src/codex_runtime_transition.rs'
+          $fixedBytes = [IO.File]::ReadAllBytes($path)
+          $utf8 = [Text.UTF8Encoding]::new($false, $true)
+          $fixed = $utf8.GetString($fixedBytes)
+          $oldLines = @(git show "${baseline}:$path")
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline source unavailable' }
+          $old = ($oldLines -join "`n") + "`n"
+          $marker = '#[cfg(test)]'
+          $fixedOffset = $fixed.IndexOf($marker, [StringComparison]::Ordinal)
+          $oldOffset = $old.IndexOf($marker, [StringComparison]::Ordinal)
+          if ($fixedOffset -lt 0 -or $oldOffset -lt 0) { throw 'Missing inline regression module' }
+          $cases = $fixed.Substring($fixedOffset)
+          $before = $old.Substring(0, $oldOffset) + $cases
+          $sha = { param($bytes) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() }
+          $fixedSha = & $sha $fixedBytes
+          $caseSha = & $sha ($utf8.GetBytes($cases))
+          New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
+          try {
+            [IO.File]::WriteAllText($path, $before, $utf8)
+            if ((& $sha ($utf8.GetBytes(([IO.File]::ReadAllText($path)).Substring($oldOffset)))) -ne $caseSha) { throw 'Before test bytes differ' }
+            cargo test --lib --locked --manifest-path src-tauri/Cargo.toml runtime_transition::tests::d85_ -- --test-threads=1 2>&1 | Tee-Object -FilePath artifacts/native-adapters/d85-before.log
+            $redExit = $LASTEXITCODE
+            $redCases = @([regex]::Matches([IO.File]::ReadAllText('artifacts/native-adapters/d85-before.log'), '(?m)^test [\w:]+(d85_\w+) \.\.\. (ok|FAILED)') | ForEach-Object { @{ name=$_.Groups[1].Value; result=$_.Groups[2].Value } })
+          } finally {
+            [IO.File]::WriteAllBytes($path, $fixedBytes)
+          }
+          if ((& $sha ([IO.File]::ReadAllBytes($path))) -ne $fixedSha) { throw 'Fixed source restoration failed' }
+          $expectedFailures = @('d85_manifest_entrypoints_bind_current_and_legacy_full_and_cli','d85_runtime_only_reuses_the_manifest_bound_current_and_legacy_cli','d85_postcheck_preserves_current_cli_name_and_all_runtime_only_file_identities') | Sort-Object
+          $actualFailures = @($redCases | Where-Object result -eq 'FAILED' | ForEach-Object name | Sort-Object)
+          if ($redExit -eq 0 -or $redCases.Count -ne 8 -or (Compare-Object $expectedFailures $actualFailures)) { throw 'Before did not fail at the expected three package boundaries; inspect preserved output' }
+          cargo test --lib --locked --manifest-path src-tauri/Cargo.toml runtime_transition::tests::d85_ -- --test-threads=1 2>&1 | Tee-Object -FilePath artifacts/native-adapters/d85-fixed.log
+          $greenExit = $LASTEXITCODE
+          $greenCases = @([regex]::Matches([IO.File]::ReadAllText('artifacts/native-adapters/d85-fixed.log'), '(?m)^test [\w:]+(d85_\w+) \.\.\. (ok|FAILED)') | ForEach-Object { @{ name=$_.Groups[1].Value; result=$_.Groups[2].Value } })
+          @{ baseline=$baseline; candidate=(git rev-parse HEAD); beforeSourceSha256=(& $sha ($utf8.GetBytes($before))); fixedSourceSha256=$fixedSha; testModuleSha256=$caseSha; beforeExit=$redExit; fixedExit=$greenExit; beforeCases=$redCases; fixedCases=$greenCases; scope='Windows filesystem/native-unit fixtures; no real Core or GUI replacement' } | ConvertTo-Json -Depth 5 | Set-Content artifacts/native-adapters/d85-proof.json -Encoding utf8NoBOM
+          if ($greenExit -ne 0 -or $greenCases.Count -ne 8 -or @($greenCases | Where-Object result -ne 'ok').Count -ne 0) { throw 'Fixed package regressions failed' }
+      - name: MCP and conversation adapter unit checks
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
+          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::', 'runtime_transition')) {
+            $name = $filter.Replace(':', '-').Trim('-')
+            cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Prove the MCP one-time response validator boundary
+        shell: pwsh
+        run: ./scripts/verify-mcp-approval-boundary.ps1
+      - name: Build a source-bound isolated development executable
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_fixtures }}
+        shell: pwsh
+        run: ./scripts/build-native-fixture.ps1
+      - name: Build an isolated release-profile diagnostic comparator
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_fixtures }}
+        shell: pwsh
+        run: ./scripts/build-native-fixture.ps1 -FixtureProfile release
+      - name: Preserve native unit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-native-adapter-validation
+          path: artifacts/native-adapters/
+          if-no-files-found: warn
+          retention-days: 14

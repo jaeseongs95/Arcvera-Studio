@@ -56,6 +56,16 @@ fn startup_commands_case(replies: Vec<Result<Vec<u8>, String>>, started: Result<
     (result, calls.into_inner())
 }
 #[test]
+fn arcvera_actual_cli_output_reuses_supported_running_server() {
+    let socket = env::current_dir().unwrap().join("startup-fixture.sock");
+    let running = json!({"status":"running", "socketPath":socket, "appServerVersion":"1.0.1"});
+    let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()),
+        Ok(b"arcvera 1.0.1\n".to_vec()), Ok(serde_json::to_vec(&running).unwrap())], Err("시작 금지".into()));
+    assert_eq!(result.unwrap(), running);
+    assert_eq!(calls, ["app-server --help", "app-server daemon start --help", "--version", "app-server daemon version"]);
+}
+
+#[test]
 fn startup_reuses_core_and_rejects_unsupported_runtime() {
     let socket = env::current_dir().unwrap().join("startup-fixture.sock").to_str().unwrap().to_owned();
     let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(b"codex-cli 1.0.0+fixture\n".to_vec()), Ok(startup_status("running", &socket))], Err("시작 금지".into()));
@@ -109,6 +119,105 @@ fn startup_rejects_missing_preserving_option_without_embedded_fallback() {
         assert_eq!(calls, ["app-server --help", "app-server daemon start --help"]);
     }
 }
+#[test]
+fn arcvera_first_installation_empty_home_uses_guarded_first_mode() {
+    let home = env::current_dir().unwrap().join("target").join(format!("arcvera-first-{}", Uuid::new_v4()));
+    fs::create_dir_all(&home).unwrap();
+    let name = if cfg!(windows) { "arcvera.exe" } else { "arcvera" };
+    let socket = home.join("app-server-control/app-server-control.sock").to_str().unwrap().to_owned();
+    for relative in ["packages/app-server-daemon/current/bin", "packages/app-server-daemon/current",
+        "packages/standalone/current/bin", "packages/standalone/current"] {
+        let passive = json!({"status":"stopped", "managedCodexVersion":null, "appServerVersion":null,
+            "socketPath":socket, "managedCodexPath":home.join(relative).join(name)});
+        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(b"arcvera 1.0.1\n".to_vec()),
+            Err("no daemon".into()), Ok(serde_json::to_vec(&passive).unwrap()), Ok(startup_status("running", &socket))],
+            Ok(startup_status("started", &socket)));
+        assert!(result.is_ok(), "{relative}: {result:?}");
+        assert_eq!(calls.iter().filter(|call| call.starts_with("start ")).collect::<Vec<_>>(), ["start --first-installation"]);
+    }
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn arcvera_first_installation_existing_and_uncertain_state_is_preserved() {
+    let root = env::current_dir().unwrap().join("target").join(format!("arcvera-preserve-{}", Uuid::new_v4()));
+    let name = if cfg!(windows) { "arcvera.exe" } else { "arcvera" };
+    for marker in ["packages/app-server-daemon/current", "packages/standalone/current", "app-server-daemon/settings.json", "app-server-daemon/loaded-threads.json"] {
+        let home = root.join(marker.replace('/', "-"));
+        let path = home.join(marker);
+        if marker.ends_with("current") { fs::create_dir_all(&path).unwrap(); }
+        else { fs::create_dir_all(path.parent().unwrap()).unwrap(); fs::write(&path, b"preserve").unwrap(); }
+        let socket = home.join("app-server-control/app-server-control.sock");
+        let passive = json!({"status":"stopped", "managedCodexVersion":null, "appServerVersion":null,
+            "socketPath":socket, "managedCodexPath":home.join("packages/app-server-daemon/current/bin").join(name)});
+        let (result, calls) = startup_commands_case(vec![Ok(startup_help()), Ok(startup_start_help()), Ok(b"arcvera 1.0.1\n".to_vec()),
+            Err("no daemon".into()), Ok(serde_json::to_vec(&passive).unwrap())], Err("original permission error".into()));
+        assert!(result.unwrap_err().contains("original permission error"));
+        assert_eq!(calls.last().unwrap(), "start --existing-installation");
+        assert!(fs::symlink_metadata(&path).is_ok());
+        if !marker.ends_with("current") { assert_eq!(fs::read(&path).unwrap(), b"preserve"); }
+    }
+    let home = root.join("permission");
+    let passive = json!({"status":"stopped", "managedCodexVersion":null, "appServerVersion":null,
+        "socketPath":home.join("app-server-control/app-server-control.sock"),
+        "managedCodexPath":home.join("packages/app-server-daemon/current/bin").join(name)});
+    assert!(!first_installation(&passive, |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn arcvera_first_installation_rejects_foreign_names_and_other_homes() {
+    let home = env::current_dir().unwrap().join("target/arcvera-path-seam");
+    let name = if cfg!(windows) { "arcvera.exe" } else { "arcvera" };
+    let socket = home.join("app-server-control/app-server-control.sock");
+    for managed in [home.join("packages/app-server-daemon/current/bin").join(format!("{name}.other")),
+        home.join("packages/app-server-daemon/current/bin/Arcvera.exe"),
+        home.join("other/packages/app-server-daemon/current/bin").join(name),
+        home.join("packages/unknown/current/bin").join(name)] {
+        let value = json!({"socketPath":socket, "managedCodexPath":managed});
+        assert!(!first_installation(&value, |_| panic!("foreign path metadata must not be queried")));
+    }
+}
+
+#[test]
+fn arcvera_first_installation_does_not_retry_when_locked_cli_rejects_race() {
+    let home = env::temp_dir().join(format!("arcvera-race-{}", Uuid::new_v4()));
+    fs::create_dir(&home).unwrap();
+    let name = if cfg!(windows) { "arcvera.exe" } else { "arcvera" };
+    let passive = json!({"status":"stopped", "managedCodexVersion":null, "appServerVersion":null,
+        "socketPath":home.join("app-server-control/app-server-control.sock"),
+        "managedCodexPath":home.join("packages/app-server-daemon/current/bin").join(name)});
+    let mut replies = std::collections::VecDeque::from([Ok(startup_help()), Ok(startup_start_help()), Ok(b"arcvera 1.0.1\n".to_vec()),
+        Err("no daemon".into()), Ok(serde_json::to_vec(&passive).unwrap())]);
+    let marker = home.join("app-server-daemon/loaded-threads.json"); let mut starts = Vec::new();
+    let result = prepare_runtime_commands(|_| replies.pop_front().expect("no retry"), |mode| {
+        starts.push(mode); fs::create_dir_all(marker.parent().unwrap()).unwrap(); fs::write(&marker, b"new recovery").unwrap();
+        Err("locked CLI refused changed state".into())
+    }, |path| fs::symlink_metadata(path));
+    assert!(result.unwrap_err().contains("locked CLI refused changed state"));
+    assert_eq!(starts, [DaemonStart::First]); assert!(replies.is_empty());
+    assert_eq!(fs::read(&marker).unwrap(), b"new recovery"); fs::remove_dir_all(home).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn arcvera_first_installation_broken_current_junction_is_existing() {
+    let home = env::temp_dir().join(format!("arcvera-link-{}", Uuid::new_v4()));
+    let target = home.join("owned-target");
+    let junction = home.join("packages").join("app-server-daemon").join("current");
+    fs::create_dir_all(&target).unwrap(); fs::create_dir_all(junction.parent().unwrap()).unwrap();
+    let output = std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"])
+        .arg(&junction).arg(&target).output().expect("junction fixture must be created");
+    assert!(output.status.success(), "junction fixture creation failed: {}", String::from_utf8_lossy(&output.stderr));
+    fs::remove_dir(&target).unwrap();
+    assert!(fs::symlink_metadata(&junction).is_ok(), "broken junction must still be observable");
+    let passive = json!({"status":"stopped", "managedCodexVersion":null, "appServerVersion":null,
+        "socketPath":home.join("app-server-control/app-server-control.sock"), "managedCodexPath":junction.join("bin/arcvera.exe")});
+    assert!(!first_installation(&passive, |path| fs::symlink_metadata(path)));
+    assert!(fs::symlink_metadata(&junction).is_ok());
+    fs::remove_dir(&junction).unwrap(); fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn startup_confirmed_missing_package_uses_locked_first_installation() {
     let home = env::current_dir().unwrap().join("target").join(format!("startup-fresh-{}", Uuid::new_v4()));
@@ -331,11 +440,38 @@ fn shared_resume_has_exact_id_and_no_websocket_token_option() {
     let cwd = env::current_dir().unwrap();
     let socket = cwd.join("fixture.sock");
     let endpoint = SharedEndpoint {core_version:"1.0.0+fixture".into(),exe:"fixture".into(),socket:socket.clone(),stamp:SocketStamp {canonical:socket,created:None,modified:None}};
-    let command = endpoint.tui(&cwd, "exact-id").unwrap();
+    let command = endpoint.tui(&cwd, "exact-id", false).unwrap();
     let args: Vec<_> = command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
     assert_eq!(&args[1..3], ["resume", "exact-id"]);
     assert!(args.iter().any(|a| a.starts_with("unix://")));
     assert!(!args.iter().any(|a| a == "--remote-auth-token-env"));
+}
+#[test]
+fn terminal_link_owner_uses_exact_resume_capability_and_preserves_legacy_argv() {
+    let cwd = env::current_dir().unwrap();
+    let socket = cwd.join("fixture.sock");
+    let endpoint = SharedEndpoint {core_version:"1.1.0".into(),exe:"fixture".into(),socket:socket.clone(),stamp:SocketStamp {canonical:socket,created:None,modified:None}};
+    let prefix="Usage: fixture resume [OPTIONS] [SESSION_ID]\n\nOptions:\n";
+    for (declaration, expected) in [
+        ("      --terminal-link-owner <OWNER>\n          [possible values: tui, host]\n", true),
+        ("", false),
+        ("          Description mentions --terminal-link-owner\n", false),
+        ("      --terminal-link-owner-extra <OWNER>\n", false),
+    ] {
+        let help=format!("{prefix}{declaration}  -h, --help\n          Print help\n");
+        let supported=help_supports_command_option(help.as_bytes(),"resume","--terminal-link-owner").unwrap();
+        assert_eq!(supported,expected);
+        let command=endpoint.tui(&cwd,"exact-id",supported).unwrap();
+        let args:Vec<_>=command.get_argv().iter().map(|a|a.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[1..3],["resume","exact-id"]);
+        assert_eq!(args.iter().filter(|a|a.as_str()=="--terminal-link-owner").count(),usize::from(expected));
+        if expected {assert_eq!(&args[args.len()-2..],["--terminal-link-owner","host"]);}
+        assert!(args.iter().any(|a|a.starts_with("unix://")));
+        assert!(!args.iter().any(|a|a=="--remote-auth-token-env"));
+    }
+    assert!(help_supports_command_option(b"not help","resume","--terminal-link-owner").is_err());
+    assert!(help_supports_command_option(&[0xff],"resume","--terminal-link-owner").is_err());
+    assert!(help_supports_command_option(b"Usage: fixture app-server [OPTIONS]\nOptions:\n  -h, --help\n","resume","--terminal-link-owner").is_err());
 }
 #[test]
 fn shared_lifecycle_and_turn_bounds_reject_ambiguous_targets() {

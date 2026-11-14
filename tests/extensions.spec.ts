@@ -188,6 +188,27 @@ test('discovery searches selected-runtime metadata without mutating or replacing
   await expect(page.locator('.xterm-rows')).toContainText('EXTENSIONS_LIVE_OUTPUT');
 });
 
+test('D0077 hook configuration and unavailable execution state stay distinct', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const hook = (window as any).extensionsFixture.hooks[1];
+    hook.enabled = true;
+    hook.trustStatus = 'untrusted';
+  });
+  await open(page); await page.locator('#extensions-tab-hooks').click();
+  const row = page.locator('[data-extension-id="project.review"]');
+  await expect(row).toContainText('사용 설정됨');
+  await expect(row).toContainText('신뢰 확인 필요');
+  await expect(row).not.toContainText('사용 중');
+  await row.click();
+  await expect(page.locator('#extensions-detail')).toContainText('사용 설정됨');
+  await expect(page.locator('#extensions-detail')).not.toContainText('사용 중');
+  await page.evaluate(() => { (window as any).extensionsFixture.hooks = []; });
+  await page.locator('#extensions-refresh').click();
+  await expect(page.locator('#extensions-list')).toContainText('조회된 Hook이 없습니다');
+  await expect(page.locator('#extensions-list')).not.toContainText('등록된 항목이 없습니다');
+});
+
 test('hook metadata stays text and trust approval does not silently enable the hook', async ({ page }) => {
   await fixture(page); await open(page, 0);
   await page.locator('#extensions-tab-hooks').click();
