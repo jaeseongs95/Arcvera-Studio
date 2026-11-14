@@ -306,3 +306,143 @@ test('CC14 좁은 패널은 가로로 넘치지 않고 이름 있는 버튼을 �
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width + 1);
   expect(dimensions.focus).not.toBe('none');
 });
+
+const requestSizes = {
+  observationId: 'prepared-a', recordedAt: '2026-11-14T01:01:00Z', scope: 'prepared_sampling_prompt',
+  provenance: 'utf8_json_components_before_provider_normalization', historyVersion: snapshot.historyVersion,
+  contextIndexRevision: snapshot.contextIndexRevision, inputSerializedBytes: 10, baseInstructionsSerializedBytes: 20,
+  toolDefinitionsSerializedBytes: 30, outputSchemaSerializedBytes: 40, componentPayloadBytes: 100,
+};
+const requestCountFields = ['inputSerializedBytes', 'baseInstructionsSerializedBytes', 'toolDefinitionsSerializedBytes',
+  'outputSchemaSerializedBytes', 'componentPayloadBytes'];
+
+test('CC15 준비 관측 legacy 누락과 null은 미확인이며 이전 byte를 0으로 채우지 않는다', async ({ page }) => {
+  await fixture(page);
+  for (const value of [snapshot, { ...snapshot, requestSizes: null }]) {
+    expect(await render(page, { ...snapshot, requestSizes })).toBe(true);
+    expect(await render(page, value)).toBe(true);
+    await expect(page.getByRole('heading', { name: '직전 준비 요청 크기', exact: true })).toBeVisible();
+    await expect(field(page, 'requestSizes.observation')).toHaveText('준비 관측 미확인');
+    await expect(field(page, 'requestSizes.componentPayloadBytes')).toHaveCount(0);
+    await expect(field(page, 'requestSizes.observationId')).toHaveCount(0);
+  }
+});
+
+test('CC16 네 JSON component byte와 서버 합계를 기존 추정치·캐시와 분리하고 0을 보존한다', async ({ page }) => {
+  await fixture(page);
+  expect(await render(page, { ...snapshot, requestSizes })).toBe(true);
+  for (const [name, value] of Object.entries({ inputSerializedBytes: '10 B', baseInstructionsSerializedBytes: '20 B',
+    toolDefinitionsSerializedBytes: '30 B', outputSchemaSerializedBytes: '40 B', componentPayloadBytes: '100 B',
+    recordedAt: requestSizes.recordedAt, observationId: 'prepared-a' })) await expect(field(page, `requestSizes.${name}`)).toHaveText(value);
+  await expect(field(page, 'requestSizes.scope')).toHaveText('준비된 sampling prompt');
+  await expect(field(page, 'requestSizes.provenance')).toHaveText('Provider 정규화 전 UTF-8 JSON component');
+  await expect(field(page, 'sizes.residentSerializedBytes')).toHaveText('9000 B');
+  await expect(field(page, 'sizes.selectedBodyEstimatedTokens')).toHaveText('321');
+  await expect(field(page, 'cache.totalInputTokens')).toHaveText('20');
+  await expect(page.getByText(/네 JSON component만의 byte 관측/)).toBeVisible();
+  await expect(page.getByText(/provider 정규화·전송 봉투·delta 크기·과금 token/)).toBeVisible();
+  const zero = { ...requestSizes, inputSerializedBytes: 0, baseInstructionsSerializedBytes: 0,
+    toolDefinitionsSerializedBytes: 0, outputSchemaSerializedBytes: 0, componentPayloadBytes: 0 };
+  expect(await render(page, { ...snapshot, requestSizes: zero })).toBe(true);
+  for (const name of requestCountFields) await expect(field(page, `requestSizes.${name}`)).toHaveText('0 B');
+  expect(await render(page, { ...snapshot, requestSizes: { ...zero, inputSerializedBytes: Number.MAX_SAFE_INTEGER,
+    componentPayloadBytes: Number.MAX_SAFE_INTEGER } })).toBe(true);
+  await expect(field(page, 'requestSizes.componentPayloadBytes')).toHaveText('9007199254740991 B');
+  expect(await calls(page)).toEqual([]);
+});
+
+test('CC17 두 revision 문자열 모두 같을 때만 일치로 표시하고 대소·세대를 추론하지 않는다', async ({ page }) => {
+  await fixture(page);
+  expect(await render(page, { ...snapshot, requestSizes })).toBe(true);
+  await expect(field(page, 'requestSizes.revisionMatch')).toHaveText('표시 snapshot과 revision 일치');
+  await expect(field(page, 'requestSizes.historyVersion')).toHaveText('9007199254740993');
+  await expect(field(page, 'requestSizes.contextIndexRevision')).toHaveText('18446744073709551615');
+  for (const changes of [{ historyVersion: '9007199254740992' }, { historyVersion: '9007199254740994' },
+    { contextIndexRevision: '0' }, { historyVersion: '0', contextIndexRevision: '0' }]) {
+    expect(await render(page, { ...snapshot, requestSizes: { ...requestSizes, ...changes } })).toBe(true);
+    await expect(field(page, 'requestSizes.revisionMatch')).toHaveText('다른 준비 revision / 현재 구성 일치 미확인');
+    await expect(field(page, 'cache.revisionStatus')).toHaveText('이전 revision 관측');
+  }
+});
+
+test('CC18 잘못된 준비 관측의 형식·정밀도·합계는 이전 관측과 목록을 지우고 거부한다', async ({ page }) => {
+  await fixture(page);
+  const invalid: unknown[] = [[], 'PRIVATE_RAW', 0,
+    ...requestCountFields.flatMap(name => [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, '10', null, false].map(value => ({ ...requestSizes, [name]: value }))),
+    { ...requestSizes, componentPayloadBytes: 99 },
+    // Individually safe components can exceed a safe total; never round or clamp their sum.
+    { ...requestSizes, inputSerializedBytes: Number.MAX_SAFE_INTEGER, baseInstructionsSerializedBytes: 1,
+      toolDefinitionsSerializedBytes: 1, outputSchemaSerializedBytes: 0, componentPayloadBytes: Number.MAX_SAFE_INTEGER },
+    ...['01', '18446744073709551616', 1, null].flatMap(value => [
+      { ...requestSizes, historyVersion: value }, { ...requestSizes, contextIndexRevision: value }]),
+    { ...requestSizes, recordedAt: '2026-02-30T01:00:00Z' }, { ...requestSizes, recordedAt: null },
+    ...['', 'x'.repeat(257), 'bad\nvalue', '가'.repeat(86)].map(observationId => ({ ...requestSizes, observationId })),
+    { ...requestSizes, observationId: 1 }, { ...requestSizes, scope: null }, { ...requestSizes, provenance: 'x'.repeat(257) }];
+  const missing = { ...requestSizes } as any; delete missing.outputSchemaSerializedBytes; invalid.push(missing);
+  for (const value of invalid) {
+    expect(await render(page, { ...snapshot, requestSizes })).toBe(true);
+    expect(await render(page, { ...snapshot, requestSizes: value })).toBe(false);
+    await expect(page.getByRole('status')).toHaveText(invalidMessage);
+    await expect(page.getByRole('listitem')).toHaveCount(0);
+    await expect(field(page, 'requestSizes.componentPayloadBytes')).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('PRIVATE_');
+  }
+});
+
+test('CC19 미래 준비 출처는 미확인·HTML은 text이며 raw 비밀과 accessor는 비노출 거부한다', async ({ page }) => {
+  await fixture(page);
+  const html = '<img src=x onerror=alert(1)>';
+  expect(await render(page, { ...snapshot, requestSizes: { ...requestSizes, observationId: html,
+    scope: 'PRIVATE_SCOPE', provenance: 'PRIVATE_PROVENANCE' } })).toBe(true);
+  await expect(field(page, 'requestSizes.observationId')).toHaveText(html);
+  for (const name of ['scope', 'provenance']) await expect(field(page, `requestSizes.${name}`)).toHaveText('미확인');
+  await expect(page.locator('img,script')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('PRIVATE_');
+  await page.evaluate(() => (window as any).compositionFixture.setLanguage('en'));
+  await expect(field(page, 'requestSizes.provenance')).toHaveText('Unknown');
+  await expect(page.locator('body')).not.toContainText('PRIVATE_');
+  for (const name of ['body', 'authorization', 'input', 'schema']) {
+    expect(await render(page, { ...snapshot, requestSizes: { ...requestSizes, [name]: 'PRIVATE_SECRET' } })).toBe(false);
+    await expect(page.locator('body')).not.toContainText('PRIVATE_');
+  }
+  const accessor = await page.evaluate(({ snapshot, requestSizes }) => {
+    const f = (window as any).compositionFixture;
+    let touched = false;
+    const nested = { ...requestSizes };
+    Object.defineProperty(nested, 'scope', { enumerable: true, get() { touched = true; return 'PRIVATE_SECRET'; } });
+    const nestedAccepted = f.panel.render({ ...snapshot, requestSizes: nested });
+    Object.defineProperty(snapshot, 'requestSizes', { enumerable: true, get() { touched = true; return requestSizes; } });
+    return { nestedAccepted, rootAccepted: f.panel.render(snapshot), touched };
+  }, { snapshot, requestSizes });
+  expect(accessor).toEqual({ nestedAccepted: false, rootAccepted: false, touched: false });
+});
+
+test('CC20 준비 관측은 언어·busy를 보존하고 페이지교체·stale·폐기 뒤 남지 않는다', async ({ page }) => {
+  await fixture(page);
+  const value = { ...snapshot, requestSizes };
+  await render(page, value);
+  await page.evaluate(() => { const f = (window as any).compositionFixture; f.panel.setDisabled(true); f.setLanguage('en'); });
+  await expect(page.getByRole('heading', { name: 'Last prepared request sizes', exact: true })).toBeVisible();
+  await expect(field(page, 'requestSizes.componentPayloadBytes')).toHaveText('100 B');
+  await expect(field(page, 'requestSizes.revisionMatch')).toHaveText('Revisions match the displayed snapshot');
+  await expect(page.getByRole('button', { name: 'Next composition page', exact: true })).toBeDisabled();
+  await page.evaluate(() => { const f = (window as any).compositionFixture; for (const button of f.panel.element.querySelectorAll('button')) button.click(); });
+  expect(await calls(page)).toEqual([]);
+  expect(await render(page, { ...snapshot, snapshotId: 'page-b', requestSizes: null })).toBe(true);
+  await expect(field(page, 'requestSizes.observation')).toHaveText('Prepared request observation unconfirmed');
+  await expect(field(page, 'requestSizes.observationId')).toHaveCount(0);
+  for (const state of ['pending', 'stale']) {
+    await render(page, value);
+    await page.evaluate(state => { const f = (window as any).compositionFixture;
+      if (state === 'pending') f.panel.showPending(); else f.panel.showUnavailable('stale'); }, state);
+    await expect(field(page, 'requestSizes.componentPayloadBytes')).toHaveCount(0);
+  }
+  await render(page, value);
+  const disposed = await page.evaluate(value => {
+    const f = (window as any).compositionFixture; const element = f.panel.element;
+    const button = element.querySelector('button'); f.panel.dispose(); button.click();
+    const accepted = f.panel.render(value); document.body.append(element); f.setLanguage('ko');
+    return { accepted, text: element.textContent, children: element.childElementCount, calls: f.calls };
+  }, value);
+  expect(disposed).toEqual({ accepted: false, text: '', children: 0, calls: [] });
+});

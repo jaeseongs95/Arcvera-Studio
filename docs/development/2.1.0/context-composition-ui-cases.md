@@ -21,6 +21,23 @@ Only the current validated page of 0–100 rows is retained and replaced. Repeat
 
 ## engineering-test-plan
 
+### Prepared request sizes follow-up (CC15–CC20)
+
+This consumes candidate `ThreadContextReadResponse.requestSizes` and `ThreadContextRequestSizes` (current source lines 2072–2095). Build, Playwright and real Core checks for this follow-up are **NOT_RUN**, outside the earlier parent evidence. The public panel API is unchanged. Native/caller wiring and same-candidate integration belong to the parent.
+
+Missing/null `requestSizes` means unobserved preparation. An object contains observationId (existing 256 UTF-8 byte ID bound), recordedAt (existing RFC3339 validation), scope, provenance, exact u64 decimal historyVersion/contextIndexRevision, four component byte counts (input/base instructions/tool definitions/output schema), and componentPayloadBytes. All five counts are nonnegative safe integers. BigInt checks the sum of the four components; the displayed total remains the server's componentPayloadBytes. Invalid types, sums or extra fields clear the previous result and return false.
+
+A separate “Last prepared request sizes” group shows observation ID/time, both revisions, scope/provenance and all five byte counts. Only scope=`prepared_sampling_prompt` and provenance=`utf8_json_components_before_provider_normalization` receive known labels; future values are projected to Unknown without retaining or reflecting them. Only exact string equality of both revisions with the displayed snapshot permits “Revisions match the displayed snapshot.” Any difference means “Different preparation revision / match to current composition unconfirmed.” Numeric order, age and session identity are not inferred. These are four prepared JSON components before provider normalization, excluding transport envelopes, delta bytes and billable tokens. They are never combined or converted with estimates, token or cache counters.
+
+| Case | Requirement/scenario | Expected behavior and failure oracle |
+| --- | --- | --- |
+| CC15 | Legacy missing/null | Unobserved preparation, no zero fill; previous observation removed |
+| CC16 | Explicit zero/observed values/exact maximum-safe sum | Reported bytes including zero; estimates/cache unchanged; component scope explained |
+| CC17 | Both revisions equal/each independently different | Exact equality only; large u64 preserved, no freshness or epoch inference |
+| CC18 | Unsafe/negative/fractional/type/u64/time/sum errors | False, cleared observation/list, fixed error; reject sums that lose precision |
+| CC19 | Future source/scope/HTML ID/raw secrets/accessors | Unknown source without reflection, text-only HTML; reject extras/accessors without disclosure |
+| CC20 | Busy/language/page replacement/pending/stale/disposal | Values/state and parent disabled preserved; old observation cleared after replacement/error/disposal; no late render/callback |
+
 Level: public DOM/API boundaries using the existing Playwright/Vite source-fixture pattern. `tests/context-composition.spec.ts` supplies synthetic data and never calls Core/CLI/Tauri. Oracles come from the candidate types and assigned presentation semantics, not copied total/TTL calculations. Parent-only candidate command: `npx playwright test tests/context-composition.spec.ts`. Execution and check-plan calls are outside this delegation and remain NOT_RUN. No runner or dependency is added.
 
 | Case | Requirement/scenario | Expected behavior and failure oracle |
@@ -45,3 +62,6 @@ Remaining integration evidence: generated schema/Native field and bound alignmen
 ## Parent execution evidence
 
 After authoring, the parent ran CC01–CC14 plus three parent-wiring and 21 existing context cases in `context-composition-ui-01`: 38 passed, exit0. `tsc --noEmit` also exited0. These are source/IPC fixtures, not real Core, Native or final-application execution. The six Native memory-WebSocket cases are distinguished in `context-adapter-cases.md`. Generated schemas, same-candidate Core1.1 integration and actual WebView/package verification remain incomplete.
+## Parent requestSizes execution
+
+After authoring, `request-sizes-ui-01` ran allCC01–20 with parent context25 and conversation integration12:57 passed, exit0; tsc0. Native memory9 and pending actual Core1.1 verification are distinguished in `context-adapter-cases.md`.

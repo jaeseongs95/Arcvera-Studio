@@ -47,6 +47,10 @@ const minimumProvenanceLabels: LabelMap = { unknown,
   configured_request_policy_and_reported_cache_activity: ['요청 정책 설정과 보고된 캐시 활동', 'Configured request policy and reported cache activity'] };
 const minimumScopeLabels: LabelMap = { unknown,
   reported_write_tokens_only_not_individual_fragments: ['보고된 쓰기 토큰만 · 개별 조각 아님', 'Reported write tokens only · not individual fragments'] };
+const requestScopeLabels: LabelMap = { unknown,
+  prepared_sampling_prompt: ['준비된 sampling prompt', 'Prepared sampling prompt'] };
+const requestProvenanceLabels: LabelMap = { unknown,
+  utf8_json_components_before_provider_normalization: ['Provider 정규화 전 UTF-8 JSON component', 'UTF-8 JSON components before provider normalization'] };
 
 interface Sizes {
   residentSerializedBytes: number; selectedResidentSerializedBytes: number; excludedResidentSerializedBytes: number;
@@ -67,24 +71,34 @@ interface Cache {
   requestStartedAt: string | null; minimumValidUntil: string | null; minimumValidUntilProvenance: string;
   minimumValidUntilScope: string; estimatedExpiry: string | null; serverConfirmedExpiry: string | null;
 }
+interface RequestSizes {
+  observationId: string; recordedAt: string; scope: string; provenance: string; historyVersion: string; contextIndexRevision: string;
+  inputSerializedBytes: number; baseInstructionsSerializedBytes: number; toolDefinitionsSerializedBytes: number;
+  outputSchemaSerializedBytes: number; componentPayloadBytes: number;
+}
 interface Snapshot {
   threadId: string; snapshotId: string; contextIndexRevision: string; historyVersion: string; asOf: string;
-  sizes: Sizes; limits: Limits; fragments: Fragment[]; cache: Cache; nextCursor: number | null;
+  sizes: Sizes; limits: Limits; fragments: Fragment[]; cache: Cache; requestSizes: RequestSizes | null; nextCursor: number | null;
 }
 type View = 'initial' | 'pending' | 'unsupported' | 'stale' | 'unavailable' | 'invalid' | 'snapshot';
 const encoder = new TextEncoder();
 const fail = (): never => { throw new Error('Invalid context composition metadata'); };
 
 // The parent passes a body-free Native projection. Never retain or stringify the unknown input.
-function object(value: unknown, keys: readonly string[]): Record<string, unknown> {
+function object(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return fail();
   const ownKeys = Reflect.ownKeys(value);
-  if (ownKeys.length !== keys.length || ownKeys.some(key => typeof key !== 'string' || !keys.includes(key))) return fail();
+  if (ownKeys.length < keys.length || ownKeys.length > keys.length + optional.length
+    || ownKeys.some(key => typeof key !== 'string' || (!keys.includes(key) && !optional.includes(key)))) return fail();
   for (const key of keys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !('value' in descriptor)) return fail();
+  }
+  for (const key of optional) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && !('value' in descriptor)) return fail();
   }
   return value as Record<string, unknown>;
 }
@@ -128,8 +142,26 @@ function timestamp(value: unknown): string {
 }
 function nullableTimestamp(value: unknown): string | null { return value === null ? null : timestamp(value); }
 
+function readRequestSizes(value: unknown): RequestSizes | null {
+  if (value === null) return null;
+  const row = object(value, ['observationId', 'recordedAt', 'scope', 'provenance', 'historyVersion', 'contextIndexRevision',
+    'inputSerializedBytes', 'baseInstructionsSerializedBytes', 'toolDefinitionsSerializedBytes', 'outputSchemaSerializedBytes', 'componentPayloadBytes']);
+  const inputSerializedBytes = count(row.inputSerializedBytes);
+  const baseInstructionsSerializedBytes = count(row.baseInstructionsSerializedBytes);
+  const toolDefinitionsSerializedBytes = count(row.toolDefinitionsSerializedBytes);
+  const outputSchemaSerializedBytes = count(row.outputSchemaSerializedBytes);
+  const componentPayloadBytes = count(row.componentPayloadBytes);
+  // Compare exactly; separately safe component counts can still have an unsafe combined sum.
+  if (BigInt(inputSerializedBytes) + BigInt(baseInstructionsSerializedBytes) + BigInt(toolDefinitionsSerializedBytes)
+    + BigInt(outputSchemaSerializedBytes) !== BigInt(componentPayloadBytes)) return fail();
+  return { observationId: text(row.observationId), recordedAt: timestamp(row.recordedAt),
+    scope: code(row.scope, requestScopeLabels), provenance: code(row.provenance, requestProvenanceLabels),
+    historyVersion: decimal(row.historyVersion), contextIndexRevision: decimal(row.contextIndexRevision),
+    inputSerializedBytes, baseInstructionsSerializedBytes, toolDefinitionsSerializedBytes, outputSchemaSerializedBytes, componentPayloadBytes };
+}
+
 function readSnapshot(value: unknown, expectedThreadId: string): Snapshot {
-  const root = object(value, ['threadId', 'snapshotId', 'contextIndexRevision', 'historyVersion', 'asOf', 'sizes', 'limits', 'fragments', 'cache', 'nextCursor']);
+  const root = object(value, ['threadId', 'snapshotId', 'contextIndexRevision', 'historyVersion', 'asOf', 'sizes', 'limits', 'fragments', 'cache', 'nextCursor'], ['requestSizes']);
   if (text(root.threadId) !== expectedThreadId || !Array.isArray(root.fragments) || root.fragments.length > 100) return fail();
   const sizes = object(root.sizes, ['residentSerializedBytes', 'selectedResidentSerializedBytes', 'excludedResidentSerializedBytes',
     'archiveSerializedBytes', 'selectedBodyEstimatedTokens', 'estimateProvenance', 'navigationEstimatedTokens',
@@ -161,6 +193,7 @@ function readSnapshot(value: unknown, expectedThreadId: string): Snapshot {
     limits: { requestedContextWindowOverride: nullableCount(limits.requestedContextWindowOverride, true),
       effectiveContextWindow: nullableCount(limits.effectiveContextWindow, true), provenance: code(limits.provenance, limitLabels) },
     fragments, nextCursor: nullableCount(root.nextCursor),
+    requestSizes: Object.hasOwn(root, 'requestSizes') ? readRequestSizes(root.requestSizes) : null,
     cache: { scope: code(cache.scope, scopeLabels), provenance: code(cache.provenance, cacheProvenanceLabels), status: code(cache.status, cacheStatusLabels),
       cachedInputTokens: nullableCount(cache.cachedInputTokens), writeInputTokens: nullableCount(cache.writeInputTokens),
       uncachedInputTokens: nullableCount(cache.uncachedInputTokens), totalInputTokens: nullableCount(cache.totalInputTokens),
@@ -245,6 +278,31 @@ export function createContextCompositionPanel(options: ContextCompositionPanelOp
     detail(limits, 'limits.provenance', ['한도 근거', 'Limit provenance'], label(limitLabels, snapshot.limits.provenance));
     note(content, ['토큰 수는 heuristic 추정치이며 provider 실측 usage가 아닙니다. 미확인 값은 합산하지 않습니다.',
       'Token counts are heuristic estimates, not provider-measured usage. Unknown values are not added.']);
+
+    const request = snapshot.requestSizes;
+    const requestDetails = group(content, ['직전 준비 요청 크기', 'Last prepared request sizes']);
+    if (request === null) {
+      detail(requestDetails, 'requestSizes.observation', ['준비 관측', 'Preparation observation'],
+        t('준비 관측 미확인', 'Prepared request observation unconfirmed'));
+    } else {
+      detail(requestDetails, 'requestSizes.observationId', ['준비 관측 ID', 'Preparation observation ID'], request.observationId);
+      detail(requestDetails, 'requestSizes.recordedAt', ['준비 관측시각', 'Preparation recorded at'], request.recordedAt);
+      detail(requestDetails, 'requestSizes.scope', ['준비 관측 범위', 'Preparation scope'], label(requestScopeLabels, request.scope));
+      detail(requestDetails, 'requestSizes.provenance', ['준비 크기 출처', 'Preparation size provenance'], label(requestProvenanceLabels, request.provenance));
+      detail(requestDetails, 'requestSizes.historyVersion', ['준비 기록 버전', 'Preparation history version'], request.historyVersion);
+      detail(requestDetails, 'requestSizes.contextIndexRevision', ['준비 컨텍스트 revision', 'Preparation context revision'], request.contextIndexRevision);
+      const revisionsMatch = request.historyVersion === snapshot.historyVersion && request.contextIndexRevision === snapshot.contextIndexRevision;
+      detail(requestDetails, 'requestSizes.revisionMatch', ['표시 구성과 revision 비교', 'Revision comparison with displayed composition'], revisionsMatch
+        ? t('표시 snapshot과 revision 일치', 'Revisions match the displayed snapshot')
+        : t('다른 준비 revision / 현재 구성 일치 미확인', 'Different preparation revision / match to current composition unconfirmed'));
+      detail(requestDetails, 'requestSizes.inputSerializedBytes', ['입력 JSON 크기', 'Input JSON size'], amount(request.inputSerializedBytes, ' B'));
+      detail(requestDetails, 'requestSizes.baseInstructionsSerializedBytes', ['기본지침 JSON 크기', 'Base instructions JSON size'], amount(request.baseInstructionsSerializedBytes, ' B'));
+      detail(requestDetails, 'requestSizes.toolDefinitionsSerializedBytes', ['도구정의 JSON 크기', 'Tool definitions JSON size'], amount(request.toolDefinitionsSerializedBytes, ' B'));
+      detail(requestDetails, 'requestSizes.outputSchemaSerializedBytes', ['출력 schema JSON 크기', 'Output schema JSON size'], amount(request.outputSchemaSerializedBytes, ' B'));
+      detail(requestDetails, 'requestSizes.componentPayloadBytes', ['Component payload 합계', 'Component payload total'], amount(request.componentPayloadBytes, ' B'));
+    }
+    note(content, ['네 JSON component만의 byte 관측입니다. provider 정규화·전송 봉투·delta 크기·과금 token이 아니며 추정치·token·캐시와 합산하거나 환산하지 않습니다.',
+      'Byte observations cover only four JSON components, before provider normalization. They exclude transport envelopes and delta sizes, are not billable tokens, and are not combined or converted with estimates, tokens or cache counters.']);
 
     const cache = snapshot.cache;
     const cacheDetails = group(content, ['캐시 집계와 관측', 'Cache aggregates and observation']);

@@ -21,6 +21,23 @@
 
 ## engineering-test-plan
 
+### 준비 요청 크기 후속 단위 (CC15–CC20)
+
+`ThreadContextReadResponse.requestSizes`와 `ThreadContextRequestSizes` 후보(현재 정본 2072–2095행)를 소비한다. 이 후속 단위의 빌드·Playwright·실제 Core 검증은 **NOT_RUN**이며 앞선 부모 실행 근거에 포함되지 않는다. 공개 panel API는 그대로다. Native/상위 호출자 연결과 실제 후보짝 검증은 부모 소유다.
+
+`requestSizes` 누락/null은 준비 관측 미확인이다. 객체는 observationId(기존 ID 256 UTF-8 byte 한도), recordedAt(기존 RFC3339), scope, provenance, historyVersion/contextIndexRevision(정확한 u64 decimal string), 입력/기본지침/도구정의/출력 schema 직렬화 byte 및 componentPayloadBytes를 가진다. 다섯 수량은 0..MAX_SAFE_INTEGER 정수다. 네 component의 합계를 BigInt로 검사하되 표시값은 서버 componentPayloadBytes를 그대로 사용한다. 잘못된 타입/합계/추가필드는 기존 결과를 지우고 false다.
+
+별도 ‘직전 준비 요청 크기’ 그룹에서 관측 ID/시각/두 revision/범위/출처와 다섯 byte 수량을 표시한다. 알려진 scope=`prepared_sampling_prompt`, provenance=`utf8_json_components_before_provider_normalization`만 번역하며 미래값은 미확인으로 투영해 원값을 보관·반사하지 않는다. snapshot의 두 revision과 문자열로 모두 같을 때만 ‘표시 snapshot과 revision 일치’다. 하나라도 다르면 ‘다른 준비 revision / 현재 구성 일치 미확인’이며 숫자 순서·시각·세대 동일성을 추론하지 않는다. 네 JSON component만의 준비 관측이며 provider 정규화·전송 봉투·delta 크기·과금 token이 아니다. 기존 추정치/token/cache와 합산·환산하지 않는다.
+
+| 사례 | 요구/상황 | 기대값·실패 oracle |
+| --- | --- | --- |
+| CC15 | legacy 누락/null | 준비 관측 미확인, byte 0 채우기 없음; 이전 관측도 제거 |
+| CC16 | 명시 0/정상 관측/정확한 최대 safe 합계 | 서버 byte 그대로, 0과 미관측 구분; 기존 추정치/cache 불변; 네 component 범위 안내 |
+| CC17 | 두 revision 모두 일치/각각 불일치 | 문자열 완전 일치만 일치 안내; 큰 u64 보존, 현재·과거·세대 추론 없음 |
+| CC18 | unsafe/음수/소수/형식·u64·시각·합계 오류 | false, 이전 관측/목록 clear, 고정 오류; 정밀도 손실된 합계 거부 |
+| CC19 | 미래 출처/범위·HTML ID·raw secret/accessor | 미래값 미확인·비반사, HTML textContent; 추가필드/accessor 거부·비노출 |
+| CC20 | busy·언어·페이지교체·pending/stale·dispose | 관측 수량/상태·부모 disabled 보존; 새 페이지/오류/폐기 후 이전 관측 제거; 지연 render/callback 없음 |
+
 수준: 기존 Playwright/Vite source fixture의 공개 DOM/API 경계. `tests/context-composition.spec.ts`가 Core/CLI/Tauri를 호출하지 않는 합성 fixture를 넣는다. 예상값은 위 후보 타입과 부모 배정의 표시 의미에서 정한다. 구현의 합계·TTL 계산을 oracle로 복제하지 않는다. 실행 명령 후보는 부모 전용 `npx playwright test tests/context-composition.spec.ts`; 실행·check-plan 도구 호출은 위임 범위 밖이므로 NOT_RUN이다. 새 runner·의존성은 추가하지 않는다.
 
 | 사례 | 요구/상황 | 기대값·실패 oracle |
@@ -45,3 +62,6 @@
 ## 부모 실행 근거
 
 작성 뒤 부모가 `context-composition-ui-01`에서 이 패널의 CC01–CC14 14개와 부모 연결 3개·기존 컨텍스트 21개를 실행해 38 PASS/exit0를 확인했다. `tsc --noEmit`도 exit0다. 이는 source/IPC fixture이며 실제 Core·Native·최종 앱 실행 검증을 뜻하지 않는다. Native 어댑터 메모리 WebSocket 6 PASS는 `context-adapter-cases.ko.md`에 구분했다. 생성 schema·같은 Core1.1 후보짝 실통합·실제 WebView/패키지는 미완이다.
+## requestSizes 부모 실행
+
+작성 후 `request-sizes-ui-01`에서 CC01–20 전체와 부모컨텍스트25·대화연결12를 함께 실행해57PASS/exit0, tsc0을 확인했다. Native memory9PASS와 실제Core1.1미검증은 `context-adapter-cases.ko.md`에 구분한다.

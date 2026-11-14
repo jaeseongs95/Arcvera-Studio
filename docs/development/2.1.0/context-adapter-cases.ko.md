@@ -15,6 +15,7 @@ Core 1.1의 `ThreadContext*` 타입 후보를 소비하는 준비 단계다. 생
 | CA07 | refresh/다음 페이지/닫기/다른 thread/늦은 응답 | Native 세대·thread 결속, 화면 epoch로 잘못된 대화에 표시하지 않음 |
 | CA08 | 연결 실패·취소·종료 | 기존 deadline/proxy 정리·설정 mutex 재사용, GUI lease·서버 자동시작 없음 |
 | CA09 | 전체 팝업: 데스크톱 1440px·좁은 360px·긴 25조각 목록 | 넓은 화면에서 실제 폭700px 초과, 좁은 화면 가로 넘침 없음, 스크롤 전후 닫기 버튼 접근·정상 종료 |
+| CA10 | 후보 optional requestSizes 없음/null/0/관측 객체·잘못된 합계/정밀도 | 미관측을0으로대체하지않음,두revision exact문자열·독립관측시각 유지,4 JSON성분합계만검증·본문비전달 |
 
 정의 후 Native 메모리 WebSocket/투영 회귀와 기존 conversation 검증을 수행한다. 패널 fixture는 표시·수명만 증명한다. Core 1.1의 같은 후보짝 실제 호출, 최종 WebView/패키지 검증은 별도이며 현재 **NOT_RUN**이다. 후보 변경 시 생성 schema와 대조해 수정한다.
 
@@ -26,3 +27,7 @@ Core 1.1의 `ThreadContext*` 타입 후보를 소비하는 준비 단계다. 생
 - 기존 대화 전체 Native 회귀는 resource floor 사전 검사에서 중단됐다. Cargo를 시작하지 않았으며 **NOT_RUN**이다. 보호 한도를 낮추지 않는다. 같은 commit의 CI에서도 기존 conversation과 비시험 adapter 경로를 검증한다.
 
 근거 위치: `D:/codex/build/desktop210-integration-20261114` 및 source fixture 실행의 도구 콘솔. Core 1.1 API 지원·실행물·같은 후보짝 실통합·최종 패키지 검증은 계속 미완이다.
+
+Core 후속 후보는 `requestSizes`에 직전 준비 요청의4 JSON성분 bytes를 제공한다. `prepared_sampling_prompt`/`utf8_json_components_before_provider_normalization`이며 전송 봉투·provider 정규화·delta bytes·과금 token과 구분한다. top snapshot과다른준비revision을현재값으로승격하지않고원문은투영하지않는다. CA10 추가 Native3개는 작성시 NOT_RUN이다.
+
+후속 부모 실행: `request-sizes-native-01`은 새3개를 포함한 Native memory-WebSocket/투영9PASS/0FAIL/0ignored/Cargo0이며, `artifacts/request-sizes-ui-01`은 패널20·부모컨텍스트25·대화연결12 합계57PASS/1.1분/exit0, tsc exit0이다. source/IPC와메모리fixture 범위로서 Core1.1 실제 값·합계·관측revision의 확정은 미검증이다.

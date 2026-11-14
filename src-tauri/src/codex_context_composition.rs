@@ -83,6 +83,23 @@ fn project(v: &Value, thread: &str, expected_snapshot: Option<&str>, cursor: u64
     numbers(cache, &mut c, &["cachedInputTokens","writeInputTokens","uncachedInputTokens","totalInputTokens","requestedTtlSeconds","effectiveTtlSeconds"], true, false, false)?;
     numbers(cache, &mut c, &["requestContextIndexRevision"], true, true, false)?;
     out["cache"] = c;
+    out["requestSizes"] = match v.get("requestSizes") {
+        None | Some(Value::Null) => Value::Null,
+        Some(request) => {
+            let mut prepared = json!({});
+            texts(request, &mut prepared, &["observationId","scope","provenance"], false, 256)?;
+            texts(request, &mut prepared, &["recordedAt"], false, 64)?;
+            numbers(request, &mut prepared, &["historyVersion","contextIndexRevision"], false, true, false)?;
+            let components = ["inputSerializedBytes","baseInstructionsSerializedBytes","toolDefinitionsSerializedBytes","outputSchemaSerializedBytes"];
+            numbers(request, &mut prepared, &components, false, false, false)?;
+            numbers(request, &mut prepared, &["componentPayloadBytes"], false, false, false)?;
+            let sum = components.iter().try_fold(0u64, |sum, key| {
+                sum.checked_add(prepared[*key].as_u64().ok_or(INVALID)?).ok_or(INVALID)
+            })?;
+            if prepared["componentPayloadBytes"].as_u64() != Some(sum) { return Err(INVALID.into()); }
+            prepared
+        }
+    };
     let next = field(v, "nextCursor")?;
     if !next.is_null() {
         let n = next.as_u64().filter(|n| *n <= SAFE && *n > cursor && *n == cursor + fragments.len() as u64).ok_or(INVALID)?;
@@ -170,5 +187,39 @@ mod tests {
         let mut v = snapshot(); v["fragments"] = json!(vec![v["fragments"][0].clone();26]); assert!(project(&v,"thread-a",None,0).is_err());
         let mut v = snapshot(); v["unused"] = json!("x".repeat(64*1024)); assert!(project(&v,"thread-a",None,0).is_err());
         let mut v = snapshot(); v["cache"].as_object_mut().unwrap().remove("cachedInputTokens"); assert!(project(&v,"thread-a",None,0).is_err());
+    }
+    fn prepared_sizes() -> Value {
+        json!({"observationId":"prepared-a","recordedAt":"2026-11-14T02:00:00Z","scope":"prepared_sampling_prompt","provenance":"utf8_json_components_before_provider_normalization",
+            "historyVersion":u64::MAX,"contextIndexRevision":1,"inputSerializedBytes":1,"baseInstructionsSerializedBytes":2,"toolDefinitionsSerializedBytes":3,"outputSchemaSerializedBytes":4,"componentPayloadBytes":10})
+    }
+    #[test]
+    fn composition_prepared_sizes_preserves_unobserved_zero_and_exact_revisions() {
+        assert!(project(&snapshot(),"thread-a",None,0).unwrap()["requestSizes"].is_null());
+        let mut v = snapshot(); v["requestSizes"] = Value::Null;
+        assert!(project(&v,"thread-a",None,0).unwrap()["requestSizes"].is_null());
+        v["requestSizes"] = prepared_sizes();
+        for key in ["inputSerializedBytes","baseInstructionsSerializedBytes","toolDefinitionsSerializedBytes","outputSchemaSerializedBytes","componentPayloadBytes"] { v["requestSizes"][key] = json!(0); }
+        let result = project(&v,"thread-a",None,0).unwrap();
+        assert_eq!(result["requestSizes"]["componentPayloadBytes"],0);
+        assert_eq!(result["requestSizes"]["historyVersion"],u64::MAX.to_string());
+    }
+    #[test]
+    fn composition_prepared_observation_is_separate_and_drops_unused_body() {
+        let mut v = snapshot(); v["requestSizes"] = prepared_sizes();
+        v["requestSizes"]["rawRequest"] = json!("SECRET_PREPARED_BODY");
+        let out = project(&v,"thread-a",None,0).unwrap();
+        assert_eq!(out["requestSizes"]["componentPayloadBytes"],10);
+        assert_ne!(out["requestSizes"]["historyVersion"],out["historyVersion"]);
+        assert_eq!(out["sizes"]["residentSerializedBytes"],0);
+        assert!(!out.to_string().contains("SECRET_PREPARED_BODY"));
+    }
+    #[test]
+    fn composition_prepared_sizes_rejects_malformed_quantities_and_false_sum() {
+        for (key,value) in [("componentPayloadBytes",json!(9)),("inputSerializedBytes",json!(-1)),("toolDefinitionsSerializedBytes",json!(SAFE+1)),("outputSchemaSerializedBytes",json!(0.5)),("observationId",json!("")),("historyVersion",json!("1"))] {
+            let mut v = snapshot(); v["requestSizes"] = prepared_sizes(); v["requestSizes"][key] = value;
+            assert!(project(&v,"thread-a",None,0).is_err(),"{key}");
+        }
+        let mut v = snapshot(); v["requestSizes"] = prepared_sizes(); v["requestSizes"].as_object_mut().unwrap().remove("recordedAt");
+        assert!(project(&v,"thread-a",None,0).is_err());
     }
 }
