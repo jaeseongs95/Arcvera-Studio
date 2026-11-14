@@ -205,11 +205,12 @@ impl SharedEndpoint {
         }
         Ok(())
     }
-    fn tui(&self, cwd: &Path, id: &str) -> Result<CommandBuilder, String> {
+    fn tui(&self, cwd: &Path, id: &str, host_links: bool) -> Result<CommandBuilder, String> {
         let socket = self.socket.to_str().ok_or("공유 서버 소켓 경로가 유효한 문자열이 아닙니다.")?;
         let mut command = CommandBuilder::new_with_process_env(&self.exe);
         command.args(["resume", id, "--remote", &format!("unix://{socket}"), "--cd"]);
         command.arg(cwd.as_os_str()); command.cwd(cwd);
+        if host_links { command.args(["--terminal-link-owner", "host"]); }
         // unix 연결에는 WS 전용 토큰 옵션을 전달하지 않는다. 기본 daemon의 명시적
         // endpoint이므로 Core TUI가 private ACL을 확인하며 개별 서버 대체를 금지한다.
         Ok(command)
@@ -388,6 +389,10 @@ impl SharedEndpoint {
 pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpoint,
     on_event: Arc<dyn Fn(CodexEvent) + Send + Sync>, cancelled: Arc<AtomicBool>) -> Result<CodexSession, String> {
     check_cancelled(Some(&cancelled))?;
+    let resume_help = extensions::command_stdout_until(&endpoint.exe, cwd,
+        &["resume".into(), "--help".into()], Instant::now() + HELP_TIMEOUT, Some(&cancelled))?;
+    let host_links = help_supports_command_option(&resume_help, "resume", "--terminal-link-owner")?;
+    check_cancelled(Some(&cancelled))?;
     let mut proxy = endpoint.open(Some(cancelled.clone()))?;
     let initialized = initialize_proxy(&mut proxy)?;
     let thread = if let Some(id) = requested {
@@ -404,7 +409,7 @@ pub(super) fn prepare(cwd: &Path, requested: Option<&str>, endpoint: SharedEndpo
     let id = thread["id"].as_str().ok_or("공유 대화 ID가 누락되었습니다.")?.to_owned();
     Uuid::parse_str(&id).map_err(|_| "공유 대화 ID가 UUID가 아닙니다.")?;
     verified_thread(&thread, requested.unwrap_or(&id), cwd)?;
-    let command = endpoint.tui(cwd, &id)?;
+    let command = endpoint.tui(cwd, &id, host_links)?;
     let stopped = Arc::new(AtomicBool::new(false));
     let control = SharedControl { endpoint:endpoint.clone(),thread_id:id.clone(),cwd:cwd.into(),capabilities:super::runtime::observed_capabilities(&initialized),stopped:stopped.clone() };
     let conversation = Some(ConversationConnection::from_initialize(super::conversation::Endpoint::Shared(endpoint.clone()), stopped.clone(), &initialized));

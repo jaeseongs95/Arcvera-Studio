@@ -182,9 +182,13 @@ fn background_command(executable: &std::ffi::OsStr) -> OwnedCommand {
 }
 
 fn help_supports_option(bytes: &[u8], option: &str) -> Result<bool, String> {
-    let help = std::str::from_utf8(bytes).map_err(|e| format!("Codex app-server help is not valid UTF-8: {e}"))?;
-    if !help.lines().any(|line| line.trim_start().strip_prefix("Usage:").or_else(|| line.trim_start().strip_prefix("사용법:")).is_some_and(|usage| usage.split_ascii_whitespace().any(|token| token == "app-server"))) {
-        return Err("Codex returned unrecognized app-server help; startup capability is unknown".into());
+    help_supports_command_option(bytes, "app-server", option)
+}
+
+fn help_supports_command_option(bytes: &[u8], command: &str, option: &str) -> Result<bool, String> {
+    let help = std::str::from_utf8(bytes).map_err(|e| format!("Codex {command} help is not valid UTF-8: {e}"))?;
+    if !help.lines().any(|line| line.trim_start().strip_prefix("Usage:").or_else(|| line.trim_start().strip_prefix("사용법:")).is_some_and(|usage| usage.split_ascii_whitespace().any(|token| token == command))) {
+        return Err(format!("Codex returned unrecognized {command} help; startup capability is unknown"));
     }
     let options = help.lines().skip_while(|line| !matches!(line.trim(), "Options:" | "옵션:")).skip(1)
         .take_while(|line| line.is_empty() || line.starts_with(char::is_whitespace));
@@ -194,7 +198,7 @@ fn help_supports_option(bytes: &[u8], option: &str) -> Result<bool, String> {
         if !line.trim_start().starts_with('-') { return None; }
         let position = line.find("--help")?;
         (line[position..].split_ascii_whitespace().next()?.trim_end_matches(',') == "--help").then_some(position)
-    }).min().ok_or("Codex returned app-server help without a recognized options section; startup capability is unknown")?;
+    }).min().ok_or_else(|| format!("Codex returned {command} help without a recognized options section; startup capability is unknown"))?;
     Ok(options.into_iter().any(|line| line.trim_start().starts_with('-')
         && line.get(column..).is_some_and(|tail| tail.starts_with("--")
             && tail.split_ascii_whitespace().next().is_some_and(|token| token.trim_end_matches(',') == option))))

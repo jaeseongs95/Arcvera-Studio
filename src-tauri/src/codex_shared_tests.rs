@@ -440,11 +440,38 @@ fn shared_resume_has_exact_id_and_no_websocket_token_option() {
     let cwd = env::current_dir().unwrap();
     let socket = cwd.join("fixture.sock");
     let endpoint = SharedEndpoint {core_version:"1.0.0+fixture".into(),exe:"fixture".into(),socket:socket.clone(),stamp:SocketStamp {canonical:socket,created:None,modified:None}};
-    let command = endpoint.tui(&cwd, "exact-id").unwrap();
+    let command = endpoint.tui(&cwd, "exact-id", false).unwrap();
     let args: Vec<_> = command.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect();
     assert_eq!(&args[1..3], ["resume", "exact-id"]);
     assert!(args.iter().any(|a| a.starts_with("unix://")));
     assert!(!args.iter().any(|a| a == "--remote-auth-token-env"));
+}
+#[test]
+fn terminal_link_owner_uses_exact_resume_capability_and_preserves_legacy_argv() {
+    let cwd = env::current_dir().unwrap();
+    let socket = cwd.join("fixture.sock");
+    let endpoint = SharedEndpoint {core_version:"1.1.0".into(),exe:"fixture".into(),socket:socket.clone(),stamp:SocketStamp {canonical:socket,created:None,modified:None}};
+    let prefix="Usage: fixture resume [OPTIONS] [SESSION_ID]\n\nOptions:\n";
+    for (declaration, expected) in [
+        ("      --terminal-link-owner <OWNER>\n          [possible values: tui, host]\n", true),
+        ("", false),
+        ("          Description mentions --terminal-link-owner\n", false),
+        ("      --terminal-link-owner-extra <OWNER>\n", false),
+    ] {
+        let help=format!("{prefix}{declaration}  -h, --help\n          Print help\n");
+        let supported=help_supports_command_option(help.as_bytes(),"resume","--terminal-link-owner").unwrap();
+        assert_eq!(supported,expected);
+        let command=endpoint.tui(&cwd,"exact-id",supported).unwrap();
+        let args:Vec<_>=command.get_argv().iter().map(|a|a.to_string_lossy().into_owned()).collect();
+        assert_eq!(&args[1..3],["resume","exact-id"]);
+        assert_eq!(args.iter().filter(|a|a.as_str()=="--terminal-link-owner").count(),usize::from(expected));
+        if expected {assert_eq!(&args[args.len()-2..],["--terminal-link-owner","host"]);}
+        assert!(args.iter().any(|a|a.starts_with("unix://")));
+        assert!(!args.iter().any(|a|a=="--remote-auth-token-env"));
+    }
+    assert!(help_supports_command_option(b"not help","resume","--terminal-link-owner").is_err());
+    assert!(help_supports_command_option(&[0xff],"resume","--terminal-link-owner").is_err());
+    assert!(help_supports_command_option(b"Usage: fixture app-server [OPTIONS]\nOptions:\n  -h, --help\n","resume","--terminal-link-owner").is_err());
 }
 #[test]
 fn shared_lifecycle_and_turn_bounds_reject_ambiguous_targets() {
