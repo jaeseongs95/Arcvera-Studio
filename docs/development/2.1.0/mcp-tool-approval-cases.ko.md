@@ -33,6 +33,12 @@ CS 불변조건: 같은 pending 식별자에서 소유자와 세대를 유지하
 
 로컬 Rust는 디스크 하한 때문에 NOT_RUN이다. CI의 별도 같은 응답 검증 witness는 구버전 allowlist 거절과 수정 후 응답 형식 수용만 비교하고, 수치 mutation은 원래 정수 검토 분류만 검사한다. 실제 CI 결과는 원로그 확인 전까지 미검증이다. 최종 Core 1.1 동작·생성 schema·실행물·동일 후보 통합과 독립감사는 남아 있다.
 
+## D-0090 조회 거절 상태 — 사전 사례
+
+정상 MCP 승인 표시 뒤 poll IPC를 거절한다. 직접 응답 호출은 0회인 상태에서 연결 불명 상태의 세 버튼을 비활성으로 표시해야 한다. 같은 질문을 유지하고 조회가 회복되면 버튼은 다시 활성화되지만 자동 응답하지 않아야 한다. 성공 응답의 connected=false와 IPC 자체 reject를 구분하는 합성 GUI 경계이며 Native 송신·권한 변경 수용으로 확대하지 않는다. 수정 전 동일 시험 실패와 수정 후 통과를 보존한다.
+
+부모 실행에서 같은 D0090 시험은 수정 전 활성 버튼을 비활성으로 기대하는 assertion에서 1 FAIL, catch의 승인 패널 갱신 뒤 1 PASS/4.4초를 확인했다. 원문 결과는 `desktop210-integration-20261114/d90-ui-red-01`과 `d90-ui-green-01`에 보존했다. 이는 합성 GUI 연결 실패·회복 경계이며 Native/Core 권한 수용으로 확대하지 않는다.
+
 ## D-0089 숫자 검토 한도 — fixture 작성 전 계획
 
 미커밋 D-0087 후보는 GUI에서 유한한 숫자를, Native에서 모든 JSON number를 허용했다. JavaScript 안전정수 범위를 벗어난 Native `u64`와 음수 0은 JavaScript 변환·문자열화 뒤 사람이 보는 값이 달라질 수 있다. 미커밋 후보의 결함이며 배포 제품의 사고 근거로 표현하지 않는다. 확인된 Native JSON number와 JavaScript Number 사이의 경계 때문에 draft 규칙 `LANG-NUMERIC-002`를 적용하며 더 넓은 검증 상태를 주장하지 않는다.

@@ -33,6 +33,12 @@ The frozen e99 observation in `s210g1/case01` stopped before submission because 
 
 Local Rust execution is NOT_RUN because the disk floor is unavailable. The separate CI response witness compares the old unsupported-method validator with the fixed response format. The numeric mutation probes only original-number classification. CI execution remains unverified until its raw output is inspected. Final Core1.1 behavior, generated schema, executable, matched-candidate integration and independent audit remain outstanding.
 
+## D-0090 rejected poll state — planned case
+
+Reject poll IPC after a normal MCP approval is displayed. Without sending a response, all three controls must reflect unavailable connection state. When polling recovers with the same request, controls may become enabled again without automatic response. This synthetic GUI boundary distinguishes rejected IPC from a successful response with connected=false; it does not establish Native transport or permission changes. Preserve the same test's failure before the fix and success after it.
+
+The same D0090 test failed once before the fix at the expected disabled-control assertion, then passed once in 4.4 seconds after the catch path refreshed request controls. Raw output remains in `desktop210-integration-20261114/d90-ui-red-01` and `d90-ui-green-01`. This is a synthetic GUI connection-failure/recovery boundary, not Native/Core permission acceptance.
+
 ## D-0089 numeric review ceiling — plan before fixtures
 
 The uncommitted D-0087 candidate allowed every finite GUI number and every Native JSON number. Native `u64` values beyond JavaScript's safe-integer range and negative zero can therefore differ from what a person reviews after JavaScript conversion/stringification. This is a candidate defect, not evidence of a deployed-product incident. Apply `LANG-NUMERIC-002` as a draft rule here because the confirmed boundary crosses Native JSON numbers and JavaScript Number; no broader validation status is implied.

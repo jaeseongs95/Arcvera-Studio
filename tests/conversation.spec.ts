@@ -72,6 +72,20 @@ const mcpApprovalRequest = () => ({ seq: 710, requestId: 'mcp-71', guiOwned: tru
     tool_params: { path: '<img src=x onerror="window.injected=true">', nested: { enabled: true } }, persist: ['session', 'always'] },
 } });
 
+test('D0090 MCP controls disable after rejected poll and recover without sending', async ({ page }) => {
+  await conversation(page);
+  await page.evaluate(request => { (window as any).conversationFixture.pending = [request]; }, mcpApprovalRequest());
+  const allow = view(page).locator('.conversation-request').getByRole('button', { name: '이번만 허용', exact: true });
+  await expect(allow).toBeEnabled();
+  await page.evaluate(() => { const f = (window as any).conversationFixture; f.failAt = 'poll'; f.rawFailure = 'controlled poll rejection'; });
+  await expect(view(page).locator('.conversation-status')).toContainText('요청을 완료하지 못했습니다');
+  expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((call: any) => call.args.request?.type === 'respond').length)).toBe(0);
+  await expect(allow).toBeDisabled();
+  await page.evaluate(() => { (window as any).conversationFixture.failAt = ''; });
+  await expect(allow).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((call: any) => call.args.request?.type === 'respond').length)).toBe(0);
+});
+
 for (const [action, label] of [['accept', '이번만 허용'], ['decline', '거절'], ['cancel', '취소']]) {
   test(`D0087 conversation MCP ${action} uses exact one-time action and text-only review`, async ({ page }) => {
     await conversation(page);
