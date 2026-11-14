@@ -1,6 +1,70 @@
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 
+for (const mode of [0, 9, 1000, 1002, 1003]) {
+  test(`D0093 HX host opens once and preserves actual xterm reports: mode ${mode}`, async ({ page }) => {
+    await setup(page);
+    await page.evaluate(async mode => {
+      const state = (window as any).externalTest;
+      state.wire = [];
+      state.terminal.onData((data: string) => state.wire.push(data));
+      await state.write('https://example.com/plain\r\n\u001b]8;;https://example.com/osc8\u0007OSC8-link\u001b]8;;\u0007');
+      await state.write(`\u001b[?1006h${mode ? `\u001b[?${mode}h` : ''}`);
+    }, mode);
+    for (const row of [1, 2]) {
+      const expected = row === 1 ? 'https://example.com/plain' : 'https://example.com/osc8';
+      for (const modifiers of [[], ['Control'], ['Meta'], ['Alt'], ['Shift'], ['Control', 'Shift'], ['Control', 'Alt']]) {
+        const rect = (await page.locator('#external-terminal .xterm-screen').boundingBox())!;
+        const point = { x: rect.x + rect.width / 40 * 2.5, y: rect.y + rect.height / 12 * (row - 0.5) };
+        await page.mouse.move(point.x, point.y);
+        await expect(page.locator('#external-terminal .xterm')).toHaveAttribute('title', expected);
+        await page.evaluate(() => { const state = (window as any).externalTest; state.calls = []; state.wire = []; });
+        try {
+          for (const key of modifiers) await page.keyboard.down(key);
+          await page.mouse.click(point.x, point.y);
+        } finally {
+          for (const key of modifiers.toReversed()) await page.keyboard.up(key);
+        }
+        const observed = await page.evaluate(() => {
+          const state = (window as any).externalTest;
+          const packets = [...state.wire.join('').matchAll(/\u001b\[<(\d+);\d+;\d+([Mm])/g)]
+            .filter((match: any) => !(Number(match[1]) & 32) && (Number(match[1]) & 3) === 0);
+          return { calls: state.calls, edges: packets.map((match: any) => match[2]) };
+        });
+        const selecting = modifiers.includes('Shift');
+        expect(observed.calls, `mode ${mode}, row ${row}, ${modifiers}`).toEqual(selecting ? [] : [expected]);
+        expect(observed.edges, `actual mouse report: mode ${mode}, ${modifiers}`).toEqual(
+          !mode || selecting ? [] : mode === 9 ? ['M'] : ['M', 'm']);
+      }
+    }
+  });
+}
+
+test('D0093 HX06 host ownership survives mode and modifier changes within a click', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(async () => { const state = (window as any).externalTest; await state.write('https://example.com/change'); });
+  const rect = (await page.locator('#external-terminal .xterm-screen').boundingBox())!;
+  const point = { x: rect.x + rect.width / 40 * 2.5, y: rect.y + rect.height / 12 * 0.5 };
+  for (const [downMode, upMode, downControl, upControl] of [[1000, 0, true, false], [0, 1000, false, true], [1002, 1003, true, false]] as const) {
+    await page.mouse.move(point.x, point.y);
+    await expect(page.locator('#external-terminal .xterm')).toHaveAttribute('title', 'https://example.com/change');
+    await page.evaluate(async mode => {
+      const state = (window as any).externalTest; state.calls = [];
+      await state.write(`\u001b[?1000l\u001b[?1002l\u001b[?1003l\u001b[?1006h${mode ? `\u001b[?${mode}h` : ''}`);
+    }, downMode);
+    if (downControl) await page.keyboard.down('Control');
+    await page.mouse.down();
+    await page.evaluate(async mode => {
+      const state = (window as any).externalTest;
+      await state.write(`\u001b[?1000l\u001b[?1002l\u001b[?1003l${mode ? `\u001b[?${mode}h` : ''}`);
+    }, upMode);
+    if (downControl && !upControl) await page.keyboard.up('Control');
+    if (!downControl && upControl) await page.keyboard.down('Control');
+    try { await page.mouse.up(); } finally { await page.keyboard.up('Control'); }
+    expect(await page.evaluate(() => (window as any).externalTest.calls)).toEqual(['https://example.com/change']);
+  }
+});
+
 async function setup(page: Page) {
   await page.addInitScript(() => {
     const state = window as any;

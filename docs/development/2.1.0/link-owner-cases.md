@@ -1,5 +1,9 @@
 # Terminal link click ownership
 
+## Real xterm regressions for explicit host ownership
+
+HX01–HX05 cover none/X10/1000/1002/1003 with plain/OSC8 links and plain, Ctrl, Meta, Alt, Shift, Ctrl+Shift and Ctrl+Alt gestures. Shift selection must open zero URLs; other clicks must invoke the Desktop opener once. Inspect actual SGR Down/Up reports without blocking them. HX06 changes mouse mode or modifiers between Down and Up and requires one opener. These cases cover the Desktop side of explicit host ownership, not real Core dispatch or OS window counts. Verification with the matching Core executable remains separate.
+
 ## Preparation query and shutdown-race regression
 
 The shutdown-race test in full CI 43600272698 failed before its observer proxy connected: the synthetic CLI treated the new `resume --help` preparation query as a long-lived TUI launch. Add a valid resume help response that advertises no link-owner option. Preserve production deadlines and every shutdown/retransmission assertion. Recheck both stop and shutdown paths in the same `shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutdown` test. This fixes the test CLI contract; it is not evidence that real Core link duplication is resolved.

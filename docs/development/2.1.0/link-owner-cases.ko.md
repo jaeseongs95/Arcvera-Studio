@@ -1,5 +1,9 @@
 # 터미널 링크 클릭 소유권
 
+## 명시적 host 소유권의 xterm 회귀 사례
+
+HX01–HX05는 실제 xterm의 none/X10/1000/1002/1003 각각에서 plain/OSC8 링크와 무수정·Ctrl·Meta·Alt·Shift·Ctrl+Shift·Ctrl+Alt를 확인한다. Shift 선택은 opener 0, 나머지는 Desktop opener 1이다. 실제 SGR Down/Up 보고도 함께 확인하며 이 보고를 차단하지 않는다. HX06은 누른 뒤 mouse mode 또는 modifier가 바뀌어도 opener가 중복되거나 없어지지 않는지 확인한다. 이 사례는 명시적 host 계약의 Desktop 소비자 경계이며 실제 Core dispatch/OS 창 개수 증거는 아니다. Core 실행물과 같은 후보 검증은 별도 유지한다.
+
 ## 준비 조회와 종료 경쟁 회귀
 
 전체 CI 43600272698의 종료 경쟁 시험은 새 `resume --help` 준비 조회를 합성 CLI가 실제 TUI 실행으로 처리하여 관측 proxy 연결 전에 실패했다. 합성 CLI에 옵션이 없는 정상 resume 도움말 응답을 추가한다. 제품 기한이나 종료·재전송 방지 assertion은 변경하지 않는다. 동일 `shared_reaper_handoff_during_observer_join_reports_unknown_for_stop_and_shutdown`의 stop/shutdown 두 경로를 다시 검증한다. 이는 시험 CLI 계약 수정이며 실제 Core 링크 중복 해결의 증거가 아니다.
