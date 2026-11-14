@@ -9,6 +9,16 @@ current-conversation MCP inspection and explicit reconnection requests. Versione
 writes preserve protected and unrelated settings; a reconnection acknowledgement
 is distinct from observed connection or tool availability.
 
+Supported MCP tool approvals add an explicit one-time allow, decline or cancel
+action in conversation view and the question inbox. Native validation retains
+request ownership and rejects remembered-policy responses or unreviewable
+arguments. Controls reflect polling failures instead of appearing actionable with
+an unavailable connection. A controlled public Core1.0.1 test completed one
+conversation-view approval, MCP execution and the same turn with normal owned
+cleanup. This used a synthetic local model. Final Core1.1 integration and the
+privileged-approval origin boundary (D92) remain unresolved. See the
+[fixture and GUI evidence](development/2.1.0/tool-provider-fixture.md).
+
 Current-thread Hook inspection uses a read-only metadata projection. Configuration
 enablement, trust, execution eligibility and application are separate states.
 Unavailable runtime metadata remains unknown. Reopening the extension manager
@@ -20,8 +30,11 @@ local provider catalog. Those checks sent no model turn and used no real account
 authentication. They do not establish Core 1.1 integration, provider cache behavior,
 long-duration stability or a final installer. See [Hook and Native evidence](development/2.1.0/hook-verification.md).
 
-Release readiness is pending the Core 1.1 metadata contract, context-composition UI,
-same-candidate integration, final Windows artifacts and independent review. No
+The context-composition and cache/TTL viewer is implemented against the typed
+candidate contract, including separately labelled prepared-request byte components.
+Its actual Core1.1 values and behavior remain unverified. Release readiness is
+pending the final Core1.1 schema and executable, same-candidate integration,
+final Windows artifacts and independent review. No
 2.1.0 release is published by this note.
 
 ### 한국어
@@ -29,6 +42,13 @@ same-candidate integration, final Windows artifacts and independent review. No
 개발 후보에 검토를 거치는 사용자 base MCP 수정·삭제, 현재 대화에 한정한 MCP
 조회와 명시적 재연결 요청을 추가했습니다. 버전 검사를 거친 쓰기는 보호 값과
 무관한 설정을 보존하며, 재연결 접수와 실제 연결·도구 발견은 구분합니다.
+
+지원되는 MCP 도구 승인에 대화 화면·질문함의 명시적 일회 허용·거절·취소를 추가했습니다.
+Native 검증은 요청 소유권을 유지하고 기억·정책 저장 응답이나 검토할 수 없는 인수를
+거절합니다. 조회가 실패하면 연결 불명 상태에 맞게 컨트롤을 갱신합니다. 자체 공개
+Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn 완료와 정상 정리를
+확인했습니다. 합성 로컬 모델 범위이며 최종 Core1.1 통합과 특권 승인 출처 경계(D92)는
+미해결입니다. [fixture·GUI 근거](development/2.1.0/tool-provider-fixture.ko.md)를 참고하세요.
 
 현재 대화의 Hook 조회는 읽기 전용 메타데이터만 표시합니다. 구성의 사용 설정,
 신뢰, 실행 가능 여부와 적용 상태를 구분하며 확인할 수 없는 runtime 정보는
@@ -41,7 +61,9 @@ same-candidate integration, final Windows artifacts and independent review. No
 실제 provider cache, 장시간 안정성과 최종 설치 패키지는 검증하지 않았습니다.
 [Hook·Native 근거](development/2.1.0/hook-verification.ko.md)를 참고하세요.
 
-공개 준비에는 Core 1.1 메타데이터 계약·컨텍스트 구성 UI·같은 후보 짝의 통합,
+컨텍스트 구성·cache/TTL 화면은 typed 후보 계약을 바탕으로 구현했으며 준비 요청의
+JSON 구성요소 바이트를 별도로 표시합니다. 실제 Core1.1 값과 동작은 아직 미검증입니다.
+공개 준비에는 최종 Core1.1 schema·실행물과 같은 후보 짝의 통합,
 최종 Windows 실행물과 독립 검토가 남아 있습니다. 이 기록으로 2.1.0을
 공개한 것은 아닙니다.
 

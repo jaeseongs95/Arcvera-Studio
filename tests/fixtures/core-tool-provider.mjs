@@ -4,13 +4,13 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 
-const options = { toolName: '', lifetimeMs: 30000, requestTimeoutMs: 5000 };
+const options = { toolName: '', titleModel: '', lifetimeMs: 30000, requestTimeoutMs: 5000 };
 const seen = new Set();
 let valid = true;
 for (let index = 2; index < process.argv.length; index += 2) {
   const flag = process.argv[index];
   const raw = process.argv[index + 1];
-  if (!['--tool-name', '--lifetime-ms', '--request-timeout-ms'].includes(flag) || seen.has(flag) || raw === undefined) {
+  if (!['--tool-name', '--title-model', '--lifetime-ms', '--request-timeout-ms'].includes(flag) || seen.has(flag) || raw === undefined) {
     valid = false;
     break;
   }
@@ -18,6 +18,9 @@ for (let index = 2; index < process.argv.length; index += 2) {
   if (flag === '--tool-name') {
     if (raw.length > 256 || !/^mcp__[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw)) { valid = false; break; }
     options.toolName = raw;
+  } else if (flag === '--title-model') {
+    if (raw.trim().length === 0 || raw !== raw.trim() || Buffer.byteLength(raw) > 256 || /[\p{Cc}\p{Cf}]/u.test(raw)) { valid = false; break; }
+    options.titleModel = raw;
   } else {
     const value = Number(raw);
     const minimum = flag === '--lifetime-ms' ? 500 : 100;
@@ -34,11 +37,15 @@ const [namespace, name] = options.toolName.split('.');
 const CALL_ID = 'desktop-fixture-call-1';
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_POSTS = 2;
+const MAX_TOTAL_POSTS = options.titleModel ? 3 : MAX_POSTS;
 const ERROR = '{"error":"local tool fixture rejected request"}';
 const log = (event) => process.stdout.write(`${JSON.stringify({ testOnly: true, ...event })}\n`);
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 let stage = 0;
 let attempts = 0;
+let mainAttempts = 0;
+let titleAttempts = 0;
+let titleCompleted = false;
 let inFlight = false;
 let closing = false;
 let lifetime;
@@ -104,11 +111,44 @@ function eventsFor(currentStage) {
   ];
 }
 
+function exactKeys(value, keys) {
+  return isObject(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+function exactTitleSchema(schema) {
+  // Frozen d6026cbd tui/src/app/thread_title.rs:260, THREAD_TITLE_MAX_CHARS=36.
+  if (!exactKeys(schema, ['type', 'properties', 'required', 'additionalProperties'])
+    || schema.type !== 'object' || schema.additionalProperties !== false || !exactKeys(schema.properties, ['title'])
+    || !Array.isArray(schema.required) || schema.required.length !== 1 || schema.required[0] !== 'title') return false;
+  const title = schema.properties.title;
+  return exactKeys(title, ['type', 'minLength', 'maxLength']) && title.type === 'string' && title.minLength === 1 && title.maxLength === 36;
+}
+function titleCandidate(body) {
+  return isObject(body) && isObject(body.text) && Object.hasOwn(body.text, 'format');
+}
+function acceptedTitle(body) {
+  if (!options.titleModel || !titleCandidate(body) || body.model !== options.titleModel
+    || !Array.isArray(body.tools) || body.tools.length !== 0 || !Array.isArray(body.input) || body.input.length === 0
+    || !body.input.every((item) => isObject(item) && item.type === 'message')) return false;
+  const format = body.text.format;
+  return exactKeys(format, ['type', 'strict', 'name', 'schema']) && format.type === 'json_schema'
+    && format.strict === true && format.name === 'codex_output_schema' && exactTitleSchema(format.schema);
+}
+function eventsForTitle() {
+  const id = 'desktop-tool-fixture-title-response';
+  return [
+    { type: 'response.created', response: { id } },
+    { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'desktop-tool-fixture-title-message',
+      content: [{ type: 'output_text', text: '{"title":"Synthetic GUI fixture title"}' }] } },
+    { type: 'response.completed', response: { id,
+      usage: { input_tokens: 0, input_tokens_details: null, output_tokens: 0, output_tokens_details: null, total_tokens: 0 } } },
+  ];
+}
+
 const server = createServer((request, response) => {
   // Budget every Responses POST, including invalid credentials/content type and
   // concurrent rejection. Health probes never reserve a model-response slot.
   if (request.method === 'POST' && request.url === '/v1/responses') {
-    if (attempts >= MAX_POSTS) { reject(request, response, 429); return; }
+    if (attempts >= MAX_TOTAL_POSTS) { reject(request, response, 429); return; }
     attempts += 1;
   }
   if (request.headers.authorization !== undefined || request.headers['proxy-authorization'] !== undefined || request.headers.cookie !== undefined) {
@@ -117,7 +157,8 @@ const server = createServer((request, response) => {
   }
   if (request.method === 'GET' && request.url === '/health') {
     response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', connection: 'close' });
-    response.end(JSON.stringify({ testOnly: true, stage, attempts, maxRequests: MAX_POSTS, inFlight }));
+    response.end(JSON.stringify({ testOnly: true, stage, attempts, maxRequests: MAX_TOTAL_POSTS, inFlight,
+      ...(options.titleModel ? { mainAttempts, titleAttempts, titleCompleted, maxMainRequests: MAX_POSTS, maxTitleRequests: 1 } : {}) }));
     return;
   }
   if (request.method !== 'POST' || request.url !== '/v1/responses') { reject(request, response, 404); return; }
@@ -162,6 +203,25 @@ const server = createServer((request, response) => {
     try { body = JSON.parse(Buffer.concat(chunks, bytes).toString('utf8')); }
     catch { release(); reject(request, response, 422); return; }
     chunks = [];
+    if (options.titleModel && titleCandidate(body)) {
+      if (titleAttempts >= 1) { body = undefined; release(); reject(request, response, 429); return; }
+      titleAttempts += 1;
+      if (!acceptedTitle(body)) { body = undefined; release(); reject(request, response, 422); return; }
+      body = undefined;
+      titleCompleted = true;
+      log({ event: 'synthetic-title-response', mainStage: stage, syntheticTitleConfirmed: true,
+        wireBytes: bytes, sha256: hash.digest('hex') });
+      const events = eventsForTitle();
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' });
+      response.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), () => {
+        if (stage === 2) stop();
+      });
+      return;
+    }
+    if (options.titleModel) {
+      if (mainAttempts >= MAX_POSTS) { body = undefined; release(); reject(request, response, 429); return; }
+      mainAttempts += 1;
+    }
     if (!accepted(body)) { body = undefined; release(); reject(request, response, 422); return; }
     body = undefined;
     stage += 1;
@@ -170,7 +230,7 @@ const server = createServer((request, response) => {
     const events = eventsFor(stage);
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' });
     response.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''), () => {
-      if (stage === 2) stop();
+      if (stage === 2 && (!options.titleModel || titleCompleted)) stop();
     });
   });
 });
@@ -194,5 +254,5 @@ server.on('clientError', (_error, socket) => socket.destroy());
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, stop);
 lifetime = setTimeout(stop, options.lifetimeMs);
 server.listen(0, '127.0.0.1', () => {
-  log({ event: 'listening', origin: `http://127.0.0.1:${server.address().port}`, maxRequests: MAX_POSTS });
+  log({ event: 'listening', origin: `http://127.0.0.1:${server.address().port}`, maxRequests: MAX_TOTAL_POSTS });
 });

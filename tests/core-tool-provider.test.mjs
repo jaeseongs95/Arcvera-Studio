@@ -349,3 +349,192 @@ test('TP10/11: only the exact bounded Core timing frame may precede the exact re
     });
   }
 });
+
+// Explicit GUI-only auxiliary contract. Original tests above remain unchanged.
+const titleModel = 'desktop-local-fixture';
+const titleBody = () => ({ model: titleModel, tools: [], prompt_cache_key: secret,
+  input: Array.from({ length: 4 }, () => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text: secret }] })),
+  text: { format: { type: 'json_schema', strict: true, name: 'codex_output_schema', schema: {
+    type: 'object', properties: { title: { type: 'string', minLength: 1, maxLength: 36 } },
+    required: ['title'], additionalProperties: false,
+  } } },
+});
+const guiOptions = ['--title-model', titleModel];
+const mainReceipts = (provider) => provider.events().filter((event) => event.event === 'synthetic-response');
+const titleReceipts = (provider) => provider.events().filter((event) => event.event === 'synthetic-title-response');
+const guiHealth = async (provider) => (await fetch(`${provider.origin}/health`, { signal: AbortSignal.timeout(1000) })).json();
+async function titleResponse(provider, body = titleBody()) {
+  const response = await provider.post(body); assert.equal(response.status, 200);
+  const events = eventsFromSse(await response.text());
+  assert.equal(events[1].item.type, 'message');
+  assert.equal(events[1].item.role, 'assistant');
+  const title = JSON.parse(events[1].item.content[0].text);
+  assert.deepEqual(title, { title: 'Synthetic GUI fixture title' });
+  assert.ok(title.title.length > 0 && title.title.length <= 36);
+  assert.ok(!events.some((event) => event.item?.type === 'function_call'));
+  assert.deepEqual(events[2].response.usage, { input_tokens: 0, input_tokens_details: null,
+    output_tokens: 0, output_tokens_details: null, total_tokens: 0 });
+}
+async function mainCompletion(provider) {
+  const response = await provider.post({ ...output(), model: titleModel });
+  assert.equal(response.status, 200);
+  const events = eventsFromSse(await response.text());
+  assert.equal(events[1].item.content[0].text, 'desktop-local-tool-provider-fixture');
+}
+async function mainFirst(provider) {
+  // Reuse the original public SSE oracle while supplying the same model as title.
+  return first({ post: (body) => provider.post({ ...body, model: titleModel }) });
+}
+
+test('GT01: opt-in title is independent before, between or after both exact main stages', async (t) => {
+  for (const order of [['title', 'main1', 'main2'], ['main1', 'title', 'main2'], ['main1', 'main2', 'title']]) {
+    await t.test(order.join('-'), async (t) => {
+      const provider = await start(t, guiOptions);
+      assert.equal(provider.events().find((event) => event.event === 'listening').maxRequests, 3);
+      for (const step of order) {
+        if (step === 'title') await titleResponse(provider);
+        if (step === 'main1') await mainFirst(provider);
+        if (step === 'main2') await mainCompletion(provider);
+      }
+      assert.deepEqual(await provider.exited, { value: 0, signal: null });
+      await assert.rejects(fetch(`${provider.origin}/health`, { signal: AbortSignal.timeout(1000) }));
+      assert.deepEqual(mainReceipts(provider).map((event) => [event.stage, event.toolResultConfirmed]), [[1, false], [2, true]]);
+      const receipts = titleReceipts(provider); assert.equal(receipts.length, 1);
+      assert.equal(receipts[0].mainStage, order.indexOf('title'));
+      assert.equal(receipts[0].syntheticTitleConfirmed, true);
+      assert.ok(!Object.hasOwn(receipts[0], 'stage') && !Object.hasOwn(receipts[0], 'toolResultConfirmed'));
+      assert.deepEqual(Object.keys(receipts[0]).sort(), ['event', 'mainStage', 'sha256', 'syntheticTitleConfirmed', 'testOnly', 'wireBytes'].sort());
+      const bytes = Buffer.from(JSON.stringify(titleBody()));
+      assert.equal(receipts[0].wireBytes, bytes.length);
+      assert.equal(receipts[0].sha256, createHash('sha256').update(bytes).digest('hex'));
+    });
+  }
+});
+
+test('GT02: opt-in title requires the exact frozen schema, format, model and disabled tools', async (t) => {
+  for (const kind of ['schema-type', 'schema-extra', 'title-type', 'minimum', 'maximum', 'required',
+    'additional-properties', 'title-extra', 'format-type', 'format-name', 'format-strict', 'format-extra',
+    'model', 'tools', 'missing-tools', 'empty-input', 'non-message', 'missing-format', 'null-format', 'primitive-text']) {
+    await t.test(kind, async (t) => {
+      const provider = await start(t, guiOptions); const body = titleBody();
+      const format = body.text.format; const schema = format.schema;
+      if (kind === 'schema-type') schema.type = 'array';
+      if (kind === 'schema-extra') schema.private = secret;
+      if (kind === 'title-type') schema.properties.title.type = 'number';
+      if (kind === 'minimum') schema.properties.title.minLength = 2;
+      if (kind === 'maximum') schema.properties.title.maxLength = 37;
+      if (kind === 'required') schema.required.push('private');
+      if (kind === 'additional-properties') schema.additionalProperties = true;
+      if (kind === 'title-extra') schema.properties.title.description = secret;
+      if (kind === 'format-type') format.type = secret;
+      if (kind === 'format-name') format.name = secret;
+      if (kind === 'format-strict') format.strict = false;
+      if (kind === 'format-extra') format.private = secret;
+      if (kind === 'model') body.model = secret;
+      if (kind === 'tools') body.tools = advertisement().tools;
+      if (kind === 'missing-tools') delete body.tools;
+      if (kind === 'empty-input') body.input = [];
+      if (kind === 'non-message') body.input.push(output().input[0]);
+      if (kind === 'missing-format') delete body.text.format;
+      if (kind === 'null-format') body.text.format = null;
+      if (kind === 'primitive-text') body.text = secret;
+      await rejected(await provider.post(body), 422);
+      assert.equal(titleReceipts(provider).length, 0); assert.equal(mainReceipts(provider).length, 0);
+      const health = await guiHealth(provider);
+      const main = ['missing-format', 'primitive-text'].includes(kind);
+      assert.equal(health.stage, 0); assert.equal(health.mainAttempts, main ? 1 : 0);
+      assert.equal(health.titleAttempts, main ? 0 : 1); assert.equal(health.titleCompleted, false);
+    });
+  }
+});
+
+test('GT03: successful and rejected title attempts both prevent a second title response', async (t) => {
+  for (const validFirst of [true, false]) {
+    await t.test(validFirst ? 'duplicate-success' : 'rejected-title-consumes-budget', async (t) => {
+      const provider = await start(t, guiOptions);
+      if (validFirst) await titleResponse(provider);
+      else { const body = titleBody(); body.text.format.schema.properties.title.maxLength = 37; await rejected(await provider.post(body), 422); }
+      await rejected(await provider.post(titleBody()), 429);
+      await mainFirst(provider);
+      await rejected(await provider.post(output()), 429);
+      const health = await guiHealth(provider);
+      assert.equal(health.attempts, 3); assert.equal(health.titleAttempts, 1); assert.equal(health.mainAttempts, 1);
+      assert.equal(health.titleCompleted, validFirst); assert.equal(health.stage, 1);
+      assert.equal(titleReceipts(provider).length, validFirst ? 1 : 0);
+      assert.equal(mainReceipts(provider).filter((event) => event.toolResultConfirmed).length, 0);
+    });
+  }
+});
+
+test('GT04: opt-in never allows a third parsed main attempt after a rejected main request', async (t) => {
+  const provider = await start(t, guiOptions);
+  await rejected(await provider.post({ input: [], tools: [] }), 422);
+  await mainFirst(provider); await rejected(await provider.post(output()), 429);
+  const health = await guiHealth(provider);
+  assert.equal(health.attempts, 3); assert.equal(health.mainAttempts, 2); assert.equal(health.titleAttempts, 0);
+  assert.equal(health.stage, 1); assert.equal(health.titleCompleted, false);
+  assert.equal(mainReceipts(provider).filter((event) => event.toolResultConfirmed).length, 0);
+});
+
+test('GT05: preclassification failures and concurrency consume the total three-POST ceiling', async (t) => {
+  await t.test('auth-and-type', async (t) => {
+    const provider = await start(t, guiOptions);
+    await rejected(await provider.post(titleBody(), { authorization: secret }), 400);
+    await rejected(await provider.post(titleBody(), { 'content-type': 'text/plain' }), 415);
+    await titleResponse(provider); await rejected(await provider.post(advertisement()), 429);
+    const health = await guiHealth(provider);
+    assert.equal(health.attempts, 3); assert.equal(health.mainAttempts, 0); assert.equal(health.titleAttempts, 1);
+    assert.equal(health.stage, 0); assert.equal(health.titleCompleted, true);
+  });
+  await t.test('size-and-invalid-json', async (t) => {
+    const provider = await start(t, guiOptions);
+    await rejected(await provider.post('x'.repeat(8 * 1024 * 1024 + 1)), 413);
+    await rejected(await provider.post('{'), 422);
+    await mainFirst(provider); await rejected(await provider.post(titleBody()), 429);
+    const health = await guiHealth(provider);
+    assert.equal(health.attempts, 3); assert.equal(health.mainAttempts, 1); assert.equal(health.titleAttempts, 0);
+  });
+  await t.test('inflight', async (t) => {
+    const provider = await start(t, guiOptions); const pending = partialPost(provider.origin);
+    t.after(() => pending.request.destroy()); await waitInFlight(provider);
+    await rejected(await provider.post(titleBody()), 429);
+    pending.request.end(JSON.stringify(advertisement()).slice(1)); assert.equal((await pending.response).status, 200);
+    await titleResponse(provider); await rejected(await provider.post(output()), 429);
+    const health = await guiHealth(provider);
+    assert.equal(health.attempts, 3); assert.equal(health.mainAttempts, 1); assert.equal(health.titleAttempts, 1); assert.equal(health.stage, 1);
+  });
+});
+
+test('GT05: main completion without title stays incomplete until the original lifetime closes it', async (t) => {
+  const provider = await start(t, [...guiOptions, '--lifetime-ms', '700']);
+  await mainFirst(provider); await mainCompletion(provider);
+  const health = await guiHealth(provider);
+  assert.equal(health.stage, 2); assert.equal(health.titleAttempts, 0); assert.equal(health.titleCompleted, false);
+  assert.equal(titleReceipts(provider).length, 0);
+  assert.deepEqual(await provider.exited, { value: 0, signal: null });
+});
+
+test('GT06: no title option preserves strict title rejection and the original two-POST budget', async (t) => {
+  const provider = await start(t);
+  await rejected(await provider.post(titleBody()), 422); await first(provider);
+  await rejected(await provider.post(output()), 429);
+  const health = await guiHealth(provider);
+  assert.equal(health.attempts, 2); assert.equal(health.maxRequests, 2); assert.equal(health.stage, 1);
+  assert.ok(!Object.hasOwn(health, 'titleAttempts')); assert.equal(titleReceipts(provider).length, 0);
+});
+
+test('GT07: title-model CLI rejects missing, duplicate and unsafe IDs without reflection', async () => {
+  for (const suffix of [['--title-model'], ['--title-model', ''], ['--title-model', ' '],
+    ['--title-model', titleModel, '--title-model', titleModel], ['--title-model', 'x'.repeat(257)],
+    ['--title-model', '한'.repeat(86)], ['--title-model', secret + '\n'], ['--title-model', secret + '\u200b'],
+    ['--title-model', ' ' + titleModel], ['--title-model', titleModel + ' ']]) {
+    const child = spawn(process.execPath, [fixture, '--tool-name', toolName, ...suffix], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const result = await Promise.race([
+      new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => resolve(code)); }),
+      delay(3000).then(() => { child.kill(); throw new Error('Invalid title CLI failed to exit'); }),
+    ]);
+    assert.equal(result, 1); assert.equal(stdout, ''); assert.equal(stderr, 'Local tool fixture options rejected.\n');
+    assert.ok(!stderr.includes(secret));
+  }
+});

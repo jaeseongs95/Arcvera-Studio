@@ -2,6 +2,44 @@
 
 [English](tool-provider-fixture.md) · [한국어](tool-provider-fixture.ko.md)
 
+## GUI 제목 opt-in 계약 — 시험·구현 전 계획
+
+실제 GUI case01~03은 FAIL로 유지한다. case03 두 번째 요청은 message 4개·function output/도구 광고 없음, 정확한 frozen title JSON schema·strict/known-name JSON-schema format·다른 prompt-cache identity였다. Core의 별도 ephemeral 제목 요청 경로와 일치하며, 직접 stdio의 2 POST oracle이 TUI 부가 요청을 고려하지 못했다. 다음은 새 명시 GUI fixture 계약이며 기존 2 POST와 같은 RED/GREEN 조건이 아니다. 원 provider SHA256 `3e4665e3d8cd5ae39dc9153a0b2a747ed58d86005da6ef07cfc938721efc919b`, 원 77개 시험 소스 SHA256 `ad22b53e6d81afd088a0cb0a3a5052e47c321f7a8e988faad1e191c51b702320`를 `D:/codex/build/desktop210-integration-20261114/gui-title-fixture-before/` 아래 상대 시험 경로대로 보존했다.
+
+선택 옵션 `--title-model <정확ID>`로만 합성 제목 요청 1개를 지원한다. 없으면 기존 2 POST 동작과 stage2 종료를 유지한다. ID는 비어 있지 않고 앞뒤 공백·제어/format 문자가 없으며 UTF-8 256byte 이하다. 제목 요청은 정확한 model, `tools:[]`, 비어 있지 않은 message-only input과 format 네 키의 정확한 값을 요구한다. type=`json_schema`, strict=true, name=`codex_output_schema`, schema=`{type:'object',properties:{title:{type:'string',minLength:1,maxLength:36}},required:['title'],additionalProperties:false}`다. 이는 frozen Core의 공개 schema이며 실제 요청을 저장한 것이 아니다. 미지 schema/format/model과 활성 도구는 거절하고 prompt 문구를 검사하거나 반사하지 않는다.
+
+옵션 모드의 전체 Responses POST는 분류 전 auth/byte/동시성/JSON 거절도 포함해 최대 3회다. parsed text object에 own format 키가 있으면 title 시도 1회를 소비하며 main으로 fallback하지 않는다. 나머지 parsed body는 거절도 포함한 main 시도 최대 2회를 소비한다. 제목 응답은 main stage를 늘리거나 `toolResultConfirmed`를 만들지 않는다. 별도 `synthetic-title-response` 영수증에 `mainStage`, `syntheticTitleConfirmed:true`를 두고 `stage`/`toolResultConfirmed`는 넣지 않는다. 고정 합성 title JSON은 36자 이하이고 usage는 합성 0이다. main 두 단계와 title 한 개가 모두 성공한 경우만 완료 종료하며 그 외는 기존 lifetime/signal 정리를 적용한다. 제목은 main 앞·사이·뒤 어느 순서든 가능하다.
+
+| 사례 | 예정한 공개 CLI/실제 loopback 판정 기준 |
+|---|---|
+| GT01 | 정상 3순서에서 원 main SSE 두 응답·분리된 고정 title 응답·정상 종료·자체 port 닫힘을 대조한다. |
+| GT02 | 잘못된/추가 schema·format 키, strict/name/type/model, 누락/활성 tools, 빈 input/non-message는 고정 거절이고 title/main 증가가 없다. |
+| GT03 | 중복 또는 앞서 거절된 title도 단일 title 예산을 소비하며 재시도가 title 응답을 만들지 못한다. |
+| GT04 | 거절을 포함한 parsed main 시도 2회 뒤에는 옵션 모드에서도 세 번째 main 재시도를 차단한다. |
+| GT05 | 분류 전 거절은 전체 예산을 소비하고 health는 제외하며 main/title 미완료를 완료로 보고하지 않는다. |
+| GT06 | 옵션이 없으면 기존 2 POST 예산으로 title을 거절하고 원 77 assertion·auth/크기/inflight/기한/정리를 보존한다. |
+| GT07 | title-model 누락/중복/빈 값/과대/제어문자 등은 입력 반사 없이 고정 CLI 오류다. |
+
+작성자는 이 Node 단위시험 파일만 병렬 1·자체 명령 heap 한도로 실행한다. 새 사례는 아래 표적 실행 기록 전까지 NOT_RUN이다. 실제 Core/Native/GUI·Git 변경·장부·실제 모델/cache·릴리스 수용은 이 단위 밖이다. 아래 절에는 기존 직접 stdio fixture의 근거를 보존한다.
+
+### Opt-in 구현과 표적 검증
+
+`node --max-old-space-size=256 --test --test-concurrency=1 --test-reporter=tap tests/core-tool-provider.test.mjs`는 **exit 0, 113 PASS, 0 FAIL/cancelled/skipped/todo**, `34216.7933 ms`로 완료했다. 원 77개와 container를 포함한 신규 36개다. 정상 3순서, 잘못된 제목 구조 20개, 중복/거절 제목 예산, main/전체 한도, auth/형식/크기/JSON/동시성, 미완료 lifetime, 기본 거절, CLI 안전성을 검증했다. 자체 Node child와 동적 loopback HTTP만 실행했다. TAP는 tool stdout에만 있고 별도 TAP 파일·receipt artifact는 저장하지 않았으며 저장을 위해 시험을 반복하지 않았다.
+
+정적 검사에서 원 시험 bytes가 확장 시험의 정확한 prefix이고 원 main predicate 다섯 함수와 main `eventsFor` SSE 생성기가 byte 단위로 동일함을 확인했다. 원 증거사본도 유지한다. 시험한 provider SHA256은 `e2546ec77e5c5276f133b8907bf9bb0d54084ccbd5b43ff09e04f64d6c525adc`, 시험 파일 SHA256은 `81007e3617cd69beed8b7a80591d7ca3650248efeff8581290f9322e0914c2db`다.
+
+초기 부모 oracle은 main 두 단계 외에 제목 영수증 1개도 요구했다. case04는 이 조건대로 **FAIL**을 보존했으나 실제 GUI 왕복과 정상 정리는 통과했고 보조 제목 요청은 없었다. 고정 Core 소스에는 설정 소유자가 서버일 때 제목 생성을 시작하지 않는 경로가 있다. 실행 간 차이의 정확한 스케줄링 원인은 확정하지 않았으며 원 case04 결과를 수정하지 않았다.
+
+### 실제 Native GUI 검증 범위
+
+case05 전에 불필요한 제목 개수 조건만 **0~1**로 정정했다. 필수 main stage2 `toolResultConfirmed`, GUI 전송 1회와 정확히 결속한 일회 승인 1회, 실제 MCP·같은 turn·assistant 완료, Native history 일치와 정상 자체 정리는 유지했다. provider와 전체 3회/main 2회/title 1회 한도 및 원 결과 predicate는 바꾸지 않았다. 제목 미요청 시 기존 lifetime 정리를 사용하며 제목 완료 영수증을 만들지 않는다.
+
+`D:/codex/build/s210g2/case05/`는 source에 결속한 Desktop `deafe7f` release fixture와 공개 Core1.0.1에서 통과했다. GUI 생성/전송/승인 각 1회, MCP item 1개·완료 turn 1개·assistant를 Native history와 대조했다. main 응답 두 단계와 보조 제목 0개를 관측했고 앱/collector/provider는 모두 exit0이었다. 자체 Core stopped, 관측한 direct child 2개 부재, 설정 bytes와 운영 앱 identity 보존을 확인했다. `verify-case05.mjs`가 원 보고서를 검사해 만든 `verification.json` SHA256은 `b6263009ef559ef90d31bd3d0fb5dd307013ae067001bd21009751beeab05e30`이다.
+
+부모 result SHA256은 `a9f8ea85f938e1d943548e23f744b988122c2c418477b6f8b0c5d93f27f27ab8`, GUI 보고서 SHA256은 `c71f5a26cb84f34c9eb8d73407cca5e406c21e5f5b9a230d9768e0180363e0ae`다. 원 case01~04는 그대로 보존한다. 이는 새 기능 동작 검증이며 동일 oracle RED/GREEN이 아니다. 자체 대화 화면 승인과 합성 로컬 모델 범위로 한정한다. Core1.1·실제 추론/cache·Native 질문함 상호작용·일반 form 출처 결함 D92·최종 릴리스 수용은 미검증 또는 미해결이다.
+
+## 원 직접 stdio 근거 (이력 보존)
+
 상태: **test-only fixture, Node 시험 77 PASS / 0 FAIL, 공개 Core1.0.1 stdio/MCP 기준 사례 PASS, Core1.1·Desktop GUI 통합 NOT_RUN**. 제품 코드가 import하지 않는 독립 loopback fixture다. 사용자 목표 원문은 “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.”이다. 이 fixture는 실제 모델·과금·provider cache의 증거가 아니다.
 
 ## 정본과 최소 계약

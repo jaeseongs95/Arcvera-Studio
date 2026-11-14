@@ -153,6 +153,21 @@ regular approval request belongs to another connection. Terminal
 waiting states whose request details are unavailable are listed separately with a link to the original
 session and are not counted as confirmed questions.
 
+In the 2.1 development candidate, a supported MCP tool approval shows its server,
+tool and arguments in the conversation view or question inbox. Choose **Allow
+once**, **Decline** or **Cancel** for that request. These controls do not remember
+an approval. They are unavailable when ownership, connection or request metadata
+cannot be confirmed. General forms and URL authentication requests remain outside
+this tool-approval interface.
+
+The review has a 16 KiB argument limit and rejects values that cannot be represented
+safely in the GUI, including unsafe integer magnitudes and negative zero. Such a
+request must not be treated as approved. Actual Native approval integration with
+the final Core1.1 candidate remains under validation. Current actual verification
+covers an isolated public Core1.0.1 conversation-view roundtrip. Approval-origin
+separation is an unresolved release requirement, and this result does not establish
+support for arbitrary server forms.
+
 Sent pasted images remain in app-owned storage because resumed history can reference them.
 Unsent temporary files are cleaned up; original user files are never deleted. Exceeding the storage
 budget rejects new attachments rather than automatically deleting earlier attachments.

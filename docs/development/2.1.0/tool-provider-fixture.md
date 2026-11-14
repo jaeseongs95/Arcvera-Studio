@@ -2,6 +2,44 @@
 
 [English](tool-provider-fixture.md) · [한국어](tool-provider-fixture.ko.md)
 
+## Opt-in GUI title contract — plan before tests and implementation
+
+Actual GUI cases 01–03 remain FAIL. In case03, the second request had four messages, no function output or advertised tool, an exact frozen title JSON schema, strict/known-name JSON-schema format, and a different prompt-cache identity. This matches Core's separate ephemeral title-request path. The direct-stdio two-POST oracle did not account for the TUI auxiliary request. The following is a new explicit GUI fixture contract, not the same old two-POST RED/GREEN condition. Original provider SHA256 `3e4665e3d8cd5ae39dc9153a0b2a747ed58d86005da6ef07cfc938721efc919b` and original 77-test source SHA256 `ad22b53e6d81afd088a0cb0a3a5052e47c321f7a8e988faad1e191c51b702320` are preserved with relative test paths under `D:/codex/build/desktop210-integration-20261114/gui-title-fixture-before/`.
+
+Optional `--title-model <exact-ID>` enables one synthetic title request. Without it, the original two-POST behavior and stage-2 shutdown remain unchanged. The ID must be nonempty, trimmed, at most 256 UTF-8 bytes, and contain no control/format characters. A title request requires that exact model, `tools:[]`, nonempty message-only input and exactly four format keys: type=`json_schema`, strict=true, name=`codex_output_schema`, schema=`{type:'object',properties:{title:{type:'string',minLength:1,maxLength:36}},required:['title'],additionalProperties:false}`. This is frozen Core's public schema, not a stored real request. Unknown schema/format/model or enabled tools are rejected; prompt wording is not inspected or echoed.
+
+In opt-in mode, every Responses POST consumes the total budget of 3, including preclassification auth/byte/concurrency/JSON failures. Parsed text objects with their own format key consume the one-title attempt and never fall back to main acceptance. Other parsed bodies consume at most two main attempts, including rejected main requests. Title handling never advances the main stage or creates `toolResultConfirmed`. Its separate `synthetic-title-response` receipt uses `mainStage` and `syntheticTitleConfirmed:true`, with no `stage` or `toolResultConfirmed`. The fixed synthetic title JSON is at most 36 characters and has synthetic zero usage. Completion shutdown requires both successful main stages and one successful title; otherwise the original lifetime/signal cleanup applies. Title may arrive before, between or after main requests.
+
+| Case | Planned public CLI/real loopback oracle |
+|---|---|
+| GT01 | Three valid request orders preserve both exact main SSE responses, one distinct fixed title response, normal exit and closed owned port. |
+| GT02 | Wrong/extra schema or format key, strict/name/type/model, missing/enabled tools, empty/non-message input return fixed rejection with no title/main advancement. |
+| GT03 | A duplicate or previously rejected title consumes the single title budget; retry cannot create a title response. |
+| GT04 | Two parsed main attempts, including rejection, prevent a third main retry despite opt-in. |
+| GT05 | Preclassification failures consume total budget; health is read-only; incomplete main/title handling never reports completion. |
+| GT06 | No option means original two-POST title rejection; preserve all original 77 assertions and auth/size/inflight/deadline/cleanup guards. |
+| GT07 | Missing/duplicate/empty/oversized/control-bearing title-model values produce the fixed CLI error without reflection. |
+
+The author may run only this Node unit-test file with test concurrency 1 and an owned command heap limit. The new cases are NOT_RUN until the targeted run is recorded below. Actual Core/Native/GUI, Git mutation, ledger, real model/cache and release acceptance remain outside this unit. The following sections retain the original direct-stdio fixture evidence.
+
+### Opt-in implementation and targeted validation
+
+`node --max-old-space-size=256 --test --test-concurrency=1 --test-reporter=tap tests/core-tool-provider.test.mjs` completed with **exit 0, 113 PASS, 0 FAIL/cancelled/skipped/todo**, duration `34216.7933 ms`. This includes all original 77 cases and 36 added cases including containers. It covered three successful orders, 20 malformed title shapes, duplicate/rejected-title budgets, main/total ceilings, auth/type/size/JSON/concurrency, incomplete lifetime, default rejection and CLI safety. Only owned Node children and dynamic loopback HTTP ran. TAP was captured in tool stdout; no separate TAP file or receipt artifact was saved, and the run was not repeated to create one.
+
+Static checks confirmed that the original test bytes are an exact prefix of the extended test, all five original main predicates are byte-identical, and the original main `eventsFor` SSE generator is byte-identical. Evidence copies remain unchanged. Tested provider SHA256: `e2546ec77e5c5276f133b8907bf9bb0d54084ccbd5b43ff09e04f64d6c525adc`; tested test-file SHA256: `81007e3617cd69beed8b7a80591d7ca3650248efeff8581290f9322e0914c2db`.
+
+The initial parent oracle required one title receipt as well as both main stages. Case04 preserved that oracle and reported **FAIL**, although its actual GUI roundtrip and normal cleanup passed: no auxiliary title was requested. The fixed Core source has a server-owned-settings path that does not start title generation; the exact scheduling cause of the difference between runs is not established. The original case04 result was not rewritten.
+
+### Actual Native GUI scope
+
+Before case05, the parent corrected only the unnecessary title-count requirement to **0..1**. Mandatory main stage-2 `toolResultConfirmed`, the one GUI submission and one precisely bound GUI approval, actual MCP/same-turn/assistant completion, Native history equality and normal owned cleanup were retained. The provider, its three-attempt total ceiling, two-main ceiling, one-title ceiling and all original result predicates were unchanged. No-title mode uses the existing lifetime cleanup; it does not fabricate a title-completion receipt.
+
+`D:/codex/build/s210g2/case05/` passed with a source-bound Desktop `deafe7f` release fixture and public Core1.0.1. GUI create/submit/approval were each 1; one MCP item, one completed turn and the assistant matched Native history. Both main responses were observed, auxiliary title count was 0, and the app/collector/provider exited 0. Own Core stopped, the two observed direct children disappeared, config bytes and the operating app identity were preserved. `verify-case05.mjs` checked the original reports and produced `verification.json` SHA256 `b6263009ef559ef90d31bd3d0fb5dd307013ae067001bd21009751beeab05e30`.
+
+Parent result SHA256 is `a9f8ea85f938e1d943548e23f744b988122c2c418477b6f8b0c5d93f27f27ab8`; GUI report SHA256 is `c71f5a26cb84f34c9eb8d73407cca5e406c21e5f5b9a230d9768e0180363e0ae`. Original cases01–04 remain as recorded. This is a new functional verification, not an identical-oracle RED/GREEN pair. It covers a controlled conversation-view approval and synthetic local model. Core1.1, real inference/cache, Native question-inbox interaction, generic-form origin defect D92 and final release acceptance remain unverified or unresolved.
+
+## Original direct-stdio evidence (preserved history)
+
 Status: **test-only fixture; Node tests 77 PASS / 0 FAIL; public Core1.0.1 stdio/MCP baseline PASS; Core1.1/Desktop GUI integration NOT_RUN**. This standalone loopback fixture is not imported by product code. Original user goal: “너의 목표는 2.1.0 릴리즈이다. cli 담당과 협업해서 2.1.0 릴리즈에 들어갈 개발 범위를 산정하고 작업하면 된다.” English summary: deliver Desktop2.1 with the CLI owner and agree its scope. This fixture does not establish real model, billing, or provider-cache behavior.
 
 ## Authority and minimal contract
