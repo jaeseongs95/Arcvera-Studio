@@ -108,6 +108,43 @@ test('CC parent ignores a closed view reply after reopening the inspector', asyn
   await expect(page.locator('.context-composition-status')).toContainText('변경');
 });
 
+test('CC parent full dialog uses desktop space and keeps close reachable while scrolling', async ({ page }, testInfo) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const f = (window as any).contextFixture; f.snapshot.threadId = 'thread-a';
+    f.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 };
+    f.compositionResult = { supported: true, snapshot: {
+      threadId: 'thread-a', snapshotId: 'layout-snapshot', contextIndexRevision: '1', historyVersion: '1', asOf: '2026-11-14T00:00:00Z',
+      sizes: { residentSerializedBytes: 250, selectedResidentSerializedBytes: 250, excludedResidentSerializedBytes: 0, archiveSerializedBytes: null,
+        selectedBodyEstimatedTokens: 50, estimateProvenance: 'selected_resident_before_request_normalization', navigationEstimatedTokens: 0,
+        baseEstimatedTokens: null, toolEstimatedTokens: null, totalEstimatedTokens: null },
+      limits: { requestedContextWindowOverride: null, effectiveContextWindow: 100000, provenance: 'session_configuration_override' },
+      fragments: Array.from({ length: 25 }, (_, n) => ({ sourceId: `source-${n}`, sourceOrdinal: String(n), residentOccurrence: '0', taskId: 'task-a',
+        kind: 'user', selected: true, required: false, selectionReason: 'reachable_task', residency: 'resident', residentSerializedBytes: 10, estimatedTokens: 2 })),
+      cache: { scope: 'response', provenance: 'not_reported', status: 'unknown', cachedInputTokens: null, writeInputTokens: null,
+        uncachedInputTokens: null, totalInputTokens: null, observedAt: null, observationId: null, requestContextIndexRevision: null,
+        revisionStatus: 'unknown', requestedTtlSeconds: 300, effectiveTtlSeconds: null, ttlSupport: 'unknown', ttlApplication: 'unknown',
+        requestStartedAt: null, minimumValidUntil: null, minimumValidUntilProvenance: 'unknown',
+        minimumValidUntilScope: 'reported_write_tokens_only_not_individual_fragments', estimatedExpiry: null, serverConfirmedExpiry: null }, nextCursor: null,
+    } };
+  });
+  for (const width of [1440, 360]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('#context-fixture .context-usage').click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('.context-composition-fragments > li')).toHaveCount(25);
+    const rect = await dialog.boundingBox();
+    expect(rect!.width).toBeLessThanOrEqual(width);
+    if (width === 1440) expect(rect!.width).toBeGreaterThan(700);
+    const close = dialog.getByRole('button', { name: '닫기', exact: true });
+    await expect(close).toBeInViewport();
+    await dialog.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await expect(close).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`composition-dialog-${width}.png`) });
+    await close.click(); await expect(dialog).toHaveCount(0);
+  }
+});
+
 test('D0031 CX02 관측 연결 실패와 마지막 사용량을 구분한다', async ({ page }) => {
   await fixture(page);
   const usage = page.locator('#context-fixture .context-usage');

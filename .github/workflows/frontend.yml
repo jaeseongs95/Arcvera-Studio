@@ -72,6 +72,9 @@ jobs:
             cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Build a source-bound isolated development executable
+        shell: pwsh
+        run: ./scripts/build-native-fixture.ps1
       - name: Preserve native unit evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -83,6 +83,7 @@ pub(super) fn exchange_hooks<S: Read + Write>(
     // but do not pretend that its absence acknowledges thread identity or a gate.
     same_thread(&value, thread_id).map_err(|_| INVALID_HOOK_RESPONSE.to_owned())?;
     let hooks = extensions::parse_runtime_hooks(&value, cwd).map_err(|_| INVALID_HOOK_RESPONSE.to_owned())?;
+    let runtime = hooks_runtime_metadata(&value)?;
     // Explicit allowlist: opaque keys, hashes, paths, commands and diagnostics may
     // contain sensitive content even after length/type validation. Never serialize
     // ExtensionHooks here; future fields must not cross this read-only boundary.
@@ -94,10 +95,30 @@ pub(super) fn exchange_hooks<S: Read + Write>(
     let result = json!({
         "operation":"hooksStatus","threadId":thread_id,"provenance":"loadedThreadHooksList",
         "executionGate":"unknown","applicationState":"unknown",
+        "runtime":runtime,
         "hooks":{"items":items,"warningCount":hooks.warnings.len(),"errorCount":hooks.errors.len()},
     });
     bounded_hooks_response(&result)?;
     Ok(result)
+}
+
+fn hooks_runtime_metadata(value: &Value) -> Result<Value, String> {
+    let current_thread = match value.get("scope") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(scope)) if scope == "currentThread" => true,
+        _ => return Err(INVALID_HOOK_RESPONSE.into()),
+    };
+    let runtime = match value.get("runtime") {
+        None | Some(Value::Null) => return Ok(Value::Null),
+        Some(runtime) => runtime.as_object().ok_or(INVALID_HOOK_RESPONSE)?,
+    };
+    let feature_enabled = runtime.get("featureEnabled").and_then(Value::as_bool).ok_or(INVALID_HOOK_RESPONSE)?;
+    let base_handler_count = runtime.get("baseHandlerCount").and_then(Value::as_u64)
+        .filter(|count| *count <= 9_007_199_254_740_991).ok_or(INVALID_HOOK_RESPONSE)?;
+    // Ordinary feature configuration is not an execution gate. Base handlers exclude
+    // per-turn overlays. Only explicit current-thread scope makes these values evidence.
+    if !current_thread { return Ok(Value::Null); }
+    Ok(json!({"featureEnabled":feature_enabled,"baseHandlerCount":base_handler_count}))
 }
 
 fn safe_hooks_rpc_error(raw: &str) -> String {
@@ -688,7 +709,8 @@ mod tests {
         value["runtime"] = json!({"featureEnabled":false,"baseHandlerCount":0,"scope":SECRET});
         let result = execute_hooks(value).0.unwrap();
         assert_eq!(result, json!({"operation":"hooksStatus","threadId":THREAD,"provenance":"loadedThreadHooksList",
-            "executionGate":"unknown","applicationState":"unknown","hooks":{"items":[],"warningCount":0,"errorCount":0}}));
+            "executionGate":"unknown","applicationState":"unknown","runtime":null,
+            "hooks":{"items":[],"warningCount":0,"errorCount":0}}));
         assert!(!result.to_string().contains(SECRET));
     }
     // HR06: Hook cardinality is intentionally independent of MCP's 256-array boundary.
@@ -774,5 +796,90 @@ mod tests {
         assert_eq!(items[0]["id"],"hook-ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert_ne!(items[0]["id"],items[1]["id"]); assert_eq!(first,second);
         for item in items { assert!(item.get("key").is_none()); assert!(item.get("currentHash").is_none()); }
+    }
+
+    // HF01: legacy inventory remains usable; unscoped metadata is not runtime evidence.
+    #[test]
+    fn runtime_extensions_hooks_feature_legacy_scope_keeps_runtime_unknown() {
+        for scope in [None, Some(Value::Null)] {
+            for runtime in [None, Some(Value::Null), Some(json!({"featureEnabled":false,"baseHandlerCount":3}))] {
+                let mut value = hook_inventory(vec![hook_row("abc","command")]);
+                if let Some(scope) = &scope { value["scope"] = scope.clone(); }
+                if let Some(runtime) = runtime { value["runtime"] = runtime; }
+                let (result,sent) = execute_hooks(value);
+                let result = result.unwrap();
+                assert_eq!(result["runtime"],Value::Null); assert!(result.get("runtime").is_some());
+                assert_eq!(result["hooks"]["items"].as_array().unwrap().len(),1);
+                assert_eq!(result["executionGate"],"unknown"); assert_eq!(result["applicationState"],"unknown");
+                assert_eq!(sent,vec![json!({"id":1,"method":"hooks/list","params":{"threadId":THREAD}})]);
+            }
+        }
+    }
+
+    // HF02: feature configuration and installed base count are not execution permission.
+    #[test]
+    fn runtime_extensions_hooks_current_thread_feature_metadata_is_exact_and_bounded() {
+        for runtime in [json!({"featureEnabled":false,"baseHandlerCount":3}),
+            json!({"featureEnabled":true,"baseHandlerCount":0}),
+            json!({"featureEnabled":true,"baseHandlerCount":9_007_199_254_740_991u64})] {
+            let mut value = hook_inventory(vec![]); value["scope"] = json!("currentThread"); value["runtime"] = runtime.clone();
+            let (result,sent) = execute_hooks(value); let result = result.unwrap();
+            assert_eq!(result["runtime"],runtime); assert_eq!(result["runtime"].as_object().unwrap().len(),2);
+            assert_eq!(result["executionGate"],"unknown"); assert_eq!(result["applicationState"],"unknown");
+            assert!(result["hooks"]["items"].as_array().unwrap().is_empty()); assert_eq!(sent.len(),1);
+        }
+    }
+
+    // HF03: explicit configuration/unknown scope cannot masquerade as current-thread inventory.
+    #[test]
+    fn runtime_extensions_hooks_feature_scope_mismatch_is_safe_and_never_retried() {
+        for scope in [json!("configuration"),json!(SECRET),json!(false),json!({"raw":SECRET}),json!([])] {
+            let mut value = hook_inventory(vec![hook_row(SECRET,"command")]); value["scope"] = scope;
+            value["runtime"] = json!({"featureEnabled":true,"baseHandlerCount":1});
+            let (result,sent) = execute_hooks(value);
+            assert_eq!(result.unwrap_err(),INVALID_HOOK_RESPONSE); assert_eq!(sent.len(),1);
+        }
+    }
+
+    // HF04: optional is unknown, malformed is rejected, including when scope is legacy.
+    #[test]
+    fn runtime_extensions_hooks_feature_runtime_rejects_invalid_types_and_precision() {
+        for runtime in [None,Some(Value::Null)] {
+            let mut value = hook_inventory(vec![]); value["scope"] = json!("currentThread");
+            if let Some(runtime) = runtime { value["runtime"] = runtime; }
+            let result = execute_hooks(value).0.unwrap();
+            assert!(result.get("runtime").is_some()); assert_eq!(result["runtime"],Value::Null);
+        }
+        let invalid = [json!(false),json!(SECRET),json!([]),json!({}),
+            json!({"featureEnabled":true}),json!({"baseHandlerCount":1}),
+            json!({"featureEnabled":null,"baseHandlerCount":1}),json!({"featureEnabled":SECRET,"baseHandlerCount":1}),
+            json!({"featureEnabled":1,"baseHandlerCount":1}),json!({"featureEnabled":true,"baseHandlerCount":null}),
+            json!({"featureEnabled":true,"baseHandlerCount":SECRET}),json!({"featureEnabled":true,"baseHandlerCount":false}),
+            json!({"featureEnabled":true,"baseHandlerCount":-1}),json!({"featureEnabled":true,"baseHandlerCount":0.5}),
+            json!({"featureEnabled":true,"baseHandlerCount":9_007_199_254_740_992u64}),
+            json!({"featureEnabled":true,"baseHandlerCount":u64::MAX})];
+        for scope in [None,Some(json!("currentThread"))] {
+            for runtime in &invalid {
+                let mut value = hook_inventory(vec![]);
+                if let Some(scope) = &scope { value["scope"] = scope.clone(); }
+                value["runtime"] = runtime.clone();
+                let (result,sent) = execute_hooks(value);
+                assert_eq!(result.unwrap_err(),INVALID_HOOK_RESPONSE); assert_eq!(sent.len(),1);
+            }
+        }
+    }
+
+    // HF05: only the two known fields cross Native; raw additions cannot expand the DTO.
+    #[test]
+    fn runtime_extensions_hooks_feature_projection_drops_unused_raw_content() {
+        let mut value = hook_inventory(vec![hook_row(SECRET,"command")]); value["scope"] = json!("currentThread");
+        value["runtime"] = json!({"featureEnabled":false,"baseHandlerCount":3,"raw":SECRET,
+            "command":format!("{SECRET}{}","x".repeat(MAX_RESPONSE_BYTES+1)),
+            "schema":vec![SECRET;MAX_JSON_ARRAY+1],"executionGate":"allowed"});
+        let (result,sent) = execute_hooks(value); let result = result.unwrap();
+        assert_eq!(result["runtime"],json!({"featureEnabled":false,"baseHandlerCount":3}));
+        assert!(!result.to_string().contains(SECRET)); assert_eq!(result["executionGate"],"unknown");
+        assert_eq!(result["applicationState"],"unknown");
+        assert_eq!(sent,vec![json!({"id":1,"method":"hooks/list","params":{"threadId":THREAD}})]);
     }
 }

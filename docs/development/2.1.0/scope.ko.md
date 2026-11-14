@@ -8,7 +8,7 @@
 
 기준 Desktop은 공개 2.0.1의 `beb6fe54c160d04d01d57c04c305c2fc519f9490`이다. 작업 브랜치는 `feature/desktop-2.1.0-core110`이다. 2026-11-14 KST 조회한 원격 main은 2.0.0의 `0fa0f9c2da3f832db9d01cb7b0f00ddec90a538a`이므로, 2.0.1의 버전 접두사·최초 준비 호환 수정을 보존한다. 최종 병합 때 원격 main을 다시 확인한다.
 
-Core 담당 작업은 `D:/codex/build/core110-context-20261113/source`, `feature/1.1.0-context-runtime`, 기준 `d6026cbd`이다. 현재 개발 실행 파일은 전달되지 않았다. 아래 범위와 오류·적용 계약은 CLI 담당과 대조 중이며, 실제 지원으로 확정하거나 시험 통과로 표시하지 않는다.
+새 Core 담당의 정본은 `D:/codex/build/core110-release-20261114/source`이며 기존 `d6026cbd` 기반 변경을 보존해 인계했다. `ThreadContext*`와 `HooksList*` 타입 후보 및 오류·상태값을 직접 대조했다. 생성 schema·실행 검증·개발 실행 파일은 아직 전달되지 않았다. 후보 소비 준비와 실제 지원 판정을 구분한다.
 
 | ID | 개발·검증 범위 | 소유 경계 |
 |---|---|---|
@@ -33,4 +33,4 @@ Core 담당 작업은 `D:/codex/build/core110-context-20261113/source`, `feature
 
 이 문서는 범위 협의와 수용 기준의 작업 원문이다. 기계용 TaskEnvelope/검증기 통과 또는 제품 완료 판정으로 표현하지 않는다.
 
-CLI 담당과 컨텍스트 구성 조회를 협의 중이다. fragment ID·인덱스/출처·선택 이유·필수 여부·크기·prefix 순서·활성/회수 상태, 캐시 정책/관측/추정/미제공 구분을 소비 필드로 제안했다. 개별 fragment와 전체 prefix의 캐시 관측 범위를 혼동하지 않고, 원문·secret은 기본 표시 자료에 포함하지 않는다. 정본 schema·한도·snapshot 일관성 계약이 확정되기 전에 임의 RPC를 구현하지 않는다. 현재 전용 구성 조회는 미구현·미검증이다.
+CLI 담당의 실제 타입 후보를 기준으로 구성·캐시/TTL Native 어댑터와 표시를 준비했다. fragment ID·인덱스/출처·선택 이유·필수 여부·크기·순서·상주 상태 및 캐시 정책/관측/추정/미제공을 구분한다. 개별 fragment와 집계 cache를 혼동하거나 원문·secret을 기본 표시하지 않는다. 후보와 다른 RPC를 추정하지 않으며, 생성 schema·같은 Core1.1 실행물로 대조하기 전에는 실제 지원 완료로 판정하지 않는다. `context-adapter-cases`와 `context-composition-ui-cases`의 영한 문서에 준비 단계·실행 범위·미완 검증을 구분했다.

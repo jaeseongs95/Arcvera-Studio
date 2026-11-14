@@ -191,6 +191,8 @@ export function createContextControls(options: Options) {
       const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = t('적용', 'Apply');
       const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = t('기본값 복원', 'Restore default');
       const close = document.createElement('button'); close.type = 'button'; close.textContent = t('닫기', 'Close');
+      const dialogHeader = document.createElement('div'); dialogHeader.className = 'session-context-actions session-context-header';
+      dialogHeader.append(heading, close);
       let compositionReading = false;
       const panel = chosenThread ? createContextCompositionPanel({ threadId: chosenThread, onRefresh: () => void readComposition(), onNext: (id, cursor) => void readComposition(id, cursor) }) : undefined;
       compositionPanel = panel;
@@ -246,7 +248,7 @@ export function createContextControls(options: Options) {
       });
       reset.addEventListener('click', () => void change(null)); close.addEventListener('click', closeEditor);
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeEditor(); });
-      actions.append(apply, reset, close); dialog.append(heading);
+      actions.append(apply, reset); dialog.append(dialogHeader);
       if (panel) dialog.append(panel.element);
       dialog.append(explanation, summary, label, input, message, actions); document.body.append(dialog); showCurrent(); dialog.showModal();
       if (panel) void readComposition();

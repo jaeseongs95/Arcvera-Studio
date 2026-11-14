@@ -16,6 +16,7 @@ The context icon will show the selected conversation's fragments, serialized siz
 | CA06 | 64KiB, page25, malformed used fields | Enforce bounds; never forward unused fields |
 | CA07 | Refresh, paging, close, thread switch, late reply | Native generation/thread binding and view epoch isolation |
 | CA08 | Failure, cancellation and termination | Reuse deadline/proxy cleanup/settings mutex; no GUI lease or server auto-start |
+| CA09 | Full dialog at1440px/360px with25 fragments | Actual desktop width exceeds700px; no narrow horizontal overflow; close remains reachable before/after scrolling |
 
 Run Native memory-WebSocket/projection cases and existing conversation checks after defining them. Panel fixtures establish display/lifetime behavior only. Real Core 1.1 calls with the same candidate pair and final WebView/package verification are **NOT_RUN**. Reconcile candidate changes with generated schemas.
 

@@ -14,6 +14,7 @@ Core 1.1의 `ThreadContext*` 타입 후보를 소비하는 준비 단계다. 생
 | CA06 | 64KiB, page25, 문자열·잘못된 필드 | 상한 및 사용 필드 검사, 미사용 필드 비전달 |
 | CA07 | refresh/다음 페이지/닫기/다른 thread/늦은 응답 | Native 세대·thread 결속, 화면 epoch로 잘못된 대화에 표시하지 않음 |
 | CA08 | 연결 실패·취소·종료 | 기존 deadline/proxy 정리·설정 mutex 재사용, GUI lease·서버 자동시작 없음 |
+| CA09 | 전체 팝업: 데스크톱 1440px·좁은 360px·긴 25조각 목록 | 넓은 화면에서 실제 폭700px 초과, 좁은 화면 가로 넘침 없음, 스크롤 전후 닫기 버튼 접근·정상 종료 |
 
 정의 후 Native 메모리 WebSocket/투영 회귀와 기존 conversation 검증을 수행한다. 패널 fixture는 표시·수명만 증명한다. Core 1.1의 같은 후보짝 실제 호출, 최종 WebView/패키지 검증은 별도이며 현재 **NOT_RUN**이다. 후보 변경 시 생성 schema와 대조해 수정한다.
 

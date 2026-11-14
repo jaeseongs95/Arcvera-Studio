@@ -10,7 +10,7 @@ Development of 3.x is stopped; existing worktrees and unverified changes are pre
 
 The Desktop baseline is the published 2.0.1 commit `beb6fe54c160d04d01d57c04c305c2fc519f9490`. The work branch is `feature/desktop-2.1.0-core110`. Remote main, checked on 2026-11-14 KST, is the 2.0.0 commit `0fa0f9c2da3f832db9d01cb7b0f00ddec90a538a`, so the version-prefix and first-preparation compatibility fixes from 2.0.1 must be preserved. Check remote main again at final merge.
 
-The Core owner's work is at `D:/codex/build/core110-context-20261113/source`, branch `feature/1.1.0-context-runtime`, based on `d6026cbd`. The current development executable has not been delivered. The scope and error/application contracts below are being compared with the CLI owner; they are not confirmed support or passing test results.
+The new Core owner's source is `D:/codex/build/core110-release-20261114/source`, preserving the inherited `d6026cbd`-based changes. The `ThreadContext*`/`HooksList*` candidate types and error/status values have been inspected directly. Generated schemas, runtime evidence and a development executable have not been delivered. Candidate consumption preparation is distinct from verified runtime support.
 
 | ID | Development and verification scope | Ownership boundary |
 |---|---|---|
@@ -35,4 +35,4 @@ Editing the work branch, installing development dependencies, testing, commit/pu
 
 This document is the working source for scope discussion and acceptance criteria. It is not a machine TaskEnvelope/validator pass or a product-completion judgment.
 
-Context composition inspection is being discussed with the CLI owner. Proposed consumer fields include fragment ID, index/source, selection reason, mandatory status, size, prefix order, active/reclaimed state, and distinctions between cache policy, observation, estimate, and unavailable data. Do not confuse cache observations for individual fragments with those for the entire prefix; original content and secrets are excluded from default display data. Do not implement speculative RPCs before the authoritative schema, limits, and snapshot-consistency contract are settled. Dedicated composition inspection is currently unimplemented and unverified.
+The Native adapter and composition/cache/TTL view are prepared against the CLI owner's actual candidate types. They distinguish fragment identity/index/source/reason/required status/size/order/residency and cache policy/observation/estimate/unavailable data. Aggregate cache counters are not assigned to individual fragments; raw content and secrets are excluded. No different RPC is inferred. Generated schemas and the same Core1.1 executable must be checked before runtime support is established. The bilingual `context-adapter-cases` and `context-composition-ui-cases` documents distinguish preparation, executed scopes and pending verification.

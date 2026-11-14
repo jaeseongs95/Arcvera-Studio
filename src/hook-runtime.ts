@@ -59,7 +59,8 @@ interface HookItem {
   isManaged: boolean;
   trustStatus: TrustStatus;
 }
-interface Snapshot { items: HookItem[]; warningCount: number; errorCount: number }
+interface FeatureRuntime { featureEnabled: boolean; baseHandlerCount: number }
+interface Snapshot { items: HookItem[]; warningCount: number; errorCount: number; runtime: FeatureRuntime | null }
 type View = 'initial' | 'pending' | 'unconfirmed' | 'invalid' | 'status';
 const encoder = new TextEncoder();
 const outerKeys = ['operation', 'threadId', 'provenance', 'executionGate', 'applicationState', 'hooks'];
@@ -94,10 +95,18 @@ function snapshotTarget(value: unknown): HookRuntimeTarget | undefined {
   } catch { return undefined; }
 }
 function snapshot(value: unknown, threadId: string): Snapshot | undefined {
-  if (!shape(value, outerKeys) || value.operation !== 'hooksStatus' || value.threadId !== threadId
+  if (!record(value) || !shape(value, Object.prototype.hasOwnProperty.call(value, 'runtime') ? [...outerKeys, 'runtime'] : outerKeys)
+    || value.operation !== 'hooksStatus' || value.threadId !== threadId
     || value.provenance !== 'loadedThreadHooksList' || value.executionGate !== 'unknown' || value.applicationState !== 'unknown'
     || !shape(value.hooks, hookKeys) || !Array.isArray(value.hooks.items) || value.hooks.items.length > 4096
     || !count(value.hooks.warningCount) || !count(value.hooks.errorCount)) return undefined;
+  let runtime: FeatureRuntime | null = null;
+  if (Object.prototype.hasOwnProperty.call(value, 'runtime') && value.runtime !== null) {
+    if (!shape(value.runtime, ['featureEnabled', 'baseHandlerCount']) || typeof value.runtime.featureEnabled !== 'boolean'
+      || typeof value.runtime.baseHandlerCount !== 'number' || !Number.isSafeInteger(value.runtime.baseHandlerCount)
+      || value.runtime.baseHandlerCount < 0) return undefined;
+    runtime = { featureEnabled: value.runtime.featureEnabled, baseHandlerCount: value.runtime.baseHandlerCount };
+  }
   const items: HookItem[] = [];
   const seen = new Set<string>();
   for (const item of value.hooks.items) {
@@ -109,7 +118,7 @@ function snapshot(value: unknown, threadId: string): Snapshot | undefined {
     items.push({ id: item.id, eventName: item.eventName, handlerType: item.handlerType, source: item.source,
       enabled: item.enabled, isManaged: item.isManaged, trustStatus: item.trustStatus });
   }
-  return { items, warningCount: value.hooks.warningCount, errorCount: value.hooks.errorCount };
+  return { items, warningCount: value.hooks.warningCount, errorCount: value.hooks.errorCount, runtime };
 }
 
 /** Pure result view. The caller owns requests, safe error notices and thread/generation epochs. */
@@ -141,11 +150,15 @@ export function createHookRuntimePanel(options: HookRuntimePanelOptions): HookRu
   const applicationLabel = document.createElement('dt');
   const applicationValue = document.createElement('dd');
   details.append(gateLabel, gateValue, applicationLabel, applicationValue);
+  const feature = document.createElement('p');
+  const baseCount = document.createElement('p');
+  const runtimeBoundary = document.createElement('p');
   const diagnostics = document.createElement('p');
   const diagnosticNotice = document.createElement('p');
   const list = document.createElement('ul');
   const displayed = document.createElement('p');
-  element.append(heading, title, boundary, summary, actions, details, diagnostics, diagnosticNotice, list, displayed);
+  element.append(heading, title, boundary, summary, actions, details, feature, baseCount, runtimeBoundary,
+    diagnostics, diagnosticNotice, list, displayed);
 
   function syncDisabled() {
     for (const button of [inspect, more]) button.disabled = disabled || view === 'pending';
@@ -192,6 +205,20 @@ export function createHookRuntimePanel(options: HookRuntimePanelOptions): HookRu
     details.hidden = !showingStatus;
     gateValue.textContent = showingStatus ? t('미확인', 'Unknown') : '';
     applicationValue.textContent = showingStatus ? t('미확인', 'Unknown') : '';
+    feature.hidden = baseCount.hidden = runtimeBoundary.hidden = !showingStatus;
+    const runtime = showingStatus ? result!.runtime : null;
+    feature.textContent = showingStatus ? t(
+      `일반 Hook 구성 기능: ${runtime === null ? '미확인' : runtime.featureEnabled ? '켜짐' : '꺼짐'}`,
+      `Ordinary Hook configuration feature: ${runtime === null ? 'Unknown' : runtime.featureEnabled ? 'On' : 'Off'}`,
+    ) : '';
+    baseCount.textContent = showingStatus ? t(
+      `설치된 기본 handler 수: ${runtime === null ? '미확인' : runtime.baseHandlerCount}`,
+      `Installed base handlers: ${runtime === null ? 'Unknown' : runtime.baseHandlerCount}`,
+    ) : '';
+    runtimeBoundary.textContent = showingStatus ? t(
+      '기능이 꺼져도 기본 제공 Hook은 동작할 수 있습니다. 기본 handler 수에는 요청별 환경·실행기 추가분이 포함되지 않습니다.',
+      'Built-in Hooks may operate even when this feature is off. The base-handler count excludes per-turn environment/executor additions.',
+    ) : '';
     diagnostics.hidden = !showingStatus;
     diagnostics.textContent = showingStatus ? t(`경고: ${result!.warningCount} · 오류: ${result!.errorCount}`,
       `Warnings: ${result!.warningCount} · Errors: ${result!.errorCount}`) : '';

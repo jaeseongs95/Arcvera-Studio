@@ -206,3 +206,80 @@ test('HU10 진단은 개수로만 표시하며 미확인에서 미지원 상태�
   await expect(page.getByText('경고: 128 · 오류: 1', { exact: true })).toHaveCount(0);
   // Unsupported Core classification is a separate safe parent notice, not this panel's DTO.
 });
+
+test('HF06 레거시 미확인과 명시 feature·base 개수를 구분하고 실행 증거로 승격하지 않는다', async ({ page }) => {
+  await fixture(page);
+  for (const value of [status, { ...status, runtime: null }]) {
+    expect(await render(page, value)).toBe(true);
+    await expect(page.getByText('일반 Hook 구성 기능: 미확인', { exact: true })).toBeVisible();
+    await expect(page.getByText('설치된 기본 handler 수: 미확인', { exact: true })).toBeVisible();
+  }
+  for (const [runtime, feature, count] of [
+    [{ featureEnabled: false, baseHandlerCount: 3 }, '꺼짐', '3'],
+    [{ featureEnabled: true, baseHandlerCount: 0 }, '켜짐', '0'],
+    [{ featureEnabled: true, baseHandlerCount: Number.MAX_SAFE_INTEGER }, '켜짐', '9007199254740991'],
+  ] as const) {
+    expect(await render(page, { ...status, runtime })).toBe(true);
+    await expect(page.getByText(`일반 Hook 구성 기능: ${feature}`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`설치된 기본 handler 수: ${count}`, { exact: true })).toBeVisible();
+    await expect(page.locator('dd')).toHaveText(['미확인', '미확인']);
+    await expect(page.getByRole('listitem')).toHaveCount(1); // not the base-handler count
+    await expect(page.getByText(/기능이 꺼져도 기본 제공 Hook은 동작할 수 있습니다/)).toBeVisible();
+    await expect(page.getByText(/요청별 환경·실행기 추가분이 포함되지 않습니다/)).toBeVisible();
+  }
+  expect(await calls(page)).toEqual([]);
+});
+
+test('HF07 잘못된 runtime과 비밀 추가 필드를 거부하며 이전 결과를 지운다', async ({ page }) => {
+  await fixture(page);
+  const valid = { ...status, runtime: { featureEnabled: false, baseHandlerCount: 3 } };
+  const invalid: unknown[] = [false, [], 'PRIVATE_SECRET<img src=x>', {}, { featureEnabled: true }, { baseHandlerCount: 0 },
+    ...[null, 0, 'false'].map(featureEnabled => ({ featureEnabled, baseHandlerCount: 0 })),
+    ...[null, false, '3', -1, 0.5, Number.MAX_SAFE_INTEGER + 1].map(baseHandlerCount => ({ featureEnabled: true, baseHandlerCount })),
+    { featureEnabled: true, baseHandlerCount: 1, command: 'PRIVATE_SECRET<img src=x>' },
+    { featureEnabled: true, baseHandlerCount: 1, executionGate: 'allowed' }];
+  for (const runtime of invalid) {
+    expect(await render(page, valid)).toBe(true);
+    expect(await render(page, { ...status, runtime })).toBe(false);
+    await expect(page.getByRole('status')).toHaveText(invalidMessage);
+    await expect(page.getByRole('listitem')).toHaveCount(0);
+    await expect(page.getByText('일반 Hook 구성 기능: 꺼짐', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('설치된 기본 handler 수: 3', { exact: true })).toHaveCount(0);
+  }
+  expect(await render(page, valid)).toBe(true);
+  expect(await render(page, { ...valid, threadId: 'PRIVATE_SECRET' })).toBe(false);
+  await expect(page.getByRole('listitem')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('PRIVATE_SECRET');
+  await expect(page.locator('img,script')).toHaveCount(0);
+  expect(await page.evaluate(value => {
+    const f = (window as any).hookRuntimeFixture;
+    return f.panel.render({ ...value, runtime: { featureEnabled: true, baseHandlerCount: Infinity } });
+  }, status)).toBe(false);
+});
+
+test('HF08 runtime 언어·disabled·미확인·폐기 수명을 보존한다', async ({ page }) => {
+  await fixture(page);
+  const value = { ...status, runtime: { featureEnabled: false, baseHandlerCount: 3 } };
+  await render(page, value);
+  await page.evaluate(() => { const f = (window as any).hookRuntimeFixture; f.panel.setDisabled(true); f.setLanguage('en'); });
+  await expect(page.getByText('Ordinary Hook configuration feature: Off', { exact: true })).toBeVisible();
+  await expect(page.getByText('Installed base handlers: 3', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Built-in Hooks may operate even when this feature is off/)).toBeVisible();
+  await expect(page.getByText(/excludes per-turn environment\/executor additions/)).toBeVisible();
+  await render(page, value);
+  await expect(page.getByRole('button', { name: 'Inspect current-chat Hooks', exact: true })).toBeDisabled();
+  await page.evaluate(() => (window as any).hookRuntimeFixture.panel.showPending());
+  await expect(page.getByText('Installed base handlers: 3', { exact: true })).toHaveCount(0);
+  await render(page, value);
+  await page.evaluate(() => { const f = (window as any).hookRuntimeFixture; f.panel.showUnconfirmed(); f.setLanguage('ko'); });
+  await expect(page.getByText('일반 Hook 구성 기능: 꺼짐', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '현재 대화 Hook 조회', exact: true })).toBeDisabled();
+  await render(page, value);
+  const disposed = await page.evaluate(value => {
+    const f = (window as any).hookRuntimeFixture; const element = f.panel.element;
+    const button = element.querySelector('button'); f.panel.dispose(); f.panel.setDisabled(false);
+    button.click(); f.setLanguage('en'); const accepted = f.panel.render(value);
+    return { accepted, connected: element.isConnected, children: element.childNodes.length, calls: f.calls };
+  }, value);
+  expect(disposed).toEqual({ accepted: false, connected: false, children: 0, calls: [] });
+});
