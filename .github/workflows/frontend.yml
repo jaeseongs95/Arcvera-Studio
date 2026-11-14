@@ -26,6 +26,8 @@ jobs:
       - name: Local tool-provider fixture unit checks
         run: node --test --test-reporter=spec tests/core-tool-provider.test.mjs
       - run: npx playwright install chromium
+      - name: MCP one-time approval GUI regressions
+        run: npx playwright test tests/conversation.spec.ts tests/question-center.spec.ts --grep 'D0087|D0089' --workers=1 --reporter=line
       - name: Context and extension frontend regressions
         run: npx playwright test tests/context-controls.spec.ts tests/context-capabilities.spec.ts tests/context-composition.spec.ts tests/conversation-integration.spec.ts tests/mcp-manager.spec.ts tests/mcp-runtime.spec.ts tests/hook-runtime.spec.ts tests/hook-runtime-manager.spec.ts tests/extensions.spec.ts --reporter=line,junit
         env:
@@ -121,6 +123,9 @@ jobs:
             cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Prove the MCP one-time response validator boundary
+        shell: pwsh
+        run: ./scripts/verify-mcp-approval-boundary.ps1
       - name: Build a source-bound isolated development executable
         shell: pwsh
         run: ./scripts/build-native-fixture.ps1

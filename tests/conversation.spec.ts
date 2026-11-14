@@ -50,7 +50,7 @@ async function conversation(page: Page, options: { historyUnavailable?: boolean 
           return { status: 'started', turn: { id: request.type === 'send' ? 'sent-turn' : 'compacted-turn', status: 'inProgress' } };
         }
         if (request.type === 'interrupt') { fixture.queue.push({ seq: fixture.nextSeq++, method: 'turn/completed', params: { turn: { id: request.turnId, status: 'interrupted' } } }); return {}; }
-        if (request.type === 'respond') { fixture.pending = fixture.pending.map((entry: any) => entry.requestId === request.requestId ? { ...entry, responded: true } : entry); return {}; }
+        if (request.type === 'respond') { fixture.pending = fixture.pending.map((entry: any) => entry.requestId === request.requestId ? { ...entry, responded: true } : entry); if ((fixture as any).loseResponse) throw Error('fixture lost response after Native consumption'); return {}; }
         if (request.type === 'detail') {
           if (!request.offset) fixture.detailReads++;
           const snapshotId = `detail-snapshot-${fixture.detailReads}`;
@@ -65,6 +65,90 @@ async function conversation(page: Page, options: { historyUnavailable?: boolean 
   await expect(page.locator('#conversation-fixture .conversation-input')).toBeEnabled();
 }
 const view = (page: Page) => page.locator('#conversation-fixture');
+
+const mcpApprovalRequest = () => ({ seq: 710, requestId: 'mcp-71', guiOwned: true, mcpToolApprovalAvailable: true, method: 'mcpServer/elicitation/request', params: {
+  threadId: 'thread-a', turnId: 'recent-turn', serverName: 'review-server', mode: 'form',
+  _meta: { codex_approval_kind: 'mcp_tool_call', tool_name: 'review_tool',
+    tool_params: { path: '<img src=x onerror="window.injected=true">', nested: { enabled: true } }, persist: ['session', 'always'] },
+} });
+
+for (const [action, label] of [['accept', '이번만 허용'], ['decline', '거절'], ['cancel', '취소']]) {
+  test(`D0087 conversation MCP ${action} uses exact one-time action and text-only review`, async ({ page }) => {
+    await conversation(page);
+    await page.evaluate(request => { (window as any).conversationFixture.pending = [request]; }, mcpApprovalRequest());
+    const panel = view(page).locator('.conversation-request');
+    await expect(panel.locator('.mcp-tool-approval-review')).toContainText('review-server');
+    await expect(panel.locator('.mcp-tool-approval-review')).toContainText('review_tool');
+    await expect(panel.locator('.mcp-tool-approval-review')).toContainText('<img src=x');
+    await expect(panel.locator('img')).toHaveCount(0);
+    await expect(panel.getByRole('button')).toHaveCount(3);
+    await expect(panel.getByRole('button', { name: /세션|항상/ })).toHaveCount(0);
+    await panel.getByRole('button', { name: label, exact: true }).click();
+    await expect(panel.getByRole('button', { name: label, exact: true })).toBeDisabled();
+    const calls = await page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'respond').map((c: any) => c.args.request));
+    expect(calls).toEqual([{ type: 'respond', requestId: 'mcp-71', result: { action, content: null, _meta: null } }]);
+    expect(await page.evaluate(() => (window as any).injected)).toBeUndefined();
+  });
+}
+
+for (const invalid of ['url', 'kind', 'foreign', 'missing', 'detail', 'truncated', 'oversize', 'unknown-method', 'readonly', 'disconnected', 'native-unavailable']) {
+  test(`D0087 conversation does not approve ${invalid} elicitation`, async ({ page }) => {
+    await conversation(page);
+    const request: any = mcpApprovalRequest();
+    if (invalid === 'url') request.params.mode = 'url';
+    if (invalid === 'kind') request.params._meta.codex_approval_kind = 'oauth';
+    if (invalid === 'foreign') request.params.threadId = 'foreign-thread';
+    if (invalid === 'missing') delete request.params._meta.tool_params;
+    if (invalid === 'detail') request.params._meta.tool_params = { value: { __detail: true, bytes: 100000 } };
+    if (invalid === 'truncated') request.params._meta.tool_params = { value: { truncated: true } };
+    if (invalid === 'oversize') request.params._meta.tool_params = { value: 'x'.repeat(16 * 1024) };
+    if (invalid === 'unknown-method') request.method = 'future/elicitation';
+    if (invalid === 'readonly') request.guiOwned = false;
+    if (invalid === 'native-unavailable') request.mcpToolApprovalAvailable = false;
+    await page.evaluate(request => { (window as any).conversationFixture.pending = [request]; }, request);
+    if (invalid === 'disconnected') await page.evaluate(() => { (window as any).conversationFixture.connected = false; });
+    const panel = view(page).locator('.conversation-request');
+    await expect(panel).toHaveCount(1); await expect(panel.locator('button:enabled')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'respond'))).toHaveLength(0);
+  });
+}
+
+test('D0087 conversation unknown response never retries after close and reopen', async ({ page }) => {
+  await conversation(page);
+  await page.evaluate(request => { const f = (window as any).conversationFixture; f.pending = [request]; f.loseResponse = true; }, mcpApprovalRequest());
+  await view(page).getByRole('button', { name: '이번만 허용', exact: true }).click();
+  await expect(view(page).getByRole('button', { name: '이번만 허용', exact: true })).toBeDisabled();
+  await page.evaluate(async () => { await (window as any).conversation.setVisible(false); await (window as any).conversation.setVisible(true); });
+  await expect(view(page).getByRole('button', { name: '이번만 허용', exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'respond'))).toHaveLength(1);
+});
+
+for (const [name, json, allowed] of [
+  ['positive-safe', '9007199254740991', true], ['negative-safe', '-9007199254740991', true],
+  ['positive-outside', '9007199254740992', false], ['negative-outside', '-9007199254740992', false],
+  ['large-finite', '1e100', false], ['negative-zero', '-0.0', false],
+  ['zero', '0', true], ['fraction', '0.25', true], ['negative-fraction', '-0.125', true],
+] as const) {
+  test(`D0089 conversation numeric review ${name}`, async ({ page }) => {
+    await conversation(page);
+    await page.evaluate(({ request, json }) => {
+      // Parse in the GUI realm so negative zero survives until the review helper.
+      request.params._meta.tool_params = { nested: [{ value: JSON.parse(json) }] } as any;
+      (window as any).conversationFixture.pending = [request];
+    }, { request: mcpApprovalRequest(), json });
+    const panel = view(page).locator('.conversation-request'); await expect(panel).toHaveCount(1);
+    if (allowed) {
+      await expect(panel.locator('.mcp-tool-approval-review')).toContainText(json);
+      await expect(panel.locator('button:enabled')).toHaveCount(3);
+      await panel.getByRole('button', { name: '이번만 허용', exact: true }).click();
+      expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'respond').map((c: any) => c.args.request.result)))
+        .toEqual([{ action: 'accept', content: null, _meta: null }]);
+    } else {
+      await expect(panel.locator('button:enabled')).toHaveCount(0);
+      expect(await page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'respond'))).toHaveLength(0);
+    }
+  });
+}
 
 async function d0033Events(page: Page, events: { method: string; params: Record<string, unknown> }[]) {
   await page.evaluate(events => {

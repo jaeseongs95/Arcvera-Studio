@@ -17,6 +17,9 @@ const EVENT_BYTES: usize = 1024 * 1024;
 const REQUEST_COUNT: usize = 32;
 const TEXT_PREVIEW: usize = 4096;
 const DETAIL_BYTES: usize = 16 * 1024;
+// Full arguments must fit the existing conversation preview scale to be reviewed.
+const MCP_APPROVAL_REVIEW_BYTES: usize = 16 * 1024;
+const MCP_APPROVAL_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_CONTEXT_INTEGER: i64 = 9_007_199_254_740_991;
 const PASSIVE_SUBSCRIBE: &str = "thread/subscribePassive";
 const START_USER_IF_IDLE: &str = "turn/startUserIfIdle";
@@ -237,6 +240,15 @@ impl Events {
     }
 }
 impl ConversationConnection {
+    pub(crate) fn mcp_tool_approval(params: &Value) -> Option<Value> {
+        if params["mode"] != "form" || params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
+        let thread=params["threadId"].as_str()?;let turn=params["turnId"].as_str()?;
+        let server=params["serverName"].as_str()?;let tool=params["_meta"]["tool_name"].as_str()?;
+        if [thread,turn,server,tool].into_iter().any(|value|valid_id(value).is_err()) {return None;}
+        let arguments=&params["_meta"]["tool_params"];
+        if !arguments.is_object() || arguments.to_string().len()>MCP_APPROVAL_REVIEW_BYTES || !mcp_arguments_reviewable(arguments,0) {return None;}
+        Some(json!({"threadId":thread,"turnId":turn,"serverName":server,"toolName":tool,"arguments":arguments}))
+    }
     pub(crate) fn approval_decisions(params: &Value) -> Vec<&'static str> {
         match params.get("availableDecisions") {
             None=>vec!["accept","decline","cancel"],
@@ -1049,6 +1061,13 @@ fn execute_context<S: Read + Write>(control: &Control, rpc: &mut Rpc<S>, thread_
             let mut events = control.events.lock().map_err(|_| "대화 승인 상태 오류")?;
             let request = events.pending.get(&request_id).ok_or("이미 해결되었거나 이 연결이 소유하지 않은 요청입니다.")?;
             if request["responded"] == true { return Err("이미 응답을 보낸 요청입니다. 같은 응답을 다시 보내지 않았습니다.".into()); }
+            if request["method"]=="mcpServer/elicitation/request" && (control.deleted.load(Ordering::Acquire)
+                || control.stopped.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire) || events.requests_unavailable) {
+                return Err("도구 승인 연결이 종료되었거나 요청 상태가 미확인이므로 응답하지 않았습니다.".into());
+            }
+            if request["method"]=="mcpServer/elicitation/request" && (request["params"]["threadId"]!=thread_id || request["guiOwned"]!=true) {
+                return Err("검토한 도구 승인의 대화 또는 입력 소유권이 변경되어 응답하지 않았습니다.".into());
+            }
             validate_response(request, &result)?;
             if events.answered.len() >= 1024 { return Err("서버 요청 응답 기록 상한에 도달해 추가 응답을 보내지 않았습니다.".into()); }
             // 전송 전에 소유권을 소비한다. 쓰기 실패·연결 단절 후 같은 응답을 재전송하지 않는다.
@@ -1191,6 +1210,10 @@ fn record_message(control: &Control, thread_id: &str, message: Value, metadata_o
         if event.to_string().len() > 64 * 1024 { return Err("서버 승인 요청이 표시 상한을 넘었습니다. 응답을 보내지 않았습니다.".into()); }
         event["requestId"] = json!(key);
         event["guiOwned"] = json!(!metadata_only);
+        if method=="mcpServer/elicitation/request" {
+            // Keep the original wire-size check above; add only eligibility, not a second argument copy.
+            event["mcpToolApprovalAvailable"]=json!(ConversationConnection::mcp_tool_approval(params).is_some());
+        }
         if metadata_only {events.observed_pending.entry(key).or_insert(event);return Ok(());}
         if let Some(previous)=events.pending.get_mut(&key) {
             if previous["guiOwned"]==false {
@@ -1206,9 +1229,35 @@ fn record_message(control: &Control, thread_id: &str, message: Value, metadata_o
     if !metadata_only {events.push(event);}
     Ok(())
 }
+fn mcp_arguments_reviewable(value: &Value, depth: usize) -> bool {
+    if depth>64 {return false;}
+    match value {
+        Value::Number(number)=>{
+            // Inspect original integer variants before any magnitude comparison through f64.
+            // safety ceiling: finite fractions remain supported, but unsafe magnitudes and -0 do not.
+            let Some(float)=number.as_f64() else {return false;};
+            if !float.is_finite() || (float==0.0 && float.is_sign_negative()) {false}
+            else if let Some(integer)=number.as_u64() {integer<=MCP_APPROVAL_MAX_SAFE_INTEGER}
+            else if let Some(integer)=number.as_i64() {
+                (-(MCP_APPROVAL_MAX_SAFE_INTEGER as i64)..=MCP_APPROVAL_MAX_SAFE_INTEGER as i64).contains(&integer)
+            }
+            else {float.abs()<=MCP_APPROVAL_MAX_SAFE_INTEGER as f64}
+        },
+        Value::Object(fields)=>fields.get("__detail")!=Some(&json!(true)) && fields.get("truncated")!=Some(&json!(true)) && fields.get("hasMore")!=Some(&json!(true))
+            && fields.values().all(|value|mcp_arguments_reviewable(value,depth+1)),
+        Value::Array(values)=>values.iter().all(|value|mcp_arguments_reviewable(value,depth+1)),
+        _=>true,
+    }
+}
 fn validate_response(request: &Value, result: &Value) -> Result<(), String> {
     if result.to_string().len() > 64 * 1024 || !result.is_object() { return Err("서버 요청 응답 형식 또는 크기가 올바르지 않습니다.".into()); }
     match request["method"].as_str() {
+        Some("mcpServer/elicitation/request") => {
+            if ConversationConnection::mcp_tool_approval(&request["params"]).is_some()
+                && result.as_object().is_some_and(|value|value.len()==3 && value.contains_key("content") && value.contains_key("_meta"))
+                && matches!(result["action"].as_str(),Some("accept"|"decline"|"cancel")) && result["content"].is_null() && result["_meta"].is_null() {Ok(())}
+            else {Err("검토 가능한 MCP 도구 요청의 일회 허용·거절·취소만 응답할 수 있습니다. 저장 또는 권한 확대 응답은 보내지 않았습니다.".into())}
+        },
         Some("item/commandExecution/requestApproval" | "item/fileChange/requestApproval") => {
             if result.as_object().is_some_and(|v| v.len() == 1) && result["decision"].as_str().is_some_and(|decision|ConversationConnection::approval_decisions(&request["params"]).contains(&decision)) { Ok(()) }
             else { Err("지원하지 않는 승인 결정입니다. 권한·정책 변경 응답은 보내지 않았습니다.".into()) }
