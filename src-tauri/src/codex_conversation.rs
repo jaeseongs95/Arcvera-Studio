@@ -241,13 +241,15 @@ impl Events {
 }
 impl ConversationConnection {
     pub(crate) fn mcp_tool_approval(params: &Value) -> Option<Value> {
-        if params["mode"] != "form" || params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
+        // Publisher identity is supplied by Core, never inferred from server metadata.
+        if params["origin"].as_str() != Some("core") || params["mode"] != "form"
+            || params["_meta"]["codex_approval_kind"] != "mcp_tool_call" { return None; }
         let thread=params["threadId"].as_str()?;let turn=params["turnId"].as_str()?;
         let server=params["serverName"].as_str()?;let tool=params["_meta"]["tool_name"].as_str()?;
         if [thread,turn,server,tool].into_iter().any(|value|valid_id(value).is_err()) {return None;}
         let arguments=&params["_meta"]["tool_params"];
         if !arguments.is_object() || arguments.to_string().len()>MCP_APPROVAL_REVIEW_BYTES || !mcp_arguments_reviewable(arguments,0) {return None;}
-        Some(json!({"threadId":thread,"turnId":turn,"serverName":server,"toolName":tool,"arguments":arguments}))
+        Some(json!({"origin":"core","threadId":thread,"turnId":turn,"serverName":server,"toolName":tool,"arguments":arguments}))
     }
     pub(crate) fn approval_decisions(params: &Value) -> Vec<&'static str> {
         match params.get("availableDecisions") {

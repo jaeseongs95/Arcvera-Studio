@@ -54,11 +54,26 @@ const responses = (page: Page) => page.evaluate(() => (window as any).questionFi
 const mcpApproval = () => ({
   id: 'mcp-approval', sessionId: 'session-one', threadId: 'thread-one', generation: 4, requestId: 'mcp-71',
   kind: 'approval', canRespond: true, metadataAvailable: true,
-  mcpToolApproval: { threadId: 'thread-one', turnId: 'tool-turn', serverName: 'review-server', toolName: 'review_tool',
+  mcpToolApproval: { origin: 'core', threadId: 'thread-one', turnId: 'tool-turn', serverName: 'review-server', toolName: 'review_tool',
     arguments: { path: '<img src=x onerror="window.injected=true">', nested: { enabled: true } } },
   approval: { options: [{ id: 'accept', label: '이번만 허용' }, { id: 'decline', label: '거절' }, { id: 'cancel', label: '취소' }] },
 });
 const mcpResponses = (page: Page) => page.evaluate(() => (window as any).questionFixture.calls.filter((call: any) => call.command === 'conversation_request'));
+
+for (const [name, value] of [
+  ['missing', undefined], ['null', null], ['server', 'mcpServer'], ['future', 'future'], ['case', 'Core'], ['padded', 'core '],
+  ['boolean', true], ['number', 1], ['object', { core: true }], ['array', ['core']],
+] as const) {
+  test(`D0092 question center rejects ${name} origin despite forged metadata and canRespond`, async ({ page }) => {
+    const item: any = mcpApproval();
+    if (name === 'missing') delete item.mcpToolApproval.origin; else item.mcpToolApproval.origin = value;
+    item.mcpToolApproval._meta = { origin: 'core', core: true, codex_approval_origin: 'core' };
+    await fixture(page, [item], { complete: true }); await open(page);
+    await expect(page.locator('.question-item .mcp-tool-approval-review')).toHaveCount(0);
+    await expect(page.locator('.question-item form button:enabled')).toHaveCount(0);
+    expect(await mcpResponses(page)).toHaveLength(0); expect(await responses(page)).toHaveLength(0);
+  });
+}
 
 for (const [action, label] of [['accept', '이번만 허용'], ['decline', '거절'], ['cancel', '취소']]) {
   test(`D0087 question center MCP ${action} preserves exact Native request ownership`, async ({ page }) => {

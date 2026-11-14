@@ -160,11 +160,17 @@ an approval. They are unavailable when ownership, connection or request metadata
 cannot be confirmed. General forms and URL authentication requests remain outside
 this tool-approval interface.
 
+Special MCP approval controls require a matching Core that explicitly identifies
+the request as Core-generated. Legacy requests without that publisher information,
+including Core 1.0.1 requests, remain unsupported; server-supplied metadata cannot
+enable these controls. Update Core and Desktop together before using this feature.
+
 The review has a 16 KiB argument limit and rejects values that cannot be represented
 safely in the GUI, including unsafe integer magnitudes and negative zero. Such a
 request must not be treated as approved. Actual Native approval integration with
 the final Core1.1 candidate remains under validation. Current actual verification
-covers an isolated public Core1.0.1 conversation-view roundtrip. Approval-origin
+covers an isolated public Core1.0.1 conversation-view roundtrip of the earlier,
+pre-origin candidate. Approval-origin
 separation is an unresolved release requirement, and this result does not establish
 support for arbitrary server forms.
 

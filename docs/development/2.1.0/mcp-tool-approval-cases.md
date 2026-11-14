@@ -2,9 +2,36 @@
 
 [한국어](mcp-tool-approval-cases.ko.md)
 
+## D-0092 origin gate — before fixtures and implementation
+
+**Status: consumer preparation resumed after the producer source was applied; runtime verification is pending.** The user's direction still requires fixing the producer trust boundary itself. The inspected Core source now defines typed `ElicitationOrigin`, publishes internal requests as `Some(Core)`, publishes external ingress as `Some(McpServer)`, and checks Core origin before the reserved marker in AS/TUI classification. This is source evidence, not a compiled executable or an end-to-end result. Consumer preparation complements that root-boundary change and does not replace it.
+
+Consumer target: Desktop `fcb6b1e4d37e3836375882d64b205b2e291350bc` (product code matches deafe). Audit `avrev-a25/audit/audit.md` and the parent's `d87-security/report.json` identify a confirmed static path from server-supplied ordinary-form metadata to the internal-tool UI. Privilege escalation or operational harm was not established. D-0087/D-0092 remain open pending execution and a fresh audit. Historical legacy GUI case05 does not verify the new gate.
+
+The applied source exposes optional top-level request-params `origin: core|mcpServer` with camelCase enum serialization. The consumer requires the exact string `params.origin==='core'` and rejects missing/null/mcpServer/future/malformed origin. `_meta.origin`, reserved-looking flags and version inference never substitute for trusted provenance. All earlier method/form/marker/subject/arguments/owned-pending/generation/one-shot/exact-null/persistence guards remain required. Ordinary command/file-change/user-input contracts stay unchanged. Legacy Core1.0.1 without origin is unsupported for this special UI; blocking it alone is not D92 completion.
+
+Directly inspected producer paths under `core110-release-20261114/source/codex-rs`: `protocol/src/approvals.rs` (typed optional publisher), `core/src/session/mcp.rs` (internal publisher), `codex-mcp/src/elicitation.rs` (external ingress), `app-server-protocol/src/protocol/v2/mcp.rs` (top-level params), `app-server/src/bespoke_event_handling.rs` and `tui/src/bottom_pane/mcp_server_elicitation.rs` (Core-before-marker classification). The Core owner reported source07; typecheck, actual negative tests, final schema/executable binding and fresh audit remain separate requirements.
+
+Native's bounded projection adds only validated constant `origin:'core'`. The shared TypeScript parser requires it in both raw params and projection, independently of stale availability/canRespond hints. Wire 64 KiB, arguments 16 KiB and depth 64 remain unchanged. Parent-owned collectors expecting five projection fields need separate synchronization. The earlier cases below must be read with this additional origin requirement; their positive fixtures and witness are updated so they still exercise numeric, payload and ownership boundaries.
+
+| Case | Planned oracle |
+|---|---|
+| OR01 | Core origin plus every existing condition supports exact accept/decline/cancel; projection retains origin core. |
+| OR02 | Missing/null/mcpServer/future/wrong-case/padded/wrong-type origin, including forged `_meta.origin=core` and reserved flags, never classifies or sends. |
+| OR03 | Observed/external and GUI-owned pending states stay closed; repeated rejected responses do not consume pending, and resolved/late replay cannot reopen it. |
+| OR04 | Core origin does not admit wrong method/mode/browser/tool_suggestion, malformed subjects, unsafe numeric/byte/depth/detail arguments or persistence responses. |
+| OR05 | Both GUI parsers reject bad origin even with synthetic availability/canRespond=true; existing positive assertions retain their original purpose. |
+| OR06 | The CLI witness adds core origin to positive params; ordinary request contracts remain unchanged. |
+
+Order: cases → Native/GUI fixtures → fail-closed consumer. This author performs static reads and syntax parsing only. Native/source-UI execution, exact producer comparison, actual Core1.1 positive/forged-form negative integration and fresh independent audit are **NOT_RUN** and owned by the parent. Syntax success does not close D-0087/D-0092 or prove publisher support.
+
+Consumer handoff: `mcp_tool_approval` now requires top-level string origin core and returns that validated origin in its bounded projection. `readMcpToolApproval` and `mcpToolApprovalFromRequest` apply the same requirement at both GUI entry points. No metadata fallback, policy change, extra argument copy or new network path was added. Positive Native/GUI helpers and the CLI witness now explicitly carry core origin, so previous numeric, payload, ownership, one-shot and persistence assertions continue to target their original boundaries.
+
+New Native cases are `mcp_tool_approval_requires_literal_top_level_core_origin_in_both_owners` and `mcp_origin_requirement_does_not_change_ordinary_response_contracts`. The first covers 10 invalid origin forms in observed and GUI-owned states, forged nested metadata, duplicate delivery/replies and resolved replay. Both GUI specs add 10 `D0092` origin cases with optimistic availability/canRespond hints. Existing negative cases also retain core origin for browser/tool_suggestion/mode rejection. No assertions were removed or skipped. This unit performed reads/writes only: no syntax command, compiler, Native test, Playwright run, server or application execution. All executable verification is **NOT_RUN** here and belongs to the parent; this is not a final D92 acceptance verdict.
+
 This plan is written before the fixtures and implementation. The baseline is Desktop commit `1471e6adb86f612693e713491dd7f19227077391` (the same product input as the e99 release fixture). Public Core 1.0.1 sends `mcpServer/elicitation/request`; the baseline conversation renderer, question-center projection and Native response validator treat it as unsupported. The pre-fix collector remains unchanged and does not establish a completed GUI roundtrip.
 
-Support only form-mode MCP tool approval with `_meta.codex_approval_kind=mcp_tool_call`, valid original thread/turn/server and complete tool name/arguments. Reuse the Native pending request identity and GUI input owner. Do not fabricate `callId`. The only responses are exactly `{action:'accept'|'decline'|'cancel',content:null,_meta:null}`. Request persistence choices are displayed neither as actions nor copied to responses. General form, URL, OAuth/authentication and unknown elicitation remain unsupported.
+The original D87 design supported form-mode MCP tool approval with `_meta.codex_approval_kind=mcp_tool_call`, valid original thread/turn/server and complete tool name/arguments. The audit above found that this does not establish a trusted internal producer; that finding remains open. Reuse the Native pending request identity and GUI input owner. Do not fabricate `callId`. The only responses are exactly `{action:'accept'|'decline'|'cancel',content:null,_meta:null}`. Request persistence choices are displayed neither as actions nor copied to responses. General form, URL, OAuth/authentication and unknown elicitation must remain outside special approval support.
 
 | Case | Public boundary and oracle | Intended evidence |
 |---|---|---|
@@ -26,6 +53,10 @@ Implementation/fixture handoff: `src/mcp-tool-approval.ts` is a stateless parser
 CS invariants: one pending identity keeps the same owner and generation; pre-send validation rejects unsupported content before consuming the response slot; response attempts consume ownership before transport write; no automatic retry or persistence is introduced; ACK is not resolution or turn completion. The existing cancellation, deadline, queue and byte limits remain in place. A single Native request classifier/projection serves both GUI surfaces; existing command and question contracts stay separate from MCP action responses.
 
 ## Coordinator execution evidence
+
+After the 2026-11-14 reboot, the D92 consumer candidate passed TypeScript checking (exit 0) and 20 new negative D0092 GUI cases. The combined D0087/D0089/D0090/D0092 source fixtures passed 69 cases with no failures or skips; the report is preserved at `desktop210-integration-20261114/d92-ui-regression-02/report.json`. These are synthetic GUI IPC checks, not Native execution or Core producer verification.
+
+The `s210o1/f03` run used the earlier deafe executable and public Core1.0.1. Its forged ordinary form had the same message/schema/MCP source hashes as the plain p01 control but failed as `UNTRUSTED_FORM_CLASSIFIED_NONRESPONDABLE`. Three special buttons were disabled and no external-form response was sent. Explicit cancellation reached zero pending requests; app/provider exit 0, own Core stopped, unchanged configuration and preservation of the operating app were checked separately. This failure remains preserved. Joint execution of the source08 producer and modified consumer has not yet been performed.
 
 TypeScript validation exited 0 after integration. The initial D-0087 source GUI fixtures passed 30 cases in 26.5 seconds. After D-0089, the related cases in both GUI files passed 48 cases in 39.0 seconds. These use synthetic IPC source fixtures and do not demonstrate actual Native approvals or completed tool calls. Raw results remain in `desktop210-integration-20261114/d87-ui-01` and `d87-ui-02`.
 

@@ -19,6 +19,11 @@ cleanup. This used a synthetic local model. Final Core1.1 integration and the
 privileged-approval origin boundary (D92) remain unresolved. See the
 [fixture and GUI evidence](development/2.1.0/tool-provider-fixture.md).
 
+The current consumer requires Core-published `origin: core` before exposing special
+MCP tool approvals. Requests from older Core versions without this field remain
+unsupported. The earlier Core1.0.1 roundtrip does not validate this new boundary;
+the matching Core1.1 producer and consumer still require joint verification.
+
 Current-thread Hook inspection uses a read-only metadata projection. Configuration
 enablement, trust, execution eligibility and application are separate states.
 Unavailable runtime metadata remains unknown. Reopening the extension manager
@@ -49,6 +54,10 @@ Native 검증은 요청 소유권을 유지하고 기억·정책 저장 응답�
 Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn 완료와 정상 정리를
 확인했습니다. 합성 로컬 모델 범위이며 최종 Core1.1 통합과 특권 승인 출처 경계(D92)는
 미해결입니다. [fixture·GUI 근거](development/2.1.0/tool-provider-fixture.ko.md)를 참고하세요.
+
+현재 소비자는 Core가 발행한 `origin: core`가 있어야 MCP 전용 승인을 제공합니다.
+이 필드가 없는 이전 Core 요청은 미지원으로 남습니다. 앞선 Core1.0.1 왕복 결과는
+이 새 경계의 검증이 아니며, 같은 Core1.1 생산자·소비자의 공동 검증이 필요합니다.
 
 현재 대화의 Hook 조회는 읽기 전용 메타데이터만 표시합니다. 구성의 사용 설정,
 신뢰, 실행 가능 여부와 적용 상태를 구분하며 확인할 수 없는 runtime 정보는

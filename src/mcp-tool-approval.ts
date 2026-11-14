@@ -5,7 +5,7 @@ export const MCP_TOOL_APPROVAL_REVIEW_BYTES = 16 * 1024;
 export const MCP_TOOL_APPROVAL_ACTIONS = ['accept', 'decline', 'cancel'] as const;
 export type McpToolApprovalAction = typeof MCP_TOOL_APPROVAL_ACTIONS[number];
 export interface McpToolApproval {
-  threadId: string; turnId: string; serverName: string; toolName: string; arguments: Record<string, unknown>;
+  origin: 'core'; threadId: string; turnId: string; serverName: string; toolName: string; arguments: Record<string, unknown>;
 }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
@@ -20,16 +20,16 @@ function reviewable(value: unknown, depth = 0): boolean {
     && Object.values(value).every(item => reviewable(item, depth + 1));
 }
 export function readMcpToolApproval(value: unknown): McpToolApproval | undefined {
-  if (!object(value) || !id(value.threadId) || !id(value.turnId) || !id(value.serverName) || !id(value.toolName)
+  if (!object(value) || value.origin !== 'core' || !id(value.threadId) || !id(value.turnId) || !id(value.serverName) || !id(value.toolName)
     || !object(value.arguments) || !reviewable(value.arguments)) return;
   const serialized = JSON.stringify(value.arguments);
   if (typeof serialized !== 'string' || bytes(serialized) > MCP_TOOL_APPROVAL_REVIEW_BYTES) return;
-  return { threadId: value.threadId, turnId: value.turnId, serverName: value.serverName, toolName: value.toolName, arguments: value.arguments };
+  return { origin: 'core', threadId: value.threadId, turnId: value.turnId, serverName: value.serverName, toolName: value.toolName, arguments: value.arguments };
 }
 export function mcpToolApprovalFromRequest(method: string, params: unknown): McpToolApproval | undefined {
-  if (method !== MCP_TOOL_APPROVAL_METHOD || !object(params) || params.mode !== 'form'
+  if (method !== MCP_TOOL_APPROVAL_METHOD || !object(params) || params.origin !== 'core' || params.mode !== 'form'
     || !object(params._meta) || params._meta.codex_approval_kind !== 'mcp_tool_call') return;
-  return readMcpToolApproval({ threadId: params.threadId, turnId: params.turnId, serverName: params.serverName,
+  return readMcpToolApproval({ origin: params.origin, threadId: params.threadId, turnId: params.turnId, serverName: params.serverName,
     toolName: params._meta.tool_name, arguments: params._meta.tool_params });
 }
 export function mcpToolApprovalResponse(action: McpToolApprovalAction) {

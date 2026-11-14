@@ -20,7 +20,7 @@ mod d0087_boundary_witness {
     #[test]
     fn standard_mcp_tool_response_contract() {
         let request=serde_json::json!({"id":71,"method":"mcpServer/elicitation/request","params":{
-            "threadId":"original","turnId":"tool-turn","serverName":"review-server","mode":"form",
+            "origin":"core","threadId":"original","turnId":"tool-turn","serverName":"review-server","mode":"form",
             "message":"Review fixture tool","requestedSchema":{"type":"object","properties":{}},
             "_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"review_tool","tool_params":{},"persist":["session","always"]}}});
         for action in ["accept","decline","cancel"] {

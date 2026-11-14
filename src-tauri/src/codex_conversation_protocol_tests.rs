@@ -888,7 +888,7 @@
     }
     fn mcp_tool_approval_request() -> Value {
         json!({"id":71,"method":"mcpServer/elicitation/request","params":{
-            "threadId":"original","turnId":"tool-turn","serverName":"review-server","mode":"form",
+            "origin":"core","threadId":"original","turnId":"tool-turn","serverName":"review-server","mode":"form",
             "message":"Review this tool call","requestedSchema":{"type":"object","properties":{}},
             "_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"review_tool",
                 "tool_params":{"path":"<img src=x onerror=alert(1)>","nested":{"enabled":true}},
@@ -908,6 +908,7 @@
             observe_message(&control.0,"original",mcp_tool_approval_request()).unwrap();
             assert_eq!(control.pending_snapshot().unwrap().2[0]["mcpToolApprovalAvailable"],true);
             let projection=ConversationConnection::mcp_tool_approval(&control.pending_snapshot().unwrap().2[0]["params"]).unwrap();
+            assert_eq!(projection["origin"],"core");
             assert_eq!(projection["serverName"],"review-server");assert_eq!(projection["toolName"],"review_tool");
             assert_eq!(projection["arguments"]["nested"]["enabled"],true);
             assert!(projection.get("persist").is_none());assert!(projection.get("callId").is_none());
@@ -927,11 +928,11 @@
         let valid=mcp_tool_approval_request();
         assert!(ConversationConnection::mcp_tool_approval(&valid["params"]).is_some());
         let mut invalid=Vec::new();
-        for (field,value) in [("mode",json!("url")),("mode",Value::Null),("threadId",json!("")),
+        for (field,value) in [("mode",json!("url")),("mode",json!("browser")),("mode",Value::Null),("threadId",json!("")),
             ("turnId",json!("")),("turnId",json!("bad\nturn")),("serverName",json!("")),("serverName",json!("x".repeat(257)))] {
             let mut request=valid.clone();request["params"][field]=value;invalid.push(request);
         }
-        for (field,value) in [("codex_approval_kind",json!("oauth")),("codex_approval_kind",Value::Null),
+        for (field,value) in [("codex_approval_kind",json!("oauth")),("codex_approval_kind",json!("browser")),("codex_approval_kind",json!("tool_suggestion")),("codex_approval_kind",Value::Null),
             ("tool_name",json!("")),("tool_name",json!("bad\ntool")),("tool_params",Value::Null),
             ("tool_params",json!([])),("tool_params",json!({"value":{"__detail":true,"bytes":100000}})),
             ("tool_params",json!({"value":"x".repeat(16*1024)}))] {
@@ -971,6 +972,52 @@
             assert_ne!(control.pending_snapshot().unwrap().2[0]["responded"],true);
         }
         drop(rpc);server.join().unwrap();
+    }
+    #[test]
+    fn mcp_tool_approval_requires_literal_top_level_core_origin_in_both_owners() {
+        let origins=[("missing",None),("null",Some(Value::Null)),("server",Some(json!("mcpServer"))),
+            ("future",Some(json!("future"))),("case",Some(json!("Core"))),("padded",Some(json!("core "))),
+            ("boolean",Some(json!(true))),("number",Some(json!(1))),("object",Some(json!({"core":true}))),("array",Some(json!(["core"])))] ;
+        for (case,origin) in origins {
+            for gui_owned in [false,true] {
+                let(control,mut rpc,listener)=fixture();
+                let server=thread::spawn(move||{let(stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut socket=WebSocket::from_raw_socket(stream,tungstenite::protocol::Role::Server,None);assert_closed_without_input(&mut socket);});
+                let mut request=mcp_tool_approval_request();
+                if let Some(value)=origin.clone() {request["params"]["origin"]=value;} else {request["params"].as_object_mut().unwrap().remove("origin");}
+                request["params"]["_meta"]["origin"]=json!("core");
+                request["params"]["_meta"]["core"]=json!(true);
+                request["params"]["_meta"]["codex_approval_origin"]=json!("core");
+                assert!(ConversationConnection::mcp_tool_approval(&request["params"]).is_none(),"untrusted origin classified: {case}");
+                assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_err(),"untrusted origin accepted: {case}");
+                control.observer_message("original",request.clone()).unwrap();
+                if gui_owned {observe_message(&control.0,"original",request.clone()).unwrap();observe_message(&control.0,"original",request.clone()).unwrap();}
+                {let mut events=control.0.events.lock().unwrap();events.observer_connected=true;events.connected=gui_owned;}
+                *control.0.input.lock().unwrap()=gui_owned;control.0.owned.store(gui_owned,Ordering::Release);
+                let snapshot=control.pending_snapshot().unwrap().2;
+                assert_eq!(snapshot.len(),1);assert_eq!(snapshot[0]["metadataAvailable"],true);
+                assert_eq!(snapshot[0]["mcpToolApprovalAvailable"],false,"origin availability: {case}");
+                for _ in 0..2 {
+                    assert!(execute(&control.0,&mut rpc,"original",ConversationRequest::Respond{request_id:"71".into(),result:json!({"action":"accept","content":null,"_meta":null})},&AtomicBool::new(false)).is_err());
+                    assert_ne!(control.pending_snapshot().unwrap().2[0]["responded"],true);
+                    assert!(!control.0.events.lock().unwrap().answered.contains("71"));
+                }
+                control.observer_message("original",json!({"method":"serverRequest/resolved","params":{"threadId":"original","requestId":71}})).unwrap();
+                let core_replay=mcp_tool_approval_request();
+                control.observer_message("original",core_replay.clone()).unwrap();observe_message(&control.0,"original",core_replay).unwrap();
+                assert!(control.pending_snapshot().unwrap().2.is_empty(),"origin cannot reopen resolved identity");
+                drop(rpc);server.join().unwrap();
+            }
+        }
+    }
+    #[test]
+    fn mcp_origin_requirement_does_not_change_ordinary_response_contracts() {
+        for method in ["item/commandExecution/requestApproval","item/fileChange/requestApproval"] {
+            let request=json!({"method":method,"params":{"origin":"mcpServer","availableDecisions":["accept","decline","cancel"]}});
+            assert!(validate_response(&request,&json!({"decision":"accept"})).is_ok());
+            assert!(validate_response(&request,&json!({"action":"accept","content":null,"_meta":null})).is_err());
+        }
+        let request=json!({"method":"item/tool/requestUserInput","params":{"origin":"mcpServer","questions":[{"id":"question","question":"ordinary input"}]}});
+        assert!(validate_response(&request,&json!({"answers":{"question":{"answers":["answer"]}}})).is_ok());
     }
     #[test]
     fn mcp_tool_approval_wrong_current_thread_and_cancellation_do_not_consume_pending() {

@@ -2,9 +2,36 @@
 
 [English](mcp-tool-approval-cases.md)
 
+## D-0092 origin 게이트 — fixture·구현 전 계획
+
+**상태: 생산자 실제 소스 적용을 확인한 뒤 소비자 준비를 재개했으며 실행 검증은 대기 중이다.** 생산자 신뢰경계 자체를 고치라는 사용자 지시는 유지한다. 확인한 Core 소스는 typed `ElicitationOrigin`, 내부 `Some(Core)`, 외부 ingress `Some(McpServer)`를 분리하고 AS/TUI에서 reserved marker보다 Core origin을 먼저 검사한다. 이는 소스 근거이며 컴파일된 실행물이나 종단간 검증 결과가 아니다. 소비자 준비는 근본 경계 수정을 보완하며 대체하지 않는다.
+
+소비자 대상은 Desktop `fcb6b1e4d37e3836375882d64b205b2e291350bc`이며 제품 코드는 deafe와 같다. `avrev-a25/audit/audit.md`와 부모의 `d87-security/report.json`은 서버발 일반 form metadata가 내부 도구 UI로 분류되는 경로를 confirmed static finding으로 기록했다. 권한 상승·운영 피해는 입증되지 않았다. D-0087/D-0092는 실행·새 감사 전까지 open이며 과거 legacy GUI case05로 새 게이트를 검증했다고 판단하지 않는다.
+
+적용된 소스의 요청 params는 camelCase enum 직렬화의 선택 top-level 필드 `origin: core|mcpServer`를 제공한다. 소비자는 정확한 문자열 `params.origin==='core'`를 요구하고 누락/null/mcpServer/미지/잘못된 형식을 거절한다. `_meta.origin`, reserved형 flag, 버전 추론으로 신뢰된 출처를 보완하지 않는다. 기존 method/form/marker/subject/인수/own pending/generation/일회/정확 null/저장 차단과 일반 command/fileChange/userInput 계약을 유지한다. origin 없는 Core1.0.1은 special UI에서 미지원이지만 그것만으로 D92 완료를 선언하지 않는다.
+
+직접 확인한 생산자 경로는 `core110-release-20261114/source/codex-rs` 아래 `protocol/src/approvals.rs`(typed optional publisher), `core/src/session/mcp.rs`(내부 publisher), `codex-mcp/src/elicitation.rs`(외부 ingress), `app-server-protocol/src/protocol/v2/mcp.rs`(top-level params), `app-server/src/bespoke_event_handling.rs`와 `tui/src/bottom_pane/mcp_server_elicitation.rs`(marker보다 Core origin 우선 분류)다. Core 담당은 source07을 보고했으며 typecheck·실제 음성시험·최종 schema/exe 결속·새 감사는 별도 필요하다.
+
+Native bounded projection은 검증된 상수 `origin:'core'` 하나만 추가한다. 공통 TypeScript parser가 raw params와 projection 모두에서 이를 요구하므로 오래된 availability/canRespond hint는 출처를 대신하지 못한다. wire64KiB·인수16KiB·깊이64는 유지한다. 이전 다섯 projection 필드를 기대하는 부모 collector는 별도 동기화가 필요하다. 아래 기존 사례에도 이 origin 조건을 함께 적용하며 정상 fixture와 witness를 갱신해 숫자·payload·소유권 assertion의 본래 검증 목적을 보존한다.
+
+| 사례 | 예정 판정 기준 |
+|---|---|
+| OR01 | core origin과 기존 조건을 모두 만족해야 정확 accept/decline/cancel을 지원하고 projection에 origin core를 유지한다. |
+| OR02 | 누락/null/mcpServer/미지/대소문자·공백 차이/잘못된 타입 및 위조 `_meta.origin=core`·reserved flag는 분류·송신을 얻지 못한다. |
+| OR03 | observed/external·GUI-owned pending 양 상태를 닫고 반복 거절 응답도 pending을 소비하지 않으며 해결 뒤 늦은 replay로 다시 열지 않는다. |
+| OR04 | core origin도 wrong method/mode/browser/tool_suggestion, 잘못된 subject, 숫자/byte/깊이/detail 인수나 저장 응답을 허용하지 않는다. |
+| OR05 | 두 GUI parser는 합성 availability/canRespond=true여도 bad origin을 거절하고 기존 정상 assertion의 본래 검증 목적을 유지한다. |
+| OR06 | CLI witness의 정상 params에 core origin을 추가하며 일반 요청 계약은 보존한다. |
+
+사례→Native/GUI fixture→소비자 fail-closed 순서로 작성한다. 이 작성자는 정적 읽기·구문 파싱만 수행한다. Native/sourceUI 실행, 정확한 생산자 대조, 실제 Core1.1 양성·위조 form 음성 통합과 새 독립감사는 **NOT_RUN**이며 부모가 담당한다. 구문 통과로 D-0087/D-0092를 닫거나 publisher 지원 완료를 선언하지 않는다.
+
+소비자 인계: `mcp_tool_approval`는 top-level 문자열 origin core를 요구하고 검증된 origin을 bounded projection에 포함한다. `readMcpToolApproval`, `mcpToolApprovalFromRequest`도 두 GUI 진입점에서 같은 조건을 적용한다. metadata fallback·정책 변경·추가 인수 사본·새 네트워크 경로는 없다. 정상 Native/GUI helper와 CLI witness에 core origin을 명시해 기존 숫자·payload·소유권·일회·저장 차단 assertion이 원래 경계를 계속 검사하도록 했다.
+
+새 Native 사례는 `mcp_tool_approval_requires_literal_top_level_core_origin_in_both_owners`, `mcp_origin_requirement_does_not_change_ordinary_response_contracts`다. 첫 사례는 origin 음성 10종을 observed/GUI-owned 양 상태와 위조 nested metadata·중복 delivery/응답·해결 후 replay로 검사한다. 두 GUI spec에도 availability/canRespond가 낙관적인 경우의 `D0092` origin 사례를 각각 10개 추가했다. 기존 browser/tool_suggestion/mode 음성 사례는 core origin 상태에서 계속 검사한다. assertion 삭제·skip은 없다. 이 단위에서는 정적 읽기·쓰기만 했으며 구문 명령·컴파일·Native 시험·Playwright·서버·앱을 실행하지 않았다. 모든 실행 검증은 **NOT_RUN**이고 부모가 담당하며 최종 D92 수용 판정이 아니다.
+
 fixture와 구현 전에 작성한 계획이다. 기준은 Desktop 커밋 `1471e6adb86f612693e713491dd7f19227077391`이며 e99 release fixture와 제품 입력이 같다. 공개 Core 1.0.1의 `mcpServer/elicitation/request`를 기존 대화 화면·질문함 투영·Native 응답 검사가 미지원으로 처리한다. 수정 전 collector는 보존하며 GUI 왕복 완료 근거로 사용하지 않는다.
 
-`mode=form`, `_meta.codex_approval_kind=mcp_tool_call`, 유효한 원래 thread/turn/server와 완전한 도구 이름·인수를 갖춘 도구 승인만 지원한다. Native pending 요청 식별자와 GUI 입력 소유권을 재사용하고 없는 `callId`는 만들지 않는다. 응답은 정확히 `{action:'accept'|'decline'|'cancel',content:null,_meta:null}`만 허용한다. 요청의 저장 선택지를 행동으로 표시하거나 응답에 복사하지 않는다. 일반 form·URL·OAuth/인증·알 수 없는 elicitation은 미지원으로 유지한다.
+기존 D87 설계는 `mode=form`, `_meta.codex_approval_kind=mcp_tool_call`, 유효한 원래 thread/turn/server와 완전한 도구 이름·인수를 갖춘 도구 승인을 지원했다. 위 감사는 이것만으로 신뢰된 내부 생산자를 입증하지 못함을 확인했으며 finding은 open이다. Native pending 요청 식별자와 GUI 입력 소유권을 재사용하고 없는 `callId`는 만들지 않는다. 응답은 정확히 `{action:'accept'|'decline'|'cancel',content:null,_meta:null}`만 허용한다. 요청의 저장 선택지를 행동으로 표시하거나 응답에 복사하지 않는다. 일반 form·URL·OAuth/인증·알 수 없는 elicitation은 special 승인 지원 밖에 두어야 한다.
 
 | 사례 | 공개 경계와 판정 기준 | 예정 근거 |
 |---|---|---|
@@ -26,6 +53,10 @@ fixture와 구현 전에 작성한 계획이다. 기준은 Desktop 커밋 `1471e
 CS 불변조건: 같은 pending 식별자에서 소유자와 세대를 유지하고, 미지원 응답은 송신 시도 슬롯을 소비하기 전에 거절한다. 실제 응답 시도는 transport 쓰기 전에 소비하며 자동 재전송·저장을 추가하지 않는다. ACK를 해결·turn 완료로 간주하지 않는다. 기존 취소·기한·큐·byte 한도를 보존한다. Native 요청 분류/투영 한 곳을 두 GUI가 사용하고 기존 command/question 계약과 MCP action 응답을 구분한다.
 
 ## 부모 실행 근거
+
+2026-11-14 재부팅 후 D92 소비자 후보의 TypeScript 검사 exit 0, 새 D0092 음성 GUI 20개 통과를 확인했다. 기존 D0087/D0089/D0090과 D0092를 함께 실행한 source fixture는 69 PASS/0 FAIL/0 skipped이며 결과는 `desktop210-integration-20261114/d92-ui-regression-02/report.json`에 보존했다. 이는 GUI 합성 IPC 검증이며 Native 실행이나 Core 생산자 검증을 대신하지 않는다.
+
+같은 날 `s210o1/f03`의 구 deafe 실행물과 공개 Core1.0.1에서 위조 예약 metadata 일반 form의 특별 승인 분류를 실제 관측했다. p01 plain과 message/schema/MCP source hash가 같지만 f03은 `UNTRUSTED_FORM_CLASSIFIED_NONRESPONDABLE`로 실패했다. 버튼 3개는 비활성, 외부 form 응답 0회였다. 자기 turn 취소 후 pending0·앱/provider 정상 exit0·자기 Core stopped·설정 불변·운영 앱 보존을 별도로 확인했다. 이 원결과를 수정 후 PASS로 바꾸지 않으며, source08 생산자와 수정 소비자의 동일 짝 검증은 아직 미실행이다.
 
 후보 통합 뒤 TypeScript 검사는 exit 0, D-0087 기준 GUI source fixture 30개는 26.5초에 통과했다. D-0089 보완 뒤 같은 두 GUI 파일의 관련 사례 48개는 39.0초에 통과했다. 이는 합성 IPC source fixture이며 실제 Native 승인·도구 호출 완료 근거가 아니다. 원결과는 `desktop210-integration-20261114/d87-ui-01`, `d87-ui-02`에 보존한다.
 
