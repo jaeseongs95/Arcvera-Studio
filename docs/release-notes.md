@@ -24,6 +24,12 @@ MCP tool approvals. Requests from older Core versions without this field remain
 unsupported. The earlier Core1.0.1 roundtrip does not validate this new boundary;
 the matching Core1.1 producer and consumer still require joint verification.
 
+Terminal HTTP(S) links use a session-scoped Core capability to request Desktop
+ownership when the selected CLI advertises it. Drag gestures that return to their
+starting position remain selections. Opt-in diagnostics count actual native
+launch attempts without recording URLs. Same-candidate native click and selection
+verification is still pending.
+
 Current-thread Hook inspection uses a read-only metadata projection. Configuration
 enablement, trust, execution eligibility and application are separate states.
 Unavailable runtime metadata remains unknown. Reopening the extension manager
@@ -58,6 +64,11 @@ Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn �
 현재 소비자는 Core가 발행한 `origin: core`가 있어야 MCP 전용 승인을 제공합니다.
 이 필드가 없는 이전 Core 요청은 미지원으로 남습니다. 앞선 Core1.0.1 왕복 결과는
 이 새 경계의 검증이 아니며, 같은 Core1.1 생산자·소비자의 공동 검증이 필요합니다.
+
+터미널 HTTP(S) 링크는 선택한 CLI가 지원을 선언한 경우 대화별 Core 기능으로
+Desktop에 열기 소유권을 지정합니다. 시작 위치로 돌아온 드래그도 선택 동작으로
+유지합니다. 명시적으로 켠 진단은 URL을 기록하지 않고 실제 Native 실행 시도를
+셉니다. 같은 후보 실행물의 실제 클릭·선택 검증은 아직 남아 있습니다.
 
 현재 대화의 Hook 조회는 읽기 전용 메타데이터만 표시합니다. 구성의 사용 설정,
 신뢰, 실행 가능 여부와 적용 상태를 구분하며 확인할 수 없는 runtime 정보는
