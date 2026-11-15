@@ -8,7 +8,11 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
   assert(selected?.active && selected.threadId === sessions[0].threadId);
   const call = request => nativeCall('conversation_request', { id: selected.id, generation: selected.generation, request });
   const inventory = await nativeCall('extensions_list', { cwd });
-  const server = inventory.mcpServers?.items.find(item => item.name.startsWith('desktop210_probe_') && item.transport === 'stdio');
+  const expectedServer = process.env.AGENT_GRID_NATIVE_MCP_SERVER;
+  if (expectedServer) assert(/^[A-Za-z0-9_-]{1,128}$/.test(expectedServer));
+  const coreVersion = process.env.AGENT_GRID_NATIVE_CORE_VERSION ?? '1.0.1';
+  assert(['1.0.1', '1.1.0'].includes(coreVersion));
+  const server = inventory.mcpServers?.items.find(item => (expectedServer ? item.name === expectedServer : item.name.startsWith('desktop210_probe_')) && item.transport === 'stdio');
   assert(server, 'Own prepared local MCP fixture is required');
   const tools = await until(() => call({ type: 'mcpStatus', expectedThreadId: selected.threadId, serverName: server.name }),
     value => value.toolsState === 'available', 'local MCP tools observed for the selected native thread', 20000);
@@ -72,12 +76,22 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
     const url = new URL(process.env.AGENT_GRID_NATIVE_PROVIDER_ORIGIN);
     assert(url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.username && !url.password);
     const health = await (await fetch(new URL('/health', url), { signal: AbortSignal.timeout(5000) })).json();
-    assert(health.testOnly); assert.equal(health.completedRequests, 0); providerRequests = health.completedRequests;
+    assert.equal(health.testOnly, true);
+    const protocol = process.env.AGENT_GRID_NATIVE_PROVIDER_PROTOCOL ?? 'local';
+    assert(['local', 'tool'].includes(protocol));
+    if (protocol === 'tool') {
+      assert.equal(health.stage, 0); assert.equal(health.mainAttempts, 0);
+      assert.equal(health.inFlight, false);
+      assert(Number.isInteger(health.titleAttempts) && health.titleAttempts >= 0 && health.titleAttempts <= 1);
+      providerRequests = health.mainAttempts;
+    } else {
+      assert.equal(health.completedRequests, 0); providerRequests = health.completedRequests;
+    }
   }
   const after = await nativeCall('list_sessions');
   for (const previous of before) { const current = after.find(session => session.id === previous.id); assert(current?.active && current.generation === previous.generation && current.threadId === previous.threadId); }
   return { threadId: selected.threadId, nativeGeneration: selected.generation, serverName: server.name, toolsState: tools.toolsState,
     observedToolCount: tools.toolNames.length, hookCount: hooks.hooks.items.length, hookGate: hooks.executionGate,
     staleThreadRejected: true, nativePanelsObserved: true, composition, sessionIdsGenerationsAndThreadsPreserved: true, modelTurnSent: false, providerRequests,
-    limitations: ['Core1.0.1 baseline, not Core1.1.0', 'No tool invocation or hook handler execution', 'No per-thread reload/config version transition was tested'] };
+    coreVersion, limitations: [ 'No tool invocation or hook handler execution', 'No per-thread reload/config version transition was tested'] };
 }

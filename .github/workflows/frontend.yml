@@ -1,8 +1,6 @@
 name: Desktop frontend validation
 
 on:
-  push:
-    branches: [feature/desktop-2.1.0-core110]
   workflow_dispatch:
     inputs:
       build_fixtures:
@@ -123,7 +121,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts/native-adapters -Force | Out-Null
-          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::', 'runtime_transition')) {
+          foreach ($filter in @('codex::extensions::mcp::tests', 'runtime_extensions', 'codex::conversation::', 'runtime_transition', 'external_links::tests')) {
             $name = $filter.Replace(':', '-').Trim('-')
             cargo test --lib --locked --manifest-path src-tauri/Cargo.toml $filter -- --test-threads=1 2>&1 | Tee-Object -FilePath "artifacts/native-adapters/$name.log"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

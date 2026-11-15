@@ -1,5 +1,28 @@
 # 터미널 링크 클릭 소유권
 
+## 같은 실행물의 실제 호출 근거
+
+남은 구현과 시험 코드를 먼저 완성한 뒤 빌드·회귀·실제 통합시험을 묶어서
+실행한다. 파일별 재빌드를 릴리스 검증 근거로 사용하지 않는다.
+
+격리된 Desktop 시험에서만 `ARCVERA_LINK_DIAGNOSTICS=1`과 시험 디렉터리의
+새 절대 파일 경로인 `ARCVERA_LINK_DIAGNOSTICS_PATH`를 지정한다. 앱은 파일을
+독점 생성하며 기존 파일에 덧붙이지 않는다. 기본 경로에서는 기록하지 않는다.
+기록에는 Desktop 소유자, PID, 프로세스 내부 호출 번호, 단계, 결과 불리언과
+집계만 포함한다. URL과 오류 본문은 제외한다. 실제 네이티브 실행 전후를
+기록하며 opener를 시험 대역으로 바꾸지 않는다.
+
+앱 초기화에서 기록을 시작하고 GUI 이벤트 루프가 정상 반환한 뒤 집계를 남긴다.
+각 호출과 완료가 정확히 대응하고 최종 집계의 호출·완료 수가 같으며 누락과
+쓰기 오류가 모두 0이어야 한다. 파일·초기화·최종 집계가 없으면 호출 0건도
+입증되지 않는다. 기록은 4,096회 호출로 제한하며 초과하면 해당 관측을 인정하지
+않는다. 기록 실패는 원래 브라우저 실행 결과를 바꾸지 않는다.
+
+Desktop은 `ShellExecuteW`를 사용한다. Core의 고정 `webbrowser` 구현은
+`AssocQueryStringW`로 브라우저 명령을 조회한 뒤 실행한다. 같은 고정 실행물
+조합에서 양쪽 실제 호출을 합산한다. 브라우저 HTTP 요청 수를 네이티브 호출
+횟수로 대체하지 않는다. 새 빌드의 동일 조합 클릭·선택 행렬은 아직 미실행이다.
+
 ## 명시적 host 소유권의 xterm 회귀 사례
 
 HX01–HX05는 실제 xterm의 none/X10/1000/1002/1003 각각에서 plain/OSC8 링크와 무수정·Ctrl·Meta·Alt·Shift·Ctrl+Shift·Ctrl+Alt를 확인한다. Shift 선택은 opener 0, 나머지는 Desktop opener 1이다. 실제 SGR Down/Up 보고도 함께 확인하며 이 보고를 차단하지 않는다. HX06은 누른 뒤 mouse mode 또는 modifier가 바뀌어도 opener가 중복되거나 없어지지 않는지 확인한다. 이 사례는 명시적 host 계약의 Desktop 소비자 경계이며 실제 Core dispatch/OS 창 개수 증거는 아니다. Core 실행물과 같은 후보 검증은 별도 유지한다.
@@ -36,3 +59,9 @@ D93: 사용자 이중 창 보고와 a5ea3845의 소스를 대조했다. Desktop�
 기존 Playwright source fixture와 실제 xterm public API를 사용한다. 새 의존성, PTY 데이터 필터, stopPropagation, 전역 마우스 모드 변경을 제품에 추가하지 않는다. 수정 전 LO01의 활성 모드 반례와 수정 후 같은 assertion을 대조한다. 실제 Core/OS 창 검증은 아직 NOT_RUN이다.
 
 Core D53과 같은 원인으로 연결한다. xterm `CoreMouseService.X10.restrict`가 수정키와 Up을 제거하고, Core `pointer_down`이 Ctrl/Super에서 즉시 열며 일반 Up은 양쪽 무수정 상태를 요구하는 소스를 대조했다. 첫 RED는 기존 8개 중 6 FAIL/2 PASS였다. 보고 패킷 assertion을 먼저 확인하도록 보완한 두 번째 RED는 실제 Down·Up 각각 1개가 통과한 뒤 Desktop 추가 opener 1개에서 실패했다. 두 원결과를 `d93-red-01`, `d93-red-02`에 보존한다.
+
+## 최종 실행물 조합 시험 준비
+
+런타임 메타데이터 수집기에 fixture 서버명·Core 버전·provider 프로토콜을 명시한다. 기존 Core 1.0.1 fixture 기본 동작을 유지한다. Core 1.1.0 사례는 `desktop_probe`와 주 요청 0건 및 실제 tool-provider health 필드를 확인하며, 없는 필드를 0건으로 해석하지 않는다.
+
+개발 마감 뒤 Windows 수동 workflow 한 회차에서 기존 frontend·native 회귀와 NSIS 패키지를 만들고, 선택 입력으로 소스가 결속된 debug/release 통합시험 실행 파일을 만든다. 로컬 묶음은 기존 단위시험·trace parser·전체 native 회귀를 순차 실행한다. 실제 GUI 7개 사례는 메타데이터·일반/위조 form·도구 왕복·링크·MCP 관리·압축/Hook/EOF 경계를 확인한다. 새 실행은 후보와 근거가 기록되기 전까지 **NOT_RUN**이다.

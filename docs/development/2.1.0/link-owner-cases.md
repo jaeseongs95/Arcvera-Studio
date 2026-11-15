@@ -1,5 +1,32 @@
 # Terminal link click ownership
 
+## Paired native invocation evidence
+
+Complete the remaining implementation and test code before the combined build,
+regression and real integration pass. Per-file rebuilds are not release evidence.
+
+For an isolated Desktop test only, set `ARCVERA_LINK_DIAGNOSTICS=1` and
+`ARCVERA_LINK_DIAGNOSTICS_PATH` to a new absolute file in the test directory.
+The application creates the file exclusively. It never appends to an existing
+file. The default path emits no diagnostic records. Records contain only the
+Desktop owner, process ID, process-local attempt ID, phase, result boolean and
+counters. URLs and error messages are excluded. The trace surrounds the actual
+native launch; it does not substitute an opener.
+
+The trace begins at application initialization and ends after the normal GUI
+event loop returns. Match every attempt with exactly one completion and require
+a final summary with equal attempt/completion counts, zero suppressed records
+and zero write errors. A missing file, initialization record or final summary is
+missing evidence, including for a zero-call assertion. The file is limited to
+4,096 recorded attempts; exceeding that limit invalidates the observation.
+Failed diagnostic writes preserve the original browser launch result.
+
+Desktop uses `ShellExecuteW`. Core's locked `webbrowser` implementation resolves
+the browser command with `AssocQueryStringW` and spawns it. Count both actual
+invocation paths using the same frozen executable pair. A browser HTTP request
+count does not establish the number of native opener invocations. The same-pair
+click and selection matrix remains unexecuted until the new builds are ready.
+
 ## Real xterm regressions for explicit host ownership
 
 HX01–HX05 cover none/X10/1000/1002/1003 with plain/OSC8 links and plain, Ctrl, Meta, Alt, Shift, Ctrl+Shift and Ctrl+Alt gestures. Shift selection must open zero URLs; other clicks must invoke the Desktop opener once. Inspect actual SGR Down/Up reports without blocking them. HX06 changes mouse mode or modifiers between Down and Up and requires one opener. These cases cover the Desktop side of explicit host ownership, not real Core dispatch or OS window counts. Verification with the matching Core executable remains separate.
@@ -36,3 +63,9 @@ Cases defined before execution:
 Use the existing Playwright source fixtures and real xterm public API. Do not add dependencies, PTY data filtering, stopPropagation or a product-wide mouse-mode override. Compare the reporting-active LO01 counterexample before and after with the same assertion. Actual Core/OS verification is NOT_RUN.
 
 This shares the cause tracked by Core D53. Source comparison confirmed that `CoreMouseService.X10.restrict` removes modifiers and Up, while Core `pointer_down` opens immediately for Ctrl/Super and a normal Up requires an unmodified gesture. The first RED had 6 failures and 2 passes. A second RED first confirmed one actual Down and Up each, then failed because Desktop also opened the URL. Both original results remain in `d93-red-01` and `d93-red-02`.
+
+## Final-pair test preparation
+
+The runtime metadata collector now takes explicit fixture server, Core version and provider protocol values. The default Core 1.0.1 fixture remains supported. The Core 1.1.0 case requires `desktop_probe`, zero primary requests, and the actual tool-provider health fields; it does not report absent fields as zero.
+
+After development is frozen, one manual Windows workflow runs the existing frontend and native suites, builds the NSIS package, and optionally produces source-bound debug/release executables for isolated integration. The local batch runs existing units, trace-parser checks and full native regressions sequentially. The seven actual GUI cases cover metadata, ordinary and forged forms, tool roundtrip, links, MCP management, and compaction/Hook/EOF boundaries. These new runs remain **NOT_RUN** until their candidate and evidence are recorded.
