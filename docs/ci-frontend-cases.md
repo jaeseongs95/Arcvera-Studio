@@ -1,5 +1,29 @@
 # CI 프런트엔드 시험 분리
 
+## 2026-11-15: repeated bundled navigation failure / 번들 탐색 재발
+
+Commit `6c09e83`, run `43690773278`: source fixtures passed 478 cases with one
+explicit skip, native tests passed, and the bundled suite passed 249 cases but
+failed `RC-UNSAFE running` at its first document navigation. The retained trace
+records `ERR_NO_BUFFER_SPACE` before an HTTP response, before that case's product
+assertions. This does not establish a common root cause with earlier failures.
+
+The next Windows bundled run enables the existing opt-in network reporter and
+retains its artifacts alongside the failure trace. Assertions, case selection,
+browser features, deadlines and retry policy remain unchanged. A simultaneous
+successful Node HTTP probe would distinguish a Chromium failure from an
+unavailable preview listener; a clean run alone leaves the prior cause unknown.
+
+커밋 `6c09e83`의 실행 `43690773278`에서 소스 fixture는 478개 통과·명시적 제외
+1개, Native는 통과했습니다. 번들 시험은 249개 통과했지만 `RC-UNSAFE running`의
+첫 문서 탐색이 HTTP 응답과 제품 assertion 전에 `ERR_NO_BUFFER_SPACE`로
+실패했습니다. 과거 오류와 같은 원인인지는 확정하지 않습니다.
+
+다음 Windows 번들 실행은 기존 선택형 네트워크 reporter를 켜고 실패 trace와
+함께 보존합니다. 사례, assertion, 브라우저 기능, 기한과 재시도 정책은 유지합니다.
+동시 Node HTTP 접속 결과로 Chromium과 preview 서버의 실패를 구분하며,
+재발하지 않은 실행만으로 이전 원인이 해결됐다고 판단하지 않습니다.
+
 ## 2026-11-10: bundled navigation observation / 번들 탐색 관측
 
 Candidate `4c687ad` / run `42747109440` retained 247 passes and one failure:
