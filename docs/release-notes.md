@@ -1,10 +1,10 @@
 # Release notes
 
-## 2.1.0 — Unreleased / 미공개
+## 2.1.0 — 2026-11-15
 
 ### English
 
-The development candidate adds reviewed user-base MCP editing/removal, scoped
+Desktop 2.1.0 adds reviewed user-base MCP editing/removal, scoped
 current-conversation MCP inspection and explicit reconnection requests. Versioned
 writes preserve protected and unrelated settings; a reconnection acknowledgement
 is distinct from observed connection or tool availability.
@@ -15,20 +15,20 @@ request ownership and rejects remembered-policy responses or unreviewable
 arguments. Controls reflect polling failures instead of appearing actionable with
 an unavailable connection. A controlled public Core1.0.1 test completed one
 conversation-view approval, MCP execution and the same turn with normal owned
-cleanup. This used a synthetic local model. Final Core1.1 integration and the
-privileged-approval origin boundary (D92) remain unresolved. See the
+cleanup. This used a synthetic local model and does not validate Core1.1 or its
+privileged-approval origin boundary. See the
 [fixture and GUI evidence](development/2.1.0/tool-provider-fixture.md).
 
 The current consumer requires Core-published `origin: core` before exposing special
 MCP tool approvals. Requests from older Core versions without this field remain
 unsupported. The earlier Core1.0.1 roundtrip does not validate this new boundary;
-the matching Core1.1 producer and consumer still require joint verification.
+the matching Core1.1 producer and consumer require joint verification.
 
 Terminal HTTP(S) links use a session-scoped Core capability to request Desktop
 ownership when the selected CLI advertises it. Drag gestures that return to their
 starting position remain selections. Opt-in diagnostics count actual native
-launch attempts without recording URLs. Same-candidate native click and selection
-verification is still pending.
+launch attempts without recording URLs. Click and selection behavior must be
+verified with the matching Desktop and Core executables.
 
 Current-thread Hook inspection uses a read-only metadata projection. Configuration
 enablement, trust, execution eligibility and application are separate states.
@@ -43,14 +43,28 @@ long-duration stability or a final installer. See [Hook and Native evidence](dev
 
 The context-composition and cache/TTL viewer is implemented against the typed
 candidate contract, including separately labelled prepared-request byte components.
-Its actual Core1.1 values and behavior remain unverified. Release readiness is
-pending the final Core1.1 schema and executable, same-candidate integration,
-final Windows artifacts and independent review. No
-2.1.0 release is published by this note.
+The automated checks below do not validate its actual Core1.1 values or behavior.
+Candidate commit
+`17018c3ca5651091dc7e02879d0dc5d7e448b09a` passed the
+[Windows validation and packaging run](https://github.com/jaeseongs95/Arcvera-Studio/actions/runs/43691677122):
+478 source-browser cases (one skipped), 250 bundled-browser cases and 581 native
+cases (seven ignored). The packaged executable passed 236 headless PTY cases.
+The downloaded installer, portable package, corresponding source and GUI fixtures
+passed source/resource integrity checks. These checks do not establish installation,
+authenticated provider use or long-duration stability. A previous bundled-browser
+navigation failure with `ERR_NO_BUFFER_SPACE` did not recur in this run; its cause
+remains unconfirmed.
+
+For the published executable hashes, final CI run, matching Core version,
+same-candidate GUI results, independent review and remaining limitations, consult
+`VALIDATION-2.1.0.md` attached to the
+[2.1.0 release](https://github.com/jaeseongs95/Arcvera-Studio/releases/tag/v2.1.0).
+The earlier checks above do not replace that final evidence. GitHub Releases
+records publication; the date of this entry alone does not establish it.
 
 ### 한국어
 
-개발 후보에 검토를 거치는 사용자 base MCP 수정·삭제, 현재 대화에 한정한 MCP
+Desktop 2.1.0에 검토를 거치는 사용자 base MCP 수정·삭제, 현재 대화에 한정한 MCP
 조회와 명시적 재연결 요청을 추가했습니다. 버전 검사를 거친 쓰기는 보호 값과
 무관한 설정을 보존하며, 재연결 접수와 실제 연결·도구 발견은 구분합니다.
 
@@ -58,8 +72,8 @@ final Windows artifacts and independent review. No
 Native 검증은 요청 소유권을 유지하고 기억·정책 저장 응답이나 검토할 수 없는 인수를
 거절합니다. 조회가 실패하면 연결 불명 상태에 맞게 컨트롤을 갱신합니다. 자체 공개
 Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn 완료와 정상 정리를
-확인했습니다. 합성 로컬 모델 범위이며 최종 Core1.1 통합과 특권 승인 출처 경계(D92)는
-미해결입니다. [fixture·GUI 근거](development/2.1.0/tool-provider-fixture.ko.md)를 참고하세요.
+확인했습니다. 합성 로컬 모델 범위이며 Core1.1 통합이나 특권 승인 출처 경계를
+검증한 결과는 아닙니다. [fixture·GUI 근거](development/2.1.0/tool-provider-fixture.ko.md)를 참고하세요.
 
 현재 소비자는 Core가 발행한 `origin: core`가 있어야 MCP 전용 승인을 제공합니다.
 이 필드가 없는 이전 Core 요청은 미지원으로 남습니다. 앞선 Core1.0.1 왕복 결과는
@@ -68,7 +82,7 @@ Core1.0.1 시험에서 대화 화면의 일회 승인·MCP 실행·같은 turn �
 터미널 HTTP(S) 링크는 선택한 CLI가 지원을 선언한 경우 대화별 Core 기능으로
 Desktop에 열기 소유권을 지정합니다. 시작 위치로 돌아온 드래그도 선택 동작으로
 유지합니다. 명시적으로 켠 진단은 URL을 기록하지 않고 실제 Native 실행 시도를
-셉니다. 같은 후보 실행물의 실제 클릭·선택 검증은 아직 남아 있습니다.
+셉니다. 실제 클릭·선택 동작은 같은 Desktop·Core 실행물 조합에서 검증해야 합니다.
 
 현재 대화의 Hook 조회는 읽기 전용 메타데이터만 표시합니다. 구성의 사용 설정,
 신뢰, 실행 가능 여부와 적용 상태를 구분하며 확인할 수 없는 runtime 정보는
@@ -82,10 +96,22 @@ Desktop에 열기 소유권을 지정합니다. 시작 위치로 돌아온 드�
 [Hook·Native 근거](development/2.1.0/hook-verification.ko.md)를 참고하세요.
 
 컨텍스트 구성·cache/TTL 화면은 typed 후보 계약을 바탕으로 구현했으며 준비 요청의
-JSON 구성요소 바이트를 별도로 표시합니다. 실제 Core1.1 값과 동작은 아직 미검증입니다.
-공개 준비에는 최종 Core1.1 schema·실행물과 같은 후보 짝의 통합,
-최종 Windows 실행물과 독립 검토가 남아 있습니다. 이 기록으로 2.1.0을
-공개한 것은 아닙니다.
+JSON 구성요소 바이트를 별도로 표시합니다. 아래 자동 검사는 실제 Core1.1 값과 동작의
+검증이 아닙니다.
+후보 커밋 `17018c3ca5651091dc7e02879d0dc5d7e448b09a`는
+[Windows 검증·패키징 실행](https://github.com/jaeseongs95/Arcvera-Studio/actions/runs/43691677122)에서
+소스 브라우저 478건(별도 건너뜀 1건), 번들 브라우저 250건, 네이티브 581건
+(별도 무시 7건)을 통과했습니다. 패키지 실행 파일의 화면 없는 PTY 시험은 236건을
+통과했습니다. 내려받은 설치기·portable 패키지·대응 소스·GUI fixture의 소스 및
+리소스 무결성도 확인했습니다. 이 결과는 실제 설치, 인증된 공급자 사용이나 장시간
+안정성을 입증하지 않습니다. 앞선 번들 브라우저의 `ERR_NO_BUFFER_SPACE` 탐색 실패는
+이번 실행에서 재현되지 않았으며 원인은 미확정입니다.
+
+공개 실행물의 해시, 최종 CI 실행, 함께 검증한 Core 버전, 같은 후보 조합의 GUI 결과,
+독립 검토와 남은 제한은
+[2.1.0 릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases/tag/v2.1.0)에 첨부한
+`VALIDATION-2.1.0.md`를 참고하세요. 위의 이전 검사 결과로 최종 검증을 대신하지 않습니다.
+실제 게시 상태는 GitHub Releases에 기록하며, 이 항목의 날짜만으로 게시를 뜻하지는 않습니다.
 
 ## 2.0.1 — 2026-11-13
 

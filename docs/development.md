@@ -26,7 +26,7 @@ Package the desktop bundle:
 npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
 ```
 
-Desktop 2.0.0 launches work processes directly in Windows Jobs. There is no
+Desktop 2.1.0 launches work processes directly in Windows Jobs. There is no
 separate Desktop helper binary to build or distribute. Codex and shell processes
 remain separate from Desktop. The patched portable-pty dependency is kept under
 `src-tauri/vendor/portable-pty`.
@@ -49,7 +49,7 @@ external conversations and in-progress work. UI limits must not truncate model c
 
 ## Validation and releases
 
-The Windows workflow validates 2.0.0 with two source-fixture shards and one
+The Windows workflow validates the 2.1.0 candidate with two source-fixture shards and one
 bundled browser suite, native and vendored PTY/updater tests, source/license
 checks, NSIS prerequisite/shortcut checks and the packaged PTY self-test.
 Shared model and packaging unit tests run once; only the bundled browser job
@@ -57,9 +57,11 @@ builds the frontend. Browser failure traces are retained. Historical 1.8.0
 observers, global resource snapshots and debug-only helper builds/uploads are
 excluded. The separate PTY mutation-sensitivity workflow is manual only.
 
-Pushes on main/develop and pull requests run ordinary validation/package checks;
-work-branch pushes do not duplicate pull-request runs. To prepare updater-signed
-2.0.0 assets without publication, dispatch `windows.yml` on the release branch
+For public repositories, pushes on main/develop and non-draft pull requests run
+ordinary Windows validation/package checks. Private repositories require a manual
+dispatch; the separate frontend workflow is also manual. Work-branch pushes do not
+start another Windows run. To prepare updater-signed
+2.1.0 assets without publication, dispatch `windows.yml` on the release branch
 with `updater_package=true`. Both validation jobs must succeed before packaging.
 Preserve repository signing configuration; packaging never publishes a release.
 
@@ -102,7 +104,8 @@ checks: [hook management](hooks-test-cases.md),
 [project-switch scrolling](project-switch-scroll-test-cases.md) and
 [process ownership](process-consolidation-test-cases.md).
 Results for another commit or executable do not establish GUI success for the
-2.0.0 candidate. Record its own validation results in its release notes.
+2.1.0 candidate. Record its own validation results in its release notes or the
+validation report attached to that release.
 
 The [historical validation record](validation.md) describes only the commits and
 tests named there. The [Task Manager capture](real-world-task-manager.png)

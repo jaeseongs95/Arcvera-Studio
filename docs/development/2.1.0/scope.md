@@ -8,9 +8,9 @@ English summary of the goal: release Desktop 2.1.0, collaborating with the CLI o
 
 Development of 3.x is stopped; existing worktrees and unverified changes are preserved. This work covers integration between the current Rust/Tauri Desktop and Rust Core. Java 3.x code and the proposed Core HTTP/SSE contract are excluded from this release.
 
-The Desktop baseline is the published 2.0.1 commit `beb6fe54c160d04d01d57c04c305c2fc519f9490`. The work branch is `feature/desktop-2.1.0-core110`. Remote main, checked on 2026-11-14 KST, is the 2.0.0 commit `0fa0f9c2da3f832db9d01cb7b0f00ddec90a538a`, so the version-prefix and first-preparation compatibility fixes from 2.0.1 must be preserved. Check remote main again at final merge.
+The Desktop source baseline is the 2.0.1 candidate commit `beb6fe54c160d04d01d57c04c305c2fc519f9490`. The work branch is `feature/desktop-2.1.0-core110`. Remote main, checked on 2026-11-14 KST, is the 2.0.0 commit `0fa0f9c2da3f832db9d01cb7b0f00ddec90a538a`, so the version-prefix and first-preparation compatibility fixes from 2.0.1 must be preserved. Check remote main again at final merge.
 
-The new Core owner's source is `D:/codex/build/core110-release-20261114/source`, preserving the inherited `d6026cbd`-based changes. The `ThreadContext*`/`HooksList*` candidate types and error/status values have been inspected directly. Generated schemas, runtime evidence and a development executable have not been delivered. Candidate consumption preparation is distinct from verified runtime support.
+The new Core owner's source is `D:/codex/build/core110-release-20261114/source`, preserving the inherited `d6026cbd`-based changes. The initial scope review inspected the `ThreadContext*`/`HooksList*` candidate types and error/status values before generated schemas, runtime evidence or a development executable were delivered. Candidate consumption preparation is distinct from verified runtime support. Final source and executable identities and actual results belong in the release's attached validation report.
 
 | ID | Development and verification scope | Ownership boundary |
 |---|---|---|
@@ -28,7 +28,7 @@ Acceptance criteria:
 - AC-001: Agree with the CLI owner on features, wire, application scope, the meaning of unsupported/unknown outcomes, and shared test fixtures.
 - AC-002: Exercise the normal and failure boundaries of S01–S05 with the same Core/Desktop candidate pair, and compare observed results with state and display.
 - AC-003: Preserve existing authentication, settings, user data, work in progress, and other sessions. Tests use only their own HOME/project/temporary files and processes.
-- AC-004: After targeted regression and actual integration verification, build the final package and check CI for the exact candidate, licenses, and English/Korean documentation. An auditor separate from the implementer checks the final changes and evidence.
+- AC-004: Finish development before the combined build and verification phase. Build the final candidate, check its exact-commit CI, licenses and English/Korean documentation, and verify targeted regressions and actual integration with that candidate. Bind the final package to the tested source and executables. An auditor separate from the implementer checks the final changes and evidence.
 - AC-005: Report the release complete only after separately approved publication steps and post-publication verification. Disclose remaining unverified items.
 
 Editing the work branch, installing development dependencies, testing, commit/push, and CI proceed within the assigned development scope. Separate approval boundaries remain for default-branch merge, tag/release, installation/deployment, permanent deletion, permission expansion, and production-data changes. The CLI owner's build reservations or goal-control instructions do not constitute separate user approval for this session.

@@ -21,7 +21,7 @@ NSIS 패키지를 빌드하려면 다음 명령을 사용합니다.
 npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --bundles nsis
 ```
 
-Desktop 2.0.0은 작업 프로세스를 Windows Job에서 직접 실행합니다. 별도 Desktop
+Desktop 2.1.0은 작업 프로세스를 Windows Job에서 직접 실행합니다. 별도 Desktop
 도우미 실행 파일은 없습니다. Core와 셸은 별도 프로세스입니다. 수정한 portable-pty는
 `src-tauri/vendor/portable-pty`에 있습니다. 네이티브 컴파일 전에 타사 고지를 생성하세요.
 
@@ -30,7 +30,7 @@ Desktop 2.0.0은 작업 프로세스를 Windows Job에서 직접 실행합니다
 본인이 만든 불필요한 임시 산출물만 삭제합니다. 한글 경로로 도구가 실패하면 해당
 build 경로의 별도 체크아웃을 사용합니다.
 
-## 2.0.0 CI 및 릴리스
+## 2.1.0 CI 및 릴리스
 
 [Windows 워크플로](../.github/workflows/windows.yml)는 소스 fixture 2개 shard와
 번들 브라우저 시험, 네이티브·portable-pty·updater 시험, 소스·라이선스 검사,
@@ -40,8 +40,10 @@ NSIS 필수 구성 요소·바로가기 검사와 패키지의 PTY 자체 시험
 과거 1.8.0 관측, 전체 자원 스냅샷과 디버그 전용 도우미 빌드·업로드는 제외합니다.
 별도 PTY 변이 민감도 워크플로는 수동으로만 실행합니다.
 
-main·develop push와 PR은 일반 검증·패키징을 실행합니다. 작업 브랜치 push는 PR
-실행을 중복하지 않습니다. 업데이트 서명 산출물을 준비하려면 release 브랜치의 `windows.yml`을
+공개 저장소에서는 main·develop push와 초안이 아닌 PR이 일반 Windows 검증·패키징을
+실행합니다. 비공개 저장소는 수동 실행이 필요하며, 별도 frontend 워크플로도 수동으로
+실행합니다. 작업 브랜치 push는 Windows 검증을 추가 실행하지 않습니다.
+업데이트 서명 산출물을 준비하려면 release 브랜치의 `windows.yml`을
 `updater_package=true`로 수동 실행합니다. 두 검증 작업이 모두 통과해야 패키징합니다.
 기존 저장소의 서명 설정을 보존하며, CI는 릴리스를 게시하지 않습니다.
 
@@ -64,7 +66,8 @@ arcvera-studio.exe --codex-smoke --sessions 2 --cwd D:/projects/already-trusted 
 
 시험 전에 입력·전제·절차·기대 결과·판정 조건을 정하고 정확한 후보의 결과를
 기록하세요. fixture, 코드 검토, CI, 네이티브 진단과 실제 GUI 근거를 구분합니다.
-다른 버전의 통과나 빌드 성공만으로 2.0.0의 장시간 안정성·전체 호환성을 판단하지 않습니다.
+다른 버전의 통과나 빌드 성공만으로 2.1.0의 장시간 안정성·전체 호환성을 판단하지 않습니다.
+해당 후보의 실제 결과는 릴리스노트나 그 릴리스에 첨부하는 검증 보고서에 기록합니다.
 과거 결과는 [검증 기록](validation.md)의 명시된 버전에만 적용합니다.
 
 ## 기여 및 라이선스

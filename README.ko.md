@@ -1,14 +1,15 @@
 # Arcvera-Studio
 
-이 브랜치는 **2.1.0** 개발 대상이며 아직 공개 릴리스가 아닙니다. 최신 공개 버전은
-2.0.1입니다. Core 1.1의 컨텍스트 구성 메타데이터, 같은 후보 짝의 통합 검증,
-최종 패키지와 독립 릴리스 검토를 진행 중입니다.
-[2.1 개발 범위](docs/development/2.1.0/scope.ko.md)를 참고하세요.
-
 여러 Arcvera Core 세션을 나란히 사용하는 Windows 작업 공간입니다.
 대화를 프로젝트별로 묶고, 터미널 격자의 크기를 조절하고, 저장된 작업을 이어갈 수 있습니다.
 
 [English](README.md) | **한국어**
+
+Desktop **2.1.0**은 Core 1.1 컨텍스트 조회, 검토를 거치는 MCP 구성 변경,
+도구 승인과 대화별 터미널 링크 처리를 추가합니다.
+공개 실행물과 해당 검증 보고서는
+[릴리스](https://github.com/jaeseongs95/Arcvera-Studio/releases)에서 확인할 수 있습니다.
+변경 내용과 검증 범위는 [릴리스노트](docs/release-notes.md)를 참고하세요.
 
 [다운로드](https://github.com/jaeseongs95/Arcvera-Studio/releases/latest) ·
 [빠른 시작](#빠른-시작) · [사용 가이드](docs/user-guide.ko.md) ·
@@ -19,7 +20,7 @@
 *격리된 브라우저 시험 화면에서 촬영한 디자인 미리보기입니다. 터미널에는 예시 출력이
 표시되며, 네이티브 실행이나 성능 검증을 보여주는 이미지는 아닙니다.*
 
-**2.0.1**은 Arcvera Core 1.x 정식 버전이 필요합니다. 공식 Codex와 이전 Core는
+**2.1.0**은 Arcvera Core 1.x 정식 버전이 필요합니다. 공식 Codex와 이전 Core는
 지원하지 않습니다. 기존 설정·인증·대화는 유지됩니다.
 [명칭 변경과 호환 안내](docs/rebranding.ko.md), [릴리스노트](docs/release-notes.md)를 참고하세요.
 
