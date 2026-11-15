@@ -31,3 +31,5 @@ Core 1.1의 `ThreadContext*` 타입 후보를 소비하는 준비 단계다. 생
 Core 후속 후보는 `requestSizes`에 직전 준비 요청의4 JSON성분 bytes를 제공한다. `prepared_sampling_prompt`/`utf8_json_components_before_provider_normalization`이며 전송 봉투·provider 정규화·delta bytes·과금 token과 구분한다. top snapshot과다른준비revision을현재값으로승격하지않고원문은투영하지않는다. CA10 추가 Native3개는 작성시 NOT_RUN이다.
 
 후속 부모 실행: `request-sizes-native-01`은 새3개를 포함한 Native memory-WebSocket/투영9PASS/0FAIL/0ignored/Cargo0이며, `artifacts/request-sizes-ui-01`은 패널20·부모컨텍스트25·대화연결12 합계57PASS/1.1분/exit0, tsc exit0이다. source/IPC와메모리fixture 범위로서 Core1.1 실제 값·합계·관측revision의 확정은 미검증이다.
+
+최종 후보 메타데이터 검증에서는 합성 catalog 한도 32768보다 작은 요청값 8192와 16384를 두 실제 세션에 각각 적용합니다. GUI 요약은 정본 재조회와 일치해야 하며 다른 세션을 보존하고, 오래된 기대값 요청은 쓰기 없이 conflict여야 합니다. 두 세션의 원래 요청값을 복원합니다. 두 세션에 걸쳐 6회씩 설정·구성 조회를 직렬 반복하여 시간을 기록하고 thread/generation과 xterm DOM 정체성을 유지하는지 확인합니다. 제한된 상호작용 부하 범위이며 장시간 안정성 검증은 아닙니다. 최종 짝 고정 전 실행 상태는 NOT_RUN입니다.

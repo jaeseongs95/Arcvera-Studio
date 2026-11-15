@@ -71,6 +71,58 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
     await page.locator('.session-context-dialog').getByRole('button', { name: '닫기', exact: true }).click();
     composition = { expectation: compositionExpectation, supported: result.supported, reason: result.reason, wrongTargetRejected: true, runtimeRemainsAvailable: true, actualPanelObserved: true };
   }
+  let contextSettings, boundedLoad;
+  if (coreVersion === '1.1.0') {
+    const targets = before.map(session => ({ session, request: request => nativeCall('conversation_request', { id: session.id, generation: session.generation, request }) }));
+    const original = await Promise.all(targets.map(t => t.request({ type: 'contextSettings' })));
+    assert(original.every(v => v.supported === true && v.canChange === true));
+    const change = async (target, value) => {
+      const card = page.locator('.terminal-card[data-id="' + target.session.id + '"]');
+      await card.locator('.context-usage').click();
+      const dialog = page.locator('.session-context-dialog');
+      const button = dialog.getByRole('button', { name: value === null ? '기본값 복원' : '적용', exact: true });
+      await until(() => button.isEnabled(), Boolean, 'context editor read completed');
+      if (value !== null) await dialog.locator('input').fill(String(value));
+      await button.click();
+      await until(() => dialog.getAttribute('aria-busy'), v => v === 'false', 'context write acknowledgement');
+      const actual = await target.request({ type: 'contextSettings' });
+      assert.equal(actual.modelContextWindow, value);
+      const summary = await dialog.locator('.session-context-summary').innerText();
+      assert(summary.includes(value === null ? '기본값' : value.toLocaleString('ko-KR')));
+      assert(summary.includes(actual.effectiveContextWindow === null ? '기본값' : actual.effectiveContextWindow.toLocaleString('ko-KR')));
+      await dialog.getByRole('button', { name: '닫기', exact: true }).click();
+      return actual;
+    };
+    const first = await change(targets[0], 8192);
+    assert.deepEqual(await targets[1].request({ type: 'contextSettings' }), original[1]);
+    const second = await change(targets[1], 16384);
+    assert.equal((await targets[0].request({ type: 'contextSettings' })).modelContextWindow, 8192);
+    const conflict = await targets[0].request({ type: 'setContextWindow', modelContextWindow: 4096, expectedModelContextWindow: 16384 });
+    assert.equal(conflict.status, 'conflict');
+    assert.equal((await targets[0].request({ type: 'contextSettings' })).modelContextWindow, 8192);
+    for (let i = 0; i < targets.length; i++) await change(targets[i], original[i].modelContextWindow);
+    contextSettings = { distinctRequestedValues: [first.modelContextWindow, second.modelContextWindow], otherThreadPreserved: true, staleConflict: true, originalsRestored: true };
+    const screens = await Promise.all(targets.map(t => page.locator('.terminal-card[data-id="' + t.session.id + '"] .xterm-screen').elementHandle()));
+    const durationsMs = [];
+    try {
+      for (let round = 0; round < 6; round++) for (const target of targets) {
+        const start = performance.now();
+        await page.locator('.terminal-card[data-id="' + target.session.id + '"] .terminal-host').click();
+        const settings = await target.request({ type: 'contextSettings' });
+        const composition = await target.request({ type: 'contextComposition', expectedThreadId: target.session.threadId, cursor: 0 });
+        assert.equal(settings.supported, true); assert.equal(composition.supported, true);
+        assert.equal(composition.snapshot.threadId, target.session.threadId);
+        durationsMs.push(performance.now() - start);
+      }
+      const current = await nativeCall('list_sessions');
+      for (let i = 0; i < targets.length; i++) {
+        const previous = targets[i].session, actual = current.find(v => v.id === previous.id);
+        assert(actual?.active && actual.generation === previous.generation && actual.threadId === previous.threadId);
+        assert(await screens[i].evaluate(el => el.isConnected && el.closest('.terminal-card')?.querySelector('.xterm-screen') === el));
+      }
+      boundedLoad = { rounds: 6, pairedReads: durationsMs.length, durationsMs, sessionsPreserved: true, terminalDomPreserved: true, sustainedLoadVerified: false };
+    } finally { for (const screen of screens) await screen?.dispose(); }
+  }
   let providerRequests;
   if (process.env.AGENT_GRID_NATIVE_PROVIDER_ORIGIN) {
     const url = new URL(process.env.AGENT_GRID_NATIVE_PROVIDER_ORIGIN);
@@ -93,5 +145,5 @@ export async function checkNativeRuntimeExtensions({ page, nativeCall, cwd, sess
   return { threadId: selected.threadId, nativeGeneration: selected.generation, serverName: server.name, toolsState: tools.toolsState,
     observedToolCount: tools.toolNames.length, hookCount: hooks.hooks.items.length, hookGate: hooks.executionGate,
     staleThreadRejected: true, nativePanelsObserved: true, composition, sessionIdsGenerationsAndThreadsPreserved: true, modelTurnSent: false, providerRequests,
-    coreVersion, limitations: [ 'No tool invocation or hook handler execution', 'No per-thread reload/config version transition was tested'] };
+    contextSettings, boundedLoad, coreVersion, limitations: [ 'No tool invocation or hook handler execution', 'No per-thread reload/config version transition was tested'] };
 }
