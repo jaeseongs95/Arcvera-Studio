@@ -9,8 +9,8 @@ $fixtureApp = Join-Path $fixtureRoot 'app'
 if (Test-Path -LiteralPath $fixtureApp) { throw 'Existing executable evidence must not be overwritten' }
 $fixtureCommit = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $fixtureCommit -notmatch '^[0-9a-f]{40}$') { throw 'Cannot bind the checkout commit' }
-& git diff --quiet HEAD --
-if ($LASTEXITCODE -ne 0) { throw 'Tracked source differs from the checkout commit' }
+. (Join-Path $PSScriptRoot 'fixture-source.ps1')
+$fixtureSourceManifest = @(Get-FixtureSourceManifest -Repository $fixtureRepo)
 $fixtureIdentifier = 'io.agentgrid.desktop.fixture' + $fixtureCommit.Substring(0, 12)
 if ($FixtureProfile -eq 'release') { $fixtureIdentifier += 'release' }
 [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
@@ -21,8 +21,10 @@ if ($FixtureProfile -eq 'debug') { $fixtureArgs += '--debug' }
 $fixtureArgs += @('--no-bundle', '--ci', '--config', $fixtureConfig, '--', '--locked', '-j1')
 & node @fixtureArgs
 if ($LASTEXITCODE -ne 0) { throw 'Isolated development executable build failed' }
-& git diff --quiet HEAD --
-if ($LASTEXITCODE -ne 0) { throw 'Build modified tracked source; refusing a source-bound fixture' }
+$fixtureSourceAfterBuild = @(Get-FixtureSourceManifest -Repository $fixtureRepo)
+if (($fixtureSourceManifest | ConvertTo-Json -Compress) -cne ($fixtureSourceAfterBuild | ConvertTo-Json -Compress)) {
+    throw 'Build modified tracked source; refusing a source-bound fixture'
+}
 $fixtureExe = Join-Path $fixtureRepo "src-tauri/target/$FixtureProfile/arcvera-studio.exe"
 if (-not (Test-Path -LiteralPath $fixtureExe -PathType Leaf)) { throw 'Expected development executable is absent' }
 [IO.Directory]::CreateDirectory($fixtureApp) | Out-Null
@@ -37,14 +39,6 @@ foreach ($fixtureResource in $fixtureTauri.bundle.resources.PSObject.Properties)
         (-not (Test-Path -LiteralPath $fixtureSource -PathType Leaf))) { throw 'Resource map escaped the checkout/app or is not a file' }
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($fixtureDestination)) | Out-Null
     Copy-Item -LiteralPath $fixtureSource -Destination $fixtureDestination
-}
-$fixtureFiles = @(& git -c core.quotepath=false ls-files)
-if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate tracked source' }
-$fixtureSourceManifest = foreach ($fixturePath in $fixtureFiles) {
-    $fixtureAbsolute = [IO.Path]::GetFullPath((Join-Path $fixtureRepo $fixturePath))
-    if ((-not $fixtureAbsolute.StartsWith($fixtureRepo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) -or
-        (-not (Test-Path -LiteralPath $fixtureAbsolute -PathType Leaf))) { throw 'Tracked source is not a bounded checkout file' }
-    @{ path = $fixturePath; sha256 = (Get-FileHash -LiteralPath $fixtureAbsolute -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 $fixtureSourceManifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $fixtureRoot 'source-manifest.json') -Encoding utf8NoBOM
 $fixtureGenerated = @(Get-ChildItem -LiteralPath (Join-Path $fixtureRepo 'dist') -File -Recurse) + @(Get-Item -LiteralPath (Join-Path $fixtureRepo 'THIRD_PARTY_NOTICES.md'), $fixtureConfig)

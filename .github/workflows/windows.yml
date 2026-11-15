@@ -42,7 +42,7 @@ jobs:
       - run: npm ci
       - name: Updater manifest packaging regressions
         if: ${{ matrix.suite == 'source-1' }}
-        run: node --test scripts/rebrand.test.mjs scripts/updater-manifest.test.mjs scripts/notices.test.mjs
+        run: node --test scripts/rebrand.test.mjs scripts/updater-manifest.test.mjs scripts/notices.test.mjs scripts/fixture-source.test.mjs
       - name: Model unit tests
         if: ${{ matrix.suite == 'source-1' }}
         run: npm test
