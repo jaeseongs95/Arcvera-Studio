@@ -658,6 +658,9 @@ function createTerminal(session: Session) {
   terminal.onBinary(data => sendInput(session.id, data, true));
   terminal.onResize(() => queueResize(session.id));
   terminal.attachCustomKeyEventHandler(event => {
+    // xterm translates Enter even when a document listener prevents its default.
+    // Keep the native composition commit press out of the terminal data stream.
+    if (event.key === 'Enter' && isCompositionKey(event)) return false;
     // Let the browser dispatch xterm's native copy/paste events, rather than
     // translating Ctrl+C/Ctrl+V to CLI control characters. Unselected Ctrl+C
     // still interrupts the CLI; paste keeps xterm's bracketed-paste handling.
@@ -668,7 +671,6 @@ function createTerminal(session: Session) {
     if (event.key === 'Enter' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       // Windows 콘솔에서도 줄바꿈으로 해석되는 Alt+Enter를 보낸다.
       // 용량 제한과 세션 세대 검사를 거치는 기존 입력 대기열을 사용한다.
-      if (isCompositionKey(event)) return false;
       event.preventDefault();
       if (event.type === 'keydown') sendInput(session.id, '\u001b\r');
       return false;
