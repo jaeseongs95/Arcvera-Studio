@@ -81,3 +81,19 @@ test('좁은 창에서 주소·비밀·연결 해제와 오류 메시지를 볼 
   await expect(page.locator('#relay-connect')).toBeInViewport(); await expect(page.locator('#relay-disconnect')).toBeInViewport();
   await page.screenshot({ path: 'verification/remote-integration/relay-dialog-800.png' });
 });
+
+
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
+  test('IME13 relay composition Enter blocks implicit submit: ' + signal, async ({ page }) => {
+    await workspace(page); await page.locator('#relay-url').fill('https://relay.example.com'); await page.locator('#relay-secret').fill('fixture-only');
+    const secret = page.locator('#relay-secret');
+    const prevented = await secret.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      const event = new KeyboardEvent('keydown', { key: 'Enter', keyCode: signal === 'keyCode229' ? 229 : 13, isComposing: signal === 'isComposing', bubbles: true, cancelable: true });
+      element.dispatchEvent(event); return event.defaultPrevented;
+    }, signal);
+    expect(prevented).toBe(true); expect(await page.evaluate(() => (window as any).relayFixture.calls.filter((c: string) => c === 'relay_connect'))).toHaveLength(0);
+    await page.locator('#relay-url').focus(); await secret.focus(); await secret.press('Enter');
+    await expect.poll(() => page.evaluate(() => (window as any).relayFixture.calls.filter((c: string) => c === 'relay_connect').length)).toBe(1);
+  });
+}

@@ -259,14 +259,6 @@ for (const ending of ['cancel', 'commit-end-input', 'commit-input-end'] as const
     await input(page).press('Control+Shift+f');
     const search = page.locator('#terminal-search');
     await expect(search).toBeFocused();
-    // Opening search changes the terminal height. Wait for the real fit before
-    // observing selection: xterm clears selection when its row count changes.
-    await page.evaluate(() => document.fonts.ready.then(() => undefined));
-    await expect.poll(() => page.evaluate(() => {
-      const { terminal, fit } = (window as any).__imeTerminals.get('flow-a');
-      const dimensions = fit.proposeDimensions();
-      return !!dimensions && terminal.cols === dimensions.cols && terminal.rows === dimensions.rows;
-    })).toBe(true);
     if (ending === 'cancel') {
       await search.evaluate(element => { (element as HTMLInputElement).value = '한'; });
       await search.press('Enter');
@@ -764,5 +756,52 @@ for (const boundary of ['generation', 'project', 'dispose'] as const) {
     await page.evaluate(() => (window as any).flow.releaseWrites());
     await expect.poll(() => page.evaluate(() => (window as any).flow.activeWrites)).toBe(0);
     expect(await page.evaluate(() => (window as any).flow.sent.map((item: any) => [item.generation, item.data]))).toEqual(boundary === 'generation' ? [[7, 'x'], [8, 'n']] : [[7, 'x']]);
+  });
+}
+
+
+async function imeSearchWorkspace(page: Page) {
+  await page.route('**/src/main.ts*', async route => { const response = await route.fetch(); await route.fulfill({ response, body: await response.text() + '\nwindow.__imeTerminals = terminals; window.__imeToggleSearch = toggleSearch; window.__imeSetActive = setActive;\n' }); });
+  await workspace(page);
+  await page.evaluate(async () => { await document.fonts.ready; for (const view of (window as any).__imeTerminals.values()) { view.terminal.reset(); await new Promise<void>(resolve => view.terminal.write('한 한', resolve)); } });
+}
+const imeSelection = (page: Page, id = 'flow-a') => page.evaluate(id => (window as any).__imeTerminals.get(id).terminal.getSelectionPosition(), id);
+const firstKoreanMatch = { start: { x: 0, y: 0 }, end: { x: 2, y: 0 } };
+
+test('IME09 search immediately after opening retains selection through the actual resize frames', async ({ page }) => {
+  await imeSearchWorkspace(page);
+  const beforeFrames = await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>('#search-toggle')!.click();
+    const search = document.querySelector<HTMLInputElement>('#terminal-search')!; search.value = '한';
+    search.dispatchEvent(new InputEvent('input', { data: '한', inputType: 'insertFromPaste', bubbles: true }));
+    return (window as any).__imeTerminals.get('flow-a').terminal.getSelectionPosition();
+  });
+  expect(beforeFrames).toEqual(firstKoreanMatch);
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await imeSelection(page)).toEqual(firstKoreanMatch);
+});
+
+for (const context of ['selection-cleared', 'reopened', 'other-session']) {
+  test('IME10 same Korean composition searches again after ' + context, async ({ page }) => {
+    await imeSearchWorkspace(page); await input(page).press('Control+Shift+f');
+    const search = page.locator('#terminal-search'); await search.fill('한');
+    await expect.poll(() => imeSelection(page)).toEqual(firstKoreanMatch);
+    await page.evaluate(context => {
+      const state = window as any;
+      if (context === 'other-session') state.__imeSetActive('flow-b');
+      else state.__imeTerminals.get('flow-a').terminal.clearSelection();
+      if (context === 'reopened') { state.__imeToggleSearch(false); state.__imeToggleSearch(true); }
+    }, context);
+    await search.focus();
+    await search.evaluate(element => {
+      element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      for (const value of ['ㅎ', '하', '한']) { (element as HTMLInputElement).value = value; element.dispatchEvent(new InputEvent('input', { data: value, isComposing: true, bubbles: true })); }
+      element.dispatchEvent(new CompositionEvent('compositionend', { data: '한', bubbles: true }));
+      element.dispatchEvent(new InputEvent('input', { data: '한', bubbles: true }));
+    });
+    const id = context === 'other-session' ? 'flow-b' : 'flow-a';
+    await expect.poll(() => imeSelection(page, id)).toEqual(firstKoreanMatch);
+    await search.press('Enter');
+    await expect.poll(() => imeSelection(page, id)).toEqual({ start: { x: 3, y: 0 }, end: { x: 5, y: 0 } });
   });
 }

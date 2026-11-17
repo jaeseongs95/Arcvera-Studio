@@ -1,3 +1,4 @@
+import { isCompositionEvent } from './ime';
 import { bindAttribute, bindText, onLanguageChange, t, unbindText } from './i18n';
 import { createMcpRuntimePanel, type McpRuntimeTarget } from './mcp-runtime';
 import { createHookRuntimePanel } from './hook-runtime';
@@ -426,7 +427,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     if (catalogMode) search.focus(); else load();
   };
   $('#extensions-plugin-search').onclick = load;
-  search.onkeydown = event => { if (event.key === 'Enter' && tab === 'plugins' && catalogMode) { event.preventDefault(); load(); } };
+  search.onkeydown = event => { if (isCompositionEvent(event)) return; if (event.key === 'Enter' && tab === 'plugins' && catalogMode) { event.preventDefault(); load(); } };
   $('#extensions-more').onclick = () => { if (!busy && !exitRequested) { if (limits[tab] < 250) limits[tab] += 50; else { starts[tab] += 250; limits[tab] = 50; } cancelReview(); renderList(); } };
   $('#extensions-previous').onclick = () => { if (!busy && !exitRequested) { starts[tab] = Math.max(0, starts[tab] - 250); limits[tab] = 250; cancelReview(); renderList(); } };
   for (const button of dialog.querySelectorAll<HTMLButtonElement>('[data-tab]')) button.onclick = () => { if (!busy && !exitRequested) { cancelReview(); tab = button.dataset.tab as Tab; renderList(); } };

@@ -1,3 +1,4 @@
+import { isCompositionEvent, isComposingTarget, resetComposition } from './ime';
 import { bindAttribute, bindText, onLanguageChange, t } from './i18n';
 import './conversation.css';
 import { appendLinkifiedText } from './external-links';
@@ -59,7 +60,7 @@ export function createConversation(options: ConversationOptions) {
   let historyQuery = 0; let liveRevision = 0;
   let activityRevision = 0;
   let polling: ReturnType<typeof setTimeout> | undefined;
-  let sending = false; let interrupting = false; let uncertain = false; let composing = false; let loading = false; let staging = false;
+  let sending = false; let interrupting = false; let uncertain = false; let loading = false; let staging = false;
   let modelsLoading = false;
   let sendFailed = false;
   let activeTurn = ''; let selectedTurn = ''; let nextTurns = ''; let nextItems = ''; let nextModels = '';
@@ -74,7 +75,7 @@ export function createConversation(options: ConversationOptions) {
   let lastSeq = 0; let modelKnown = false; let currentModel = ''; let currentEffort = '';
   let threadId = ''; let modelDraft = false; let effortDraft = false;
   let requestSignature = '';
-  let searchComposing = false; let selectedMatch = ''; let searchQuery = '';
+  let selectedMatch = ''; let searchQuery = '';
   const rpc = <T = Json>(request: Json) => options.call<T>('conversation_request', { id: options.sessionId, generation: options.generation, request });
   const alive = (version: number) => !disposed && visible && version === epoch;
   function status(ko: string, en = ko) { if (!disposed) bindText($('.conversation-status'), ko, en); }
@@ -188,7 +189,7 @@ export function createConversation(options: ConversationOptions) {
     return matches;
   }
   function moveMatch(direction: number) {
-    if (!visible || !foreground || disposed || searchComposing) return;
+    if (!visible || !foreground || disposed || isComposingTarget(search)) return;
     const matches = updateSearch(); if (!matches.length) return;
     const index = matches.indexOf(selectedMatch);
     selectedMatch = matches[(index < 0 ? (direction > 0 ? 0 : matches.length - 1) : index + direction + matches.length) % matches.length];
@@ -196,7 +197,7 @@ export function createConversation(options: ConversationOptions) {
     const detail = row.querySelector('details'); if (detail) detail.open = true;
     updateSearch(); messages.scrollTop += row.getBoundingClientRect().top - messages.getBoundingClientRect().top;
   }
-  function clearSearch() { search.value = ''; searchQuery = ''; selectedMatch = ''; searchComposing = false; updateSearch(); }
+  function clearSearch() { search.value = ''; searchQuery = ''; selectedMatch = ''; resetComposition(search); updateSearch(); }
   async function moveLatest(isCurrent = () => true) {
     if (!visible || !foreground || !attached || disposed || !isCurrent()) return;
     const version = epoch; const content = contentVersion;
@@ -565,7 +566,7 @@ export function createConversation(options: ConversationOptions) {
     return true;
   }
   async function send() {
-    if (button('.conversation-send').disabled || composing) return;
+    if (button('.conversation-send').disabled || isComposingTarget(input)) return;
     if (new TextEncoder().encode(input.value).byteLength > 64 * 1024) { status('메시지는 UTF-8 기준 64 KiB까지 전송할 수 있습니다. 초안을 보존했습니다.', 'Messages are limited to 64 KiB in UTF-8. Your draft is preserved.'); return; }
     sending = true; const version = epoch; const activity = activityRevision; const query = historyQuery; const draft = input.value; const sentAttachments = [...attachments]; updateControls(); renderAttachments();
     try {
@@ -692,13 +693,10 @@ export function createConversation(options: ConversationOptions) {
   }
   $('.conversation-compose').addEventListener('submit', event => { event.preventDefault(); void send(); }, events);
   input.addEventListener('input', updateControls, events);
-  input.addEventListener('compositionstart', () => { composing = true; }, events);
-  input.addEventListener('compositionend', () => { composing = false; }, events);
-  input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !composing && event.keyCode !== 229) { event.preventDefault(); void send(); } }, events);
-  search.addEventListener('input', () => { if (!searchComposing) { searchQuery = search.value.trim().toLocaleLowerCase(); selectedMatch = ''; updateSearch(); } }, events);
-  search.addEventListener('compositionstart', () => { searchComposing = true; }, events);
-  search.addEventListener('compositionend', () => { searchComposing = false; searchQuery = search.value.trim().toLocaleLowerCase(); selectedMatch = ''; updateSearch(); }, events);
-  search.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing && !searchComposing && event.keyCode !== 229) { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1); } }, events);
+  input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !isCompositionEvent(event)) { event.preventDefault(); void send(); } }, events);
+  search.addEventListener('input', event => { if (!isCompositionEvent(event)) { searchQuery = search.value.trim().toLocaleLowerCase(); selectedMatch = ''; updateSearch(); } }, events);
+  search.addEventListener('compositionend', () => { searchQuery = search.value.trim().toLocaleLowerCase(); selectedMatch = ''; updateSearch(); }, events);
+  search.addEventListener('keydown', event => { if (event.key === 'Enter' && !isCompositionEvent(event)) { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1); } }, events);
   input.addEventListener('paste', event => { const files = [...(event.clipboardData?.files ?? [])]; if (files.length) { event.preventDefault(); void stageFiles(files); } }, events);
   host.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); } }, events);
   host.addEventListener('drop', event => { const files = [...(event.dataTransfer?.files ?? [])]; if (files.length) { event.preventDefault(); event.stopPropagation(); void stageFiles(files); } }, events);
@@ -725,7 +723,7 @@ export function createConversation(options: ConversationOptions) {
   for (const [element, ko, en] of [[model, '모델', 'Model'], [effort, '추론 수준', 'Reasoning effort'], [turns, '대화 구간', 'Conversation turns'], [messages, '대화 내용', 'Conversation'], [$('.conversation-attachments'), '첨부 파일', 'Attachments']] as const) bindAttribute(element, 'aria-label', ko, en);
   const unlanguage = onLanguageChange(() => { requestSignature = ''; renderedItems.clear(); messages.replaceChildren(); renderModels(); renderTurns(); renderItems(); renderRequests(); renderAttachments(); });
   renderCurrentSettings(); renderModels(); renderItems(); updateControls();
-  const canRestart = () => !sending && !staging && !uncertain && !composing && !interrupting && !responding.size && !questionDrafts.size;
+  const canRestart = () => !sending && !staging && !uncertain && !isComposingTarget(input) && !interrupting && !responding.size && !questionDrafts.size;
   return {
     setVisible,
     handoffToTerminal,
@@ -746,7 +744,7 @@ export function createConversation(options: ConversationOptions) {
       if (!sessionEnded) { await setVisible(false); if (attached) await rpc({ type: 'detach' }); }
       if (attached) { attached = false; options.ownerChanged?.(false); }
       visible = false; disposed = true; epoch++; contentVersion++; stopPolling(); abort.abort(); unlanguage();
-      search.value = ''; searchQuery = ''; selectedMatch = ''; searchComposing = false;
+      search.value = ''; searchQuery = ''; selectedMatch = ''; resetComposition(search);
       input.value = ''; attachments = []; stagedPaths.clear(); responding.clear(); questionDrafts.clear(); renderedItems.clear(); items = []; turnPage = []; models = []; pendingRequests = []; host.replaceChildren();
     },
   };

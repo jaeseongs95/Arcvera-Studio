@@ -29,3 +29,19 @@ Windows 물리 IME·native WebView2·실제 CLI·최종 Core 연동은 미검증
 CI 후속: 실행 44039888650의 IME07 commit-input-end는 검색 성공 문구가 있지만 xterm 선택이 남지 않아 실패했다. xterm SelectionService는 행 수가 바뀌면 선택을 지운다. 배치 경합 가능성이 있으나 해당 CI trace에 resize를 직접 기록한 것은 아니다. 선택 판정 전에 검색을 열고 fonts.ready 뒤 실제 행·열이 FitAddon.proposeDimensions()와 같은지 확인한다. 첫 결과·다음 결과 좌표와 취소 판정은 유지하고 실패 사례 재시도나 기대값 교체는 하지 않는다.
 
 배치 준비 조건을 적용한 동일 20개 시험에서 고정 a02913d는 11실패·9통과(종료코드 1), 제품 코드가 동일한 수정 후보는 20통과(종료코드 0, 18.6초)였다. 시험 SHA256은 a96fd14e76b63e1d5d1d101a9218784d468ff922f467f364e3a69bfeee158c13이며 TypeScript는 종료코드 0이었다. 별도 읽기 전용 리뷰에서 차단 결함이나 기대 결과 약화는 없었다. 배치 준비 후 조합 검색을 확인하며 이후 resize와의 임의 중첩까지 검증한 것은 아니다. 현재 before/after는 이 비교이고, 원 16개 기준판과 원 20통과는 before-original16·after-original20에 보존했다. CI44039888650은 실패 기록을 유지한다. bundled·source-1·native는 통과했지만 패키징은 차단됐다.
+
+
+## 검수 후 제품 경계 재작업
+
+앞의 배치 준비 시험 통과는 즉시 검색 경합을 해결한 근거가 아니었다. 추가 IME09에서 검색 열기와 input을 같은 DOM 작업으로 실행하면 첫 선택은 존재하지만 실제 두 animation frame 뒤 선택이 사라졌다. 현재 제품은 검색창 표시 변경과 검색 실행 전에 실제 FitAddon을 호출해 행 수 변경을 먼저 반영한다. IME07의 fonts/행열 대기는 제거했다.
+
+IME09–14는 즉시 검색/resize, 선택 해제·재오픈·세션 전환 후 같은 한글 재조합, 대화 입력/검색의 compositionend 누락 후 focusout 복구, 플러그인·중계·세션 검색의 isComposing/229/sequence 경로다. 8bf0908 제품과 동일 시험 바이트에서 40개 중 12실패·28통과(69.1초, exit1), 첫 제품 교정 뒤 40통과(31.5초, exit0)였다. IME10 재오픈/세션 전환 두 사례의 수정 전 실패는 초기 검색 선택 단계의 resize 경합이므로 그 실행만으로 후속 재검색 경계 실패를 입증하지 않는다. 선택 해제 사례는 재조합 확정 이후의 실제 실패다.
+
+공통 ime.ts는 document 수명의 캡처 이벤트와 WeakSet으로 flag/229/sequence를 판정하고 focusout에서 해제한다. 대화창의 별도 composing 불리언을 제거하고 같은 판정을 적용했다. 검색 중복 억제는 실제 Terminal을 약한 키로 삼아 값과 선택 좌표가 유효할 때만 적용하며, 선택 해제와 세션 변경 뒤 같은 한글도 다시 찾는다. 새 의존성이나 CLI 변경은 없다.
+
+원자료는 artifacts/korean-input-20261117/review-before 및 review-after의 execution/report/stdout/실패 trace다. 최종 대기 제거 및 약한 검색 상태 정리 후 실행은 별도 review-final에 남긴다. 이 브라우저 시험은 실제 Chromium/xterm 제품 핸들러를 실행하며 native IPC만 대체한다. 물리 Windows IME·WebView2·실제 CLI·최종 Core 조합과 전체 릴리스 수용은 여전히 미검증이다.
+
+
+최종 제품/시험 조합은 대기 없이 40통과(32.9초, exit0, skipped/flaky 0)였다. 최종 report SHA256=d630396dddc1914ddbb6f511d00712ad0149c2c84482ac47bb4d0bd5301b6ab7, execution=b91b832165c1db7b8a2d58f560eb6f9fe0e85a182915a2db163f1b0487561d5d다. TypeScript --noEmit과 Vite 제품 빌드는 exit0이며 기존 large-chunk 경고만 남았다.
+
+별도 읽기 전용 검수는 제품 6개·시험 5개(11개 모두)를 검토했고 차단 결함 0개였다. 검수자는 시험을 실행하지 않고 원자료·소스·해시를 직접 대조했다. final 실행 뒤 시험 5개에서 EOF LF 1개만 제거했으며, 실행 당시 바이트는 review-final/frozen-tests에 SHA 일치로 보존했다. 제품 6개의 바이트는 final snapshot과 동일하다.

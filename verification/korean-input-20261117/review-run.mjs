@@ -1,0 +1,21 @@
+import { spawn } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { freemem } from 'node:os';
+import { resolve } from 'node:path';
+const variant = process.env.ARCVERA_IME_REVIEW_PHASE;
+if (!['before', 'after', 'final'].includes(variant)) throw Error('Expected explicit before/after phase');
+if (freemem() < 4 * 1024 ** 3) throw Error('Insufficient free physical memory');
+const directory = resolve('artifacts/korean-input-20261117/review-' + variant);
+mkdirSync(directory, { recursive: true });
+const argv = ['node_modules/@playwright/test/cli.js', 'test', 'tests/terminal-flow.spec.ts', 'tests/conversation.spec.ts', 'tests/extensions.spec.ts', 'tests/relay.spec.ts', 'tests/catalog.spec.ts', '--grep', 'IME|Shift\\+Enter|Unicode|한글 조합', '--config', 'verification/korean-input-20261117/playwright.config.ts', '--workers=1', '--reporter=line,json', '--output', directory + '/results'];
+const startedAt = new Date().toISOString();
+const child = spawn(process.execPath, argv, { windowsHide: true, env: { ...process.env, ARCVERA_IME_BASELINE: '0', PLAYWRIGHT_JSON_OUTPUT_NAME: directory + '/report.json' }, stdio: ['ignore', 'pipe', 'pipe'] });
+let stdout = '', stderr = '';
+child.stdout.on('data', part => { stdout += part; process.stdout.write(part); });
+child.stderr.on('data', part => { stderr += part; process.stderr.write(part); });
+child.on('error', error => { console.error(error); process.exitCode = 1; });
+child.on('exit', (code, signal) => {
+  writeFileSync(directory + '/stdout.log', stdout); writeFileSync(directory + '/stderr.log', stderr);
+  writeFileSync(directory + '/execution.json', JSON.stringify({ variant, argv: [process.execPath, ...argv], startedAt, finishedAt: new Date().toISOString(), code, signal, scope: 'Chromium/xterm + explicit IPC fixtures; not physical IME or CLI' }, null, 2) + '\n');
+  process.exitCode = code ?? 1;
+});

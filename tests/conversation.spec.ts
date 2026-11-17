@@ -1356,3 +1356,20 @@ test('D0035 LN06 backend page20 상한을 넘은 목록은 기존 선택·본문
   await expect(view(page).locator('.conversation-turns')).toHaveValue('recent-turn');
   await expect(view(page).locator('.conversation-messages')).toContainText('const safe = true');
 });
+
+
+test('IME11 composer focusout recovers ordinary Enter after missing compositionend', async ({ page }) => {
+  await conversation(page); const input = view(page).locator('.conversation-input');
+  await input.fill('한글'); await input.focus(); await input.dispatchEvent('compositionstart');
+  await view(page).locator('.conversation-attach').focus(); await input.focus(); await input.press('Enter');
+  await expect.poll(() => page.evaluate(() => (window as any).conversationFixture.calls.filter((c: any) => c.args.request?.type === 'send').length)).toBe(1);
+  await expect(input).toHaveValue('');
+});
+
+test('IME11 conversation search focusout recovers normal input and match navigation', async ({ page }) => {
+  await conversation(page); const search = view(page).locator('.conversation-search-input');
+  await search.focus(); await search.dispatchEvent('compositionstart');
+  await view(page).locator('.conversation-input').focus(); await search.focus(); await search.fill('답변');
+  await expect(view(page).locator('.conversation-search-result')).toContainText('일치 메시지 1개');
+  await search.press('Enter'); await expect(view(page).locator('.conversation-search-current')).toHaveCount(1);
+});

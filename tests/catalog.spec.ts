@@ -456,3 +456,17 @@ test('a preview completing after close cannot restore released history or overta
   await expect(page.locator('#catalog-messages')).not.toContainText('ALPHA ONLY');
   expect(await page.evaluate(() => (window as any).fixture.maxActive)).toBe(1);
 });
+
+
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
+  test('IME14 session catalog composition Escape preserves dialog: ' + signal, async ({ page }) => {
+    await mockNative(page); await page.locator('#catalog-open').click(); const search = page.locator('#catalog-search'); await search.focus();
+    await search.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: signal === 'keyCode229' ? 229 : 27, isComposing: signal === 'isComposing', bubbles: true, cancelable: true }));
+    }, signal);
+    await expect(page.locator('#catalog-dialog')).toBeVisible();
+    await page.locator('#catalog-refresh').focus(); await search.focus(); await search.press('Escape');
+    await expect(page.locator('#catalog-dialog')).toBeHidden();
+  });
+}

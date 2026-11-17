@@ -590,3 +590,20 @@ for (const nativeFailure of [false, true]) test(`confirmed app exit drains accep
   }
   expect(await extensionCalls(page)).toHaveLength(1);
 });
+
+
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
+  test('IME12 plugin catalog composition Enter is ignored: ' + signal, async ({ page }) => {
+    await fixture(page); await open(page); await page.locator('#extensions-plugin-discover').click();
+    const search = page.locator('#extensions-search'); await search.fill('한글');
+    const before = await extensionCalls(page, 'extensions_list');
+    const prevented = await search.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      const event = new KeyboardEvent('keydown', { key: 'Enter', keyCode: signal === 'keyCode229' ? 229 : 13, isComposing: signal === 'isComposing', bubbles: true, cancelable: true });
+      element.dispatchEvent(event); return event.defaultPrevented;
+    }, signal);
+    expect(prevented).toBe(false); expect(await extensionCalls(page, 'extensions_list')).toHaveLength(before.length);
+    await page.locator('#extensions-plugin-search').focus(); await search.focus(); await search.press('Enter');
+    await expect.poll(async () => (await extensionCalls(page, 'extensions_list')).length).toBe(before.length + 1);
+  });
+}
