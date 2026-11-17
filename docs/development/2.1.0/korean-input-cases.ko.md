@@ -44,4 +44,12 @@ IME09–14는 즉시 검색/resize, 선택 해제·재오픈·세션 전환 후 
 
 최종 제품/시험 조합은 대기 없이 40통과(32.9초, exit0, skipped/flaky 0)였다. 최종 report SHA256=d630396dddc1914ddbb6f511d00712ad0149c2c84482ac47bb4d0bd5301b6ab7, execution=b91b832165c1db7b8a2d58f560eb6f9fe0e85a182915a2db163f1b0487561d5d다. TypeScript --noEmit과 Vite 제품 빌드는 exit0이며 기존 large-chunk 경고만 남았다.
 
+## 실제 Windows 조합 Enter 추가 수정
+
+격리한 980f143 Windows WebView2 실행 파일에서 실제 한국어 입력기로 `gksrmf`를 입력해 `한글` 조합을 확인했다. 유효한 새 세션 폼에서 조합 확정 Enter는 keyup 전에 `Process/Enter/229`, `compositionend`, `Enter/13` 순서로 발생했고, 마지막 이벤트가 폼을 한 번 제출했다. 유효하지 않은 폼에서는 이 결함이 가려졌다. 명시적인 missing-CLI 시험 설정으로 Core 시작 전 오류가 났으며, Desktop에서 확인한 결함이다.
+
+IME15는 이 순서를 유효한 폼에 재현해 시작 0건, keyup 뒤 새 Enter에서 시작 1건을 검사한다. IME16은 keyup 없는 focusout 뒤 복구, IME17은 중복·반복 Enter 차단과 명시적 버튼 동작을 검사한다. 동일한 세 시험은 980f143에서 2실패·1통과, 공통 guard 수정 뒤 3통과였다. 조합 Enter는 keyup·다른 키·focusout·reset·창 blur까지 유지하며 약한 참조를 쓰고 타이머를 추가하지 않는다. 뒤따르는 브라우저 동작만 막고 확정된 입력은 검색과 마우스 동작에 제공한다. 기존 터미널 시험에는 다음 독립 Enter 전에 합성 Enter의 keyup을 보완했으며 원래 assertion은 모두 유지했다.
+
+관련 시험 합계 38건이 통과했다(28.7초, exit0). 이는 native IPC를 대체한 Chromium 핸들러 회귀 시험으로, 새 실행 파일의 실제 입력기 검증을 대신하지 않는다. 재빌드 뒤 유효한 폼에서 같은 native 사례를 실행해야 해당 경계를 검증했다고 판정할 수 있다. CLI 코드 변경은 없으며 최종 빌드·설치 요청은 아니다.
+
 별도 읽기 전용 검수는 제품 6개·시험 5개(11개 모두)를 검토했고 차단 결함 0개였다. 검수자는 시험을 실행하지 않고 원자료·소스·해시를 직접 대조했다. final 실행 뒤 시험 5개에서 EOF LF 1개만 제거했으며, 실행 당시 바이트는 review-final/frozen-tests에 SHA 일치로 보존했다. 제품 6개의 바이트는 final snapshot과 동일하다.

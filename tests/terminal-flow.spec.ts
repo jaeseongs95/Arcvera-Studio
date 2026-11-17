@@ -196,6 +196,7 @@ for (const signal of ['isComposing', 'keyCode229', 'compositionEvents'] as const
     await search.evaluate((element, signal) => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: signal === 'keyCode229' ? 229 : 27, isComposing: signal === 'isComposing', bubbles: true, cancelable: true })), signal);
     await expect(page.locator('#search-bar')).toBeVisible();
     if (signal === 'compositionEvents') await search.dispatchEvent('compositionend', { data: '한글' });
+    await search.dispatchEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13 });
     await search.press('Enter');
     await expect(page.locator('#search-result')).toHaveText('결과 없음');
     await search.press('Escape');
@@ -225,6 +226,7 @@ test('IME04 active composition without keyboard flags does not send Shift+Enter 
   await input(page).evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true, bubbles: true, cancelable: true })));
   expect(await page.evaluate(() => (window as any).flow.sent)).toEqual([]);
   await input(page).dispatchEvent('compositionend', { data: '' });
+  await input(page).dispatchEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true });
   await input(page).press('Shift+Enter');
   await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['\u001b\r']);
 });

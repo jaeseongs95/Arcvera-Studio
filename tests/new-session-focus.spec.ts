@@ -52,3 +52,45 @@ test('CREATE-ERROR rejected start preserves modal fields and retry',async({page}
  await expect(page.locator('#create-dialog')).toBeVisible();await expect(page.locator('#session-title')).toHaveValue('OWN_NEW_INPUT');await expect(page.locator('#session-cwd')).toHaveValue('D:\\alpha');await expect(page.locator('#create-submit')).toBeEnabled();
  expect(await page.evaluate(()=>(window as any).newFocusFixture.calls.filter((c:any)=>c.command==='session_write'))).toEqual([]);
 });
+
+// Replays observed Windows events; the following Playwright keydown exercises
+// Chromium's real implicit form submit. This is not a physical IME test.
+async function commitWithEnterHeld(page: Page) {
+ const title = page.locator('#session-title');
+ await title.fill('한글'); await title.focus();
+ await title.evaluate(node => {
+  node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+  node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Process', code: 'Enter', keyCode: 229, isComposing: true, bubbles: true, cancelable: true }));
+  node.dispatchEvent(new CompositionEvent('compositionend', { data: '글', bubbles: true }));
+ });
+}
+async function startCount(page: Page) {
+ return page.evaluate(() => (window as any).newFocusFixture.calls.filter((call: any) => call.command === 'start_session').length);
+}
+
+test('IME15 native commit Enter ordering cannot implicitly submit a valid form; next Enter works', async ({ page }) => {
+ await workspace(page); await commitWithEnterHeld(page);
+ await page.keyboard.down('Enter');
+ expect(await startCount(page)).toBe(0);
+ await expect(page.locator('#create-dialog')).toBeVisible();
+ await page.keyboard.up('Enter'); await page.keyboard.press('Enter');
+ await expect.poll(() => startCount(page)).toBe(1);
+ await expect(page.locator('#create-dialog')).not.toBeVisible();
+});
+
+test('IME16 focusout before commit Enter keyup restores ordinary Enter', async ({ page }) => {
+ await workspace(page); await commitWithEnterHeld(page);
+ await page.locator('#session-cwd').focus(); await page.locator('#session-title').focus();
+ await page.keyboard.press('Enter');
+ await expect.poll(() => startCount(page)).toBe(1);
+});
+
+test('IME17 duplicate and repeat commit Enter stay blocked; explicit button remains usable', async ({ page }) => {
+ await workspace(page); await commitWithEnterHeld(page);
+ await page.keyboard.down('Enter'); await page.keyboard.down('Enter');
+ expect(await startCount(page)).toBe(0);
+ await expect(page.locator('#create-dialog')).toBeVisible();
+ await page.locator('#create-submit').click();
+ await expect.poll(() => startCount(page)).toBe(1);
+ await page.keyboard.up('Enter');
+});

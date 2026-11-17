@@ -44,4 +44,12 @@ Raw execution, JSON reports, stdout and failed traces are under artifacts/korean
 
 The final product/test combination passed all 40 tests without the readiness wait (32.9s, exit0, zero skipped/flaky). Final report SHA256=d630396dddc1914ddbb6f511d00712ad0149c2c84482ac47bb4d0bd5301b6ab7; execution=b91b832165c1db7b8a2d58f560eb6f9fe0e85a182915a2db163f1b0487561d5d. TypeScript --noEmit and the production Vite build exited 0; the existing large-chunk warning remains.
 
+## Native Windows commit Enter follow-up
+
+Physical Korean IME input in the isolated 980f143 Windows WebView2 executable composed `gksrmf` as `한글`. On a valid new-session form, the commit press emitted `Process/Enter/229`, `compositionend`, then `Enter/13` before keyup. That trailing event incorrectly submitted the form once. An invalid form concealed the defect. The explicit missing-CLI fixture stopped before starting Core; this is a Desktop failure.
+
+IME15 replays this ordering against a valid form and checks zero starts, then exactly one start after keyup and a new Enter. IME16 checks recovery after focusout without keyup. IME17 checks duplicate/repeat Enter suppression and explicit button use. The unchanged three tests failed 2/passed 1 on 980f143, then passed 3 after the shared guard correction. The guard preserves the composing Enter until keyup, another key, focusout, reset or window blur, with weak targets and no timer. It prevents only the trailing browser action and leaves committed input available. Existing terminal fixtures now release their synthetic Enter before the later independent press; all original assertions remain.
+
+The targeted combined run passed 38 cases (28.7s, exit0). These are Chromium handler regressions with native IPC replaced, not proof of the new executable's physical IME behavior. Rebuild and repeat the native valid-form case before declaring that boundary verified. CLI code remains unchanged; no final build or installation is requested.
+
 Separate read-only review covered all six product modules and five test files with zero blocking findings. The reviewer read raw reports, source and hashes but did not execute tests. After final execution, only one trailing EOF LF was removed from each test file; exact executed bytes are digest-verified under review-final/frozen-tests. All six product files remain identical to the final snapshot.
