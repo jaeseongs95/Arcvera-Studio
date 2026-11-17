@@ -166,6 +166,129 @@ test('Shift+Enter sends the CLI newline key once while plain Enter and IME keep 
   await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['\u001b\r', '\r', 'a']);
 });
 
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents'] as const) {
+  test(`IME01 ${signal}: composition Escape preserves maximized layout`, async ({ page }) => {
+    await workspace(page);
+    await card(page).locator('.maximize').click();
+    await expect(card(page, 'flow-b')).toBeHidden();
+    await input(page).evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: signal === 'keyCode229' ? 229 : 27, isComposing: signal === 'isComposing', bubbles: true, cancelable: true }));
+    }, signal);
+    await expect(card(page, 'flow-b')).toBeHidden();
+    await expect(input(page)).toBeFocused();
+    if (signal === 'compositionEvents') await input(page).dispatchEvent('compositionend', { data: '' });
+    await input(page).press('Escape');
+    await expect(card(page, 'flow-b')).toBeVisible();
+  });
+
+  test(`IME03 ${signal}: composition Enter and Escape preserve terminal search`, async ({ page }) => {
+    await workspace(page);
+    await input(page).press('Control+Shift+f');
+    const search = page.locator('#terminal-search');
+    await expect(search).toBeFocused();
+    await search.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      (element as HTMLInputElement).value = '한글';
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: signal === 'keyCode229' ? 229 : 13, isComposing: signal === 'isComposing', bubbles: true, cancelable: true }));
+    }, signal);
+    await expect(page.locator('#search-result')).toHaveText('');
+    await search.evaluate((element, signal) => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: signal === 'keyCode229' ? 229 : 27, isComposing: signal === 'isComposing', bubbles: true, cancelable: true })), signal);
+    await expect(page.locator('#search-bar')).toBeVisible();
+    if (signal === 'compositionEvents') await search.dispatchEvent('compositionend', { data: '한글' });
+    await search.press('Enter');
+    await expect(page.locator('#search-result')).toHaveText('결과 없음');
+    await search.press('Escape');
+    await expect(page.locator('#search-bar')).toBeHidden();
+  });
+}
+
+test('IME02 composition does not open search or switch sessions; ordinary shortcuts still work', async ({ page }) => {
+  await workspace(page);
+  await input(page).dispatchEvent('compositionstart', { data: '' });
+  await input(page).evaluate(element => {
+    for (const key of [{ key: 'F', ctrlKey: true, shiftKey: true }, { key: 'Tab', ctrlKey: true }]) element.dispatchEvent(new KeyboardEvent('keydown', { ...key, isComposing: true, keyCode: 229, bubbles: true, cancelable: true }));
+  });
+  await expect(page.locator('#search-bar')).toBeHidden();
+  await expect(card(page)).toHaveClass(/focused/);
+  await expect(input(page)).toBeFocused();
+  await input(page).dispatchEvent('compositionend', { data: '' });
+  await input(page).press('Control+Tab');
+  await expect(card(page, 'flow-b')).toHaveClass(/focused/);
+  await card(page, 'flow-b').locator('.xterm-helper-textarea').press('Control+Shift+f');
+  await expect(page.locator('#terminal-search')).toBeFocused();
+});
+
+test('IME04 active composition without keyboard flags does not send Shift+Enter to CLI', async ({ page }) => {
+  await workspace(page);
+  await input(page).dispatchEvent('compositionstart', { data: '' });
+  await input(page).evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, shiftKey: true, bubbles: true, cancelable: true })));
+  expect(await page.evaluate(() => (window as any).flow.sent)).toEqual([]);
+  await input(page).dispatchEvent('compositionend', { data: '' });
+  await input(page).press('Shift+Enter');
+  await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['\u001b\r']);
+});
+
+test('IME05 Chromium composition commits Korean once through real xterm', async ({ page, context }) => {
+  await workspace(page);
+  const cdp = await context.newCDPSession(page);
+  try {
+    for (const text of ['ㅎ', '하', '한']) await cdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+    expect(await page.evaluate(() => (window as any).flow.sent)).toEqual([]);
+    await cdp.send('Input.insertText', { text: '한' });
+    await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['한']);
+    await input(page).press('Enter');
+    await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['한', '\r']);
+  } finally { await cdp.detach(); }
+});
+
+
+for (const ending of ['cancel', 'commit-end-input', 'commit-input-end'] as const) {
+  test('IME07 search composition ' + ending + ' preserves one search per changed value', async ({ page }) => {
+    await page.route('**/src/main.ts*', async route => {
+      const response = await route.fetch();
+      await route.fulfill({ response, body: await response.text() + '\nwindow.__imeTerminals = terminals;\n' });
+    });
+    await workspace(page);
+    await page.evaluate(async () => {
+      const state = window as any;
+      const terminal = state.__imeTerminals.get('flow-a').terminal;
+      terminal.reset();
+      await new Promise<void>(resolve => terminal.write('한 한', resolve));
+    });
+    await input(page).press('Control+Shift+f');
+    const search = page.locator('#terminal-search');
+    if (ending === 'cancel') {
+      await search.evaluate(element => { (element as HTMLInputElement).value = '한'; });
+      await search.press('Enter');
+    }
+    const position = () => page.evaluate(() => (window as any).__imeTerminals.get('flow-a').terminal.getSelectionPosition());
+    if (ending === 'cancel') await expect.poll(position).toEqual({ start: { x: 0, y: 0 }, end: { x: 2, y: 0 } });
+    await search.evaluate((element, ending) => {
+      element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      (element as HTMLInputElement).value = '한';
+      element.dispatchEvent(new InputEvent('input', { data: '한', inputType: 'insertCompositionText', isComposing: true, bubbles: true }));
+      const end = () => element.dispatchEvent(new CompositionEvent('compositionend', { data: ending === 'cancel' ? '' : '한', bubbles: true }));
+      const commit = () => element.dispatchEvent(new InputEvent('input', { data: '한', inputType: 'insertText', bubbles: true }));
+      if (ending === 'commit-input-end') { commit(); end(); }
+      else { end(); if (ending !== 'cancel') commit(); }
+    }, ending);
+    await expect.poll(position).toEqual({ start: { x: 0, y: 0 }, end: { x: 2, y: 0 } });
+    await search.press('Enter');
+    await expect.poll(position).toEqual({ start: { x: 3, y: 0 }, end: { x: 5, y: 0 } });
+  });
+}
+
+test('IME08 focusout clears stale composition tracking for ordinary Escape', async ({ page }) => {
+  await workspace(page);
+  await card(page).locator('.maximize').click();
+  await input(page).dispatchEvent('compositionstart', { data: '' });
+  await page.locator('#search-toggle').focus();
+  await input(page).focus();
+  await input(page).press('Escape');
+  await expect(card(page, 'flow-b')).toBeVisible();
+});
+
 test('held native input retains at most128 operations, preserves order and resumes stdin after drain', async ({ page }) => {
   await workspace(page);
   await page.evaluate(() => { (window as any).flow.holdWrites = true; });

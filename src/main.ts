@@ -32,6 +32,15 @@ import { bindAttribute, bindText, getLanguage, languageStorageError, onLanguageC
 const native = isTauri();
 const demo = !native && new URLSearchParams(location.search).has('demo');
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+// WebViews can report IME keys through either flag or the legacy 229 code.
+// Track the event sequence too, without retaining detached terminal textareas.
+const composingInputs = new WeakSet<EventTarget>();
+document.addEventListener('compositionstart', event => { if (event.target) composingInputs.add(event.target); }, true);
+document.addEventListener('compositionend', event => { if (event.target) composingInputs.delete(event.target); }, true);
+document.addEventListener('focusout', event => { if (event.target) composingInputs.delete(event.target); }, true);
+function isCompositionKey(event: KeyboardEvent) {
+  return event.isComposing || event.keyCode === 229 || !!event.target && composingInputs.has(event.target);
+}
 const states: Record<string, [string, string]> = { restored: ['저장됨 · 미실행', 'Saved · not started'], notLoaded: ['상태 미확인', 'Unknown state'], starting: ['시작 중', 'Starting'], running: ['실행 중', 'Running'], idle: ['입력 가능', 'Ready'], waiting: ['응답 대기', 'Waiting for response'], stopping: ['종료 중', 'Stopping'], stopped: ['종료됨', 'Stopped'], exited: ['종료됨', 'Exited'], error: ['오류', 'Error'], unknown: ['상태 미확인', 'Unknown state'] };
 function stateLabels(state: string): [string, string] { return states[state] ?? states.unknown; }
 const sessions = new Map<string, Session>();
@@ -660,14 +669,14 @@ function createTerminal(session: Session) {
     // Let the browser dispatch xterm's native copy/paste events, rather than
     // translating Ctrl+C/Ctrl+V to CLI control characters. Unselected Ctrl+C
     // still interrupts the CLI; paste keeps xterm's bracketed-paste handling.
-    if (!event.isComposing && event.keyCode !== 229 && event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (!isCompositionKey(event) && event.ctrlKey && !event.altKey && !event.metaKey) {
       const key = event.key.toLowerCase();
       if (key === 'v' || (key === 'c' && terminal.hasSelection())) return false;
     }
     if (event.key === 'Enter' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       // Windows 콘솔에서도 줄바꿈으로 해석되는 Alt+Enter를 보낸다.
       // 용량 제한과 세션 세대 검사를 거치는 기존 입력 대기열을 사용한다.
-      if (event.isComposing || event.keyCode === 229) return false;
+      if (isCompositionKey(event)) return false;
       event.preventDefault();
       if (event.type === 'keydown') sendInput(session.id, '\u001b\r');
       return false;
@@ -1407,10 +1416,16 @@ $('#confirm-exit').onclick = () => void requestExit();
 unconfirmedExitButton.onclick = () => void requestExit(true);
 
 function toggleSearch(force?: boolean) { searchVisible = force ?? !searchVisible; $('#search-bar').hidden = !searchVisible; if (searchVisible) $<HTMLInputElement>('#terminal-search').focus(); }
-function find(previous = false) { const value = $<HTMLInputElement>('#terminal-search').value; const search = terminals.get(active)?.search; const found = !!value && search && (previous ? search.findPrevious(value) : search.findNext(value)); bindText($('#search-result'), !value ? '' : found ? '결과 찾음' : '결과 없음', !value ? '' : found ? 'Match found' : 'No matches'); }
-$('#search-toggle').onclick = () => toggleSearch(); $('#search-close').onclick = () => toggleSearch(false); $('#search-prev').onclick = () => find(true); $('#search-next').onclick = () => find(); $('#terminal-search').oninput = () => find(); $('#terminal-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); find(event.shiftKey); } if (event.key === 'Escape') toggleSearch(false); };
+let searchedInputValue = '';
+function find(previous = false) { const value = $<HTMLInputElement>('#terminal-search').value; const search = terminals.get(active)?.search; const found = !!value && search && (previous ? search.findPrevious(value) : search.findNext(value)); searchedInputValue = value; bindText($('#search-result'), !value ? '' : found ? '결과 찾음' : '결과 없음', !value ? '' : found ? 'Match found' : 'No matches'); }
+$('#search-toggle').onclick = () => toggleSearch(); $('#search-close').onclick = () => toggleSearch(false); $('#search-prev').onclick = () => find(true); $('#search-next').onclick = () => find();
+// A cancelled composition or its final input event must not advance the same query twice.
+function findChangedInput() { if ($<HTMLInputElement>('#terminal-search').value !== searchedInputValue) find(); }
+$('#terminal-search').oninput = event => { if (!(event as InputEvent).isComposing && !composingInputs.has(event.target!)) findChangedInput(); };
+$('#terminal-search').addEventListener('compositionend', findChangedInput);
+$('#terminal-search').onkeydown = event => { if (isCompositionKey(event)) return; if (event.key === 'Enter') { event.preventDefault(); find(event.shiftKey); } if (event.key === 'Escape') toggleSearch(false); };
 document.addEventListener('keydown', event => {
-  if (document.querySelector('dialog[open]')) return;
+  if (isCompositionKey(event) || document.querySelector('dialog[open]')) return;
   let id: string | undefined;
   const visible = visibleOrder();
   if (event.altKey && /^[1-9]$/.test(event.key)) id = visible[Number(event.key) - 1];
