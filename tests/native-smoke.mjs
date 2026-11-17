@@ -159,19 +159,53 @@ async function stopOurs() {
   }
 }
 
+// Optional parent IPC contract. No release-harness path or package dependency.
+async function requestHarnessPreclose(timeoutMs = 20_000) {
+  if (process.env.ARCVERA_HARNESS_PRECLOSE !== '1') return;
+  if (!process.connected || typeof process.send !== 'function') throw new Error('PRECLOSE_IPC_UNAVAILABLE');
+  const protocol = 'arcvera-harness-preclose-v1';
+  const id = `${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  await new Promise((resolve, reject) => {
+    let timer; let done = false;
+    const finish = error => {
+      if (done) return; done = true; clearTimeout(timer);
+      process.removeListener('message', message); process.removeListener('disconnect', disconnected); process.removeListener('error', failed);
+      error ? reject(error) : resolve();
+    };
+    const message = value => {
+      if (value?.protocol === protocol && value.type === 'ack' && value.id === id) finish(value.ok === true ? null : new Error('PRECLOSE_CAPTURE_FAILED'));
+    };
+    const disconnected = () => finish(new Error('PRECLOSE_IPC_DISCONNECTED'));
+    const failed = () => finish(new Error('PRECLOSE_IPC_ERROR'));
+    process.on('message', message); process.once('disconnect', disconnected); process.once('error', failed);
+    timer = setTimeout(() => finish(new Error('PRECLOSE_ACK_TIMEOUT')), timeoutMs);
+    try { process.send({ protocol, type: 'request', id }, error => { if (error) failed(); }); } catch { failed(); }
+  });
+}
+
 async function completeExit() {
+  const deadline = Date.now() + 55_000;
   await assertOnlyOurs();
   await page.locator('#exit').click();
   await page.locator('#exit-dialog').waitFor({ state: 'visible' });
   // Re-check after opening the concrete confirmation, before the destructive action.
   await assertOnlyOurs();
+  await requestHarnessPreclose(Math.max(1, Math.min(20_000, deadline - Date.now())));
+  await assertOnlyOurs();
+  let detach, cancelClose;
   const closed = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Native app did not close after confirmed exit')), 45_000);
-    const done = () => { clearTimeout(timer); resolve(); };
+    const done = () => { detach(); resolve(); };
+    const timeout = process.env.ARCVERA_HARNESS_PRECLOSE === '1' ? Math.max(1, Math.min(45_000, deadline - Date.now())) : 45_000;
+    const timer = setTimeout(() => { detach(); reject(new Error('Native app did not close after confirmed exit')); }, timeout);
+    detach = () => { clearTimeout(timer); page.removeListener('close', done); browser.removeListener('disconnected', done); };
+    cancelClose = error => { detach(); reject(error); };
     page.once('close', done); browser.once('disconnected', done);
   });
-  await page.locator('#confirm-exit').click();
-  await closed;
+  // A failed confirm click must still settle the close waiter and its listeners.
+  closed.catch(() => {});
+  try { await page.locator('#confirm-exit').click(); await closed; }
+  catch (error) { cancelClose(error); await closed.catch(() => {}); throw error; }
+  finally { detach(); }
   exited = true;
   return { confirmedThroughVisibleDialog: true, targetClosed: true };
 }
