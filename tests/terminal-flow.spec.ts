@@ -258,6 +258,15 @@ for (const ending of ['cancel', 'commit-end-input', 'commit-input-end'] as const
     });
     await input(page).press('Control+Shift+f');
     const search = page.locator('#terminal-search');
+    await expect(search).toBeFocused();
+    // Opening search changes the terminal height. Wait for the real fit before
+    // observing selection: xterm clears selection when its row count changes.
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    await expect.poll(() => page.evaluate(() => {
+      const { terminal, fit } = (window as any).__imeTerminals.get('flow-a');
+      const dimensions = fit.proposeDimensions();
+      return !!dimensions && terminal.cols === dimensions.cols && terminal.rows === dimensions.rows;
+    })).toBe(true);
     if (ending === 'cancel') {
       await search.evaluate(element => { (element as HTMLInputElement).value = '한'; });
       await search.press('Enter');

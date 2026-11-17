@@ -25,3 +25,7 @@
 - 시험 계획을 실제 workflow task digest와 wrapper 명령에 연결했다. 초기 계획의 직접 Playwright argv와 차이가 있으며 서명 증명이나 check-proof 수용 통과는 주장하지 않는다. 초기 서버 cwd 설정 실패와 중단 실행은 별도 보존하고 제품 근거 수에 넣지 않았다.
 
 Windows 물리 IME·native WebView2·실제 CLI·최종 Core 연동은 미검증이다. native IPC 대체물은 브라우저 fixture에만 있다. CLI 소스와 바이너리는 바꾸지 않았다. 네이티브 시험 전 새 커밋에 연결된 개발용 실행 파일이 필요하며 이 결과로 설치 승인이나 2.1.0 전체 릴리스 준비를 선언하지 않는다.
+
+CI 후속: 실행 44039888650의 IME07 commit-input-end는 검색 성공 문구가 있지만 xterm 선택이 남지 않아 실패했다. xterm SelectionService는 행 수가 바뀌면 선택을 지운다. 배치 경합 가능성이 있으나 해당 CI trace에 resize를 직접 기록한 것은 아니다. 선택 판정 전에 검색을 열고 fonts.ready 뒤 실제 행·열이 FitAddon.proposeDimensions()와 같은지 확인한다. 첫 결과·다음 결과 좌표와 취소 판정은 유지하고 실패 사례 재시도나 기대값 교체는 하지 않는다.
+
+배치 준비 조건을 적용한 동일 20개 시험에서 고정 a02913d는 11실패·9통과(종료코드 1), 제품 코드가 동일한 수정 후보는 20통과(종료코드 0, 18.6초)였다. 시험 SHA256은 a96fd14e76b63e1d5d1d101a9218784d468ff922f467f364e3a69bfeee158c13이며 TypeScript는 종료코드 0이었다. 별도 읽기 전용 리뷰에서 차단 결함이나 기대 결과 약화는 없었다. 배치 준비 후 조합 검색을 확인하며 이후 resize와의 임의 중첩까지 검증한 것은 아니다. 현재 before/after는 이 비교이고, 원 16개 기준판과 원 20통과는 before-original16·after-original20에 보존했다. CI44039888650은 실패 기록을 유지한다. bundled·source-1·native는 통과했지만 패키징은 차단됐다.
