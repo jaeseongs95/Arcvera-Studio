@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $env:CARGO_TERM_COLOR = 'never'
 $path = 'src-tauri/src/codex_mcp.rs'
-$baseline = 'f113cc637184aaea9a489bec21141dfd5f1012d6'
+$baseline = '405644e5ae4a273a9bb4c8b7a1b2e4e922e5c04a'
 $directory = 'artifacts/native-adapters/mcp-url-query'
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 $utf8 = [Text.UTF8Encoding]::new($false, $true)

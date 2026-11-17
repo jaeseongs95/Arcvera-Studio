@@ -132,13 +132,14 @@ fn validate_url(url: &str) -> Result<(), String> {
         parsed.set_query(Some(&query));
     }
     if parsed.query_pairs().any(|(key, _)| {
-        let key: String = key.chars().filter(|c| !matches!(c, '_' | '-' | '.' | '[' | ']')).flat_map(char::to_lowercase).collect();
+        let key: String = key.chars().filter(|c| !c.is_whitespace() && !matches!(c, '_' | '-' | '.' | '[' | ']')).flat_map(char::to_lowercase).collect();
         matches!(key.as_str(), "token" | "key" | "apikey" | "accesstoken" | "refreshtoken" | "idtoken"
             | "bearertoken" | "auth" | "authtoken" | "authorization" | "password" | "passwd" | "pwd" | "secret"
             | "jwt" | "oauth" | "oauthtoken" | "sessiontoken" | "sessionkey" | "privatekey" | "pat"
-            | "clientsecret" | "credential" | "credentials" | "accesskey" | "accesskeyid"
-            | "awsaccesskeyid" | "signature" | "sig" | "xamzsignature" | "xamzcredential"
-            | "xgoogsignature" | "xgoogcredential")
+            | "secretkey" | "apitoken" | "authkey" | "xapikey" | "xauthtoken" | "clientkey" | "privatetoken"
+            | "clientsecret" | "credential" | "credentials" | "accesskey" | "accesskeyid" | "secretaccesskey"
+            | "awsaccesskeyid" | "awssecretaccesskey" | "securitytoken" | "xamzsecuritytoken" | "xgoogsecuritytoken"
+            | "signature" | "sig" | "xamzsignature" | "xamzcredential" | "xgoogsignature" | "xgoogcredential")
     }) {
         return Err("MCP URL의 인증 query 매개변수는 저장할 수 없습니다. 토큰 값 대신 Bearer 환경변수 이름을 사용하세요.".into());
     }
@@ -477,28 +478,28 @@ mod tests {
 
     #[test]
     fn credential_query_add_is_rejected_before_rpc_without_echoing_secrets() {
+        let mut violations = Vec::new();
         for query in rejected_credential_queries() {
             let transport = McpTransport::StreamableHttp { url:format!("https://fixture.invalid/mcp?{query}=QUERY_SECRET_SENTINEL"), bearer_token_env_var:Some("FIXTURE_TOKEN".into()) };
             let mut calls = 0;
             let result = add(Path::new("."), "fixture-http", &transport, &mut |_, _| { calls += 1; Ok(config()) });
-            assert!(result.is_err(), "credential query reached the RPC boundary: {query}");
-            assert_eq!(calls, 0, "credential query reached the RPC boundary: {query}");
-            let error = result.unwrap_err();
-            assert!(!error.contains("QUERY_SECRET_SENTINEL"));
-            assert!(error.contains("환경변수"));
+            let sanitized = result.as_ref().err().is_some_and(|error| error.contains("환경변수") && !error.contains("QUERY_SECRET_SENTINEL"));
+            if calls != 0 || !sanitized { violations.push((query, calls, sanitized)); }
         }
+        assert!(violations.is_empty(), "credential add violations (query, RPC calls, sanitized rejection): {violations:?}");
     }
     #[test]
     fn credential_query_edit_is_rejected_before_write_without_echoing_secrets() {
+        let mut violations = Vec::new();
         for query in rejected_credential_queries() {
             let before = saved(json!({"url":"https://fixture.invalid/mcp","bearer_token_env_var":"EXISTING_TOKEN"}));
             let update = patch(json!({"transport":{"type":"streamableHttp","url":format!("https://fixture.invalid/mcp?{query}=QUERY_SECRET_SENTINEL")}}));
             let (result, requests) = run_change(before, "v1", Some(&update), Ok(write_ok()), Ok(config()));
-            assert!(result.is_err(), "credential URL patch was accepted: {query}");
-            assert_eq!(requests.len(), 1, "credential URL patch reached a write: {query}");
-            assert_eq!(requests[0].0, "config/read");
-            assert!(!result.unwrap_err().contains("QUERY_SECRET_SENTINEL"));
+            let read_only = requests.len() == 1 && requests[0].0 == "config/read";
+            let sanitized = result.as_ref().err().is_some_and(|error| error.contains("환경변수") && !error.contains("QUERY_SECRET_SENTINEL"));
+            if !read_only || !sanitized { violations.push((query, requests.len(), sanitized)); }
         }
+        assert!(violations.is_empty(), "credential edit violations (query, RPC calls, sanitized rejection): {violations:?}");
     }
 
     fn rejected_credential_queries() -> &'static [&'static str] {
@@ -509,13 +510,19 @@ mod tests {
             "region=us;oauth_token", "region=us;;api.key", "region=us;auth%5Btoken%5D",
             "token", "key", "api_key", "API-Key", "access_token", "%74oken", "client%5Fsecret",
             "password", "X-Amz-Signature", "authorization", "refresh_token", "%61ccess_token", "signature",
+            "aws_secret_access_key", "secret_access_key", "X-Amz-Security-Token", "x-goog-security-token",
+            "security_token", "secret_key", "api_token", "auth_key", "x-api-key", "x-auth-token", "client_key", "private_token",
+            "%20token", "token+", "api+key", "%20AWS_Secret_Access_Key%20", "client%09key",
+            "private%0Atoken", "%C2%A0token%C2%A0", "region=us;X-Amz-Security-Token",
         ]
     }
 
     #[test]
     fn ordinary_query_punctuation_and_escaped_values_are_preserved_on_add_and_edit() {
         for query in ["region=us;limit=5", "page.size=5&filter[region]=us", "region=us%3Btoken%3DSENTINEL",
-            "region=us%26token%3DSENTINEL", "%2574oken=SENTINEL", "tokenizer=local&session_count=2", "region=us+east"] {
+            "region=us%26token%3DSENTINEL", "%2574oken=SENTINEL", "tokenizer=local&session_count=2", "region=us+east",
+            "client_id=public&public_key_id=public", "private_token_count=2&security_tokenizer=local",
+            "display+name=public", "region=us%26aws_secret_access_key%3DSENTINEL"] {
             let url = format!("https://fixture.invalid/mcp?{query}");
             let value = json!({"url":url});
             let transport = McpTransport::StreamableHttp { url:url.clone(), bearer_token_env_var:None };
