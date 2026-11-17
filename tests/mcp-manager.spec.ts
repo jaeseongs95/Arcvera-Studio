@@ -91,13 +91,13 @@ test('M02 HTTP stores URL and bearer environment name without reflecting URL in 
   await page.locator('#extensions-mcp-name').fill('http-server');
   await page.locator('#extensions-mcp-transport').selectOption('streamableHttp');
   await expect(page.locator('#extensions-mcp-stdio')).toBeHidden();
-  await page.locator('#extensions-mcp-url').fill('https://fixture.invalid/mcp?token=SENTINEL');
+  await page.locator('#extensions-mcp-url').fill('https://fixture.invalid/mcp?region=SENTINEL');
   await page.locator('#extensions-mcp-bearer').fill('FIXTURE_TOKEN');
   await page.locator('#extensions-mcp-add').click();
   await expect(page.locator('#extensions-review')).not.toContainText('SENTINEL');
   await page.locator('#extensions-review-confirm').click();
   await expect(page.locator('#extensions-list')).toContainText('http-server');
-  expect(await page.evaluate(() => (window as any).mcpFixture.mutations[0].request.transport)).toEqual({ type: 'streamableHttp', url: 'https://fixture.invalid/mcp?token=SENTINEL', bearerTokenEnvVar: 'FIXTURE_TOKEN' });
+  expect(await page.evaluate(() => (window as any).mcpFixture.mutations[0].request.transport)).toEqual({ type: 'streamableHttp', url: 'https://fixture.invalid/mcp?region=SENTINEL', bearerTokenEnvVar: 'FIXTURE_TOKEN' });
   await expect(page.locator('#extensions-mcp-url')).toHaveValue('');
 });
 
@@ -170,14 +170,14 @@ test('M210 transport switch explains removed settings without exposing replaceme
   await fixture(page);
   await page.locator('#extensions-mcp-edit').click();
   await page.locator('#extensions-mcp-transport').selectOption('streamableHttp');
-  await page.locator('#extensions-mcp-url').fill('https://fixture.invalid/mcp?token=SENTINEL');
+  await page.locator('#extensions-mcp-url').fill('https://fixture.invalid/mcp?region=SENTINEL');
   await page.locator('#extensions-mcp-add').click();
   await expect(page.locator('#extensions-review')).toContainText('STDIO');
   await expect(page.locator('#extensions-review')).toContainText('삭제');
   await expect(page.locator('#extensions-review')).not.toContainText('SENTINEL');
   await page.locator('#extensions-review-confirm').click();
   expect(await page.evaluate(() => (window as any).mcpFixture.mutations[0].request.patch)).toEqual({
-    transport: { type: 'streamableHttp', url: 'https://fixture.invalid/mcp?token=SENTINEL' },
+    transport: { type: 'streamableHttp', url: 'https://fixture.invalid/mcp?region=SENTINEL' },
   });
 });
 

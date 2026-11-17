@@ -29,6 +29,12 @@ Core `d6026cbd6157fa18d966031792c537ac383377ac`의 `codex-rs/config/src/mcp_type
 
 ## IPC 연결 계약
 
+### 인증 query 입력 회귀
+
+새 HTTP URL과 명시적 URL 수정은 구성 쓰기 전에 인증 query 이름을 거부한다. 이름은 form decode 후 영문 대소문자와 `_`/`-` 차이를 제거해 비교하며 `token`, `key`, `api_key`, `access_token`, `client_secret`, 비밀번호와 서명 자격값 등이 대상이다. 오류에 입력 URL이나 값을 되풀이하지 않으며 인증에는 Bearer 환경변수 참조를 사용한다. 일반 query는 원문을 보존한다. 관련 없는 수정에서 생략한 URL과 기존 보호값은 그대로 유지한다. 기존 자료를 이전하거나 임의의 이름·경로에 숨긴 비밀을 모두 탐지하는 기능은 아니다.
+
+실행 전 정의한 사례: `credential_query_add_is_rejected_before_rpc_without_echoing_secrets`는 인증 URL 추가의 RPC 0회를, `credential_query_edit_is_rejected_before_write_without_echoing_secrets`는 최초 구성 읽기 1회와 쓰기 0회를 요구한다. 기존 정확한 재조회·일반 HTTP query·기존 비밀값 보존 시험도 유지한다. 소스 UI fixture는 인증값이 아닌 `region` 매개변수를 사용하고 검토 화면에서 URL 값이 노출되지 않는지 계속 검사한다. native 전후 실행과 실제 Core·GUI 검증은 실행 영수증을 확보하기 전까지 미완료다.
+
 `McpServerPatch { transport?: McpTransportPatch, enabled?: boolean }`; transport는 `type` tagged union이다. STDIO는 optional command/args/env와 clearEnv, HTTP는 optional url/bearerTokenEnvVar와 clearBearerTokenEnvVar이다. omitted/null optional은 유지, 명시 args[]/env{}는 비움, clear flag는 키 삭제이며 set+clear는 거부한다. transport 변경에는 새 command/url을 명시해야 한다.
 
 `edit(directory,name,expected_version,&patch,rpc)`와 `remove(directory,name,expected_version,rpc)`는 저장과 정확한 readback만 확인한다. `list`는 configVersion과 editable을 반환한다. renderer가 raw keyPath/filePath를 지정하지 않는다. 현재 thread reload/status는 별도 부모 소유 구현이다.

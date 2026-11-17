@@ -124,6 +124,19 @@ fn validate_url(url: &str) -> Result<(), String> {
         || uri.authority().is_some_and(|authority| authority.as_str().contains('@')) || url.contains('#') {
         return Err("MCP URL은 사용자 정보와 fragment가 없는 HTTP(S) 주소여야 합니다.".into());
     }
+    // Use the existing HTTP stack's form decoder so escaped query names cannot
+    // bypass the credential check. Do not rewrite URLs or inspect saved values.
+    let parsed = reqwest::Url::parse(url).map_err(|_| "MCP URL은 유효한 HTTP(S) 주소여야 합니다.")?;
+    if parsed.query_pairs().any(|(key, _)| {
+        let key: String = key.chars().filter(|c| !matches!(c, '_' | '-')).flat_map(char::to_lowercase).collect();
+        matches!(key.as_str(), "token" | "key" | "apikey" | "accesstoken" | "refreshtoken" | "idtoken"
+            | "bearertoken" | "auth" | "authorization" | "password" | "passwd" | "pwd" | "secret"
+            | "clientsecret" | "credential" | "credentials" | "accesskey" | "accesskeyid"
+            | "awsaccesskeyid" | "signature" | "sig" | "xamzsignature" | "xamzcredential"
+            | "xgoogsignature" | "xgoogcredential")
+    }) {
+        return Err("MCP URL의 인증 query 매개변수는 저장할 수 없습니다. 토큰 값 대신 Bearer 환경변수 이름을 사용하세요.".into());
+    }
     Ok(())
 }
 fn transport_value(transport: &McpTransport) -> Result<Value, String> {
@@ -435,14 +448,14 @@ mod tests {
     }
     #[test]
     fn http_secret_values_stay_in_one_new_key_and_are_verified_in_the_user_layer() {
-        let transport=McpTransport::StreamableHttp {url:"https://fixture.invalid/mcp?token=SENTINEL".into(),bearer_token_env_var:Some("FIXTURE_TOKEN".into())};
+        let transport=McpTransport::StreamableHttp {url:"https://fixture.invalid/mcp?region=SENTINEL".into(),bearer_token_env_var:Some("FIXTURE_TOKEN".into())};
         let mut after=config();let value=transport_value(&transport).unwrap();
         after["config"]["mcp_servers"]["fixture-http"]=value.clone();after["layers"][0]["config"]["mcp_servers"]["fixture-http"]=value;
         let mut responses=vec![Ok(config()),Ok(write_ok()),Ok(after.clone())].into_iter();let mut writes=Vec::new();
         add(Path::new("."),"fixture-http",&transport,&mut |method,params| { if method=="config/value/write" { writes.push(params); } responses.next().unwrap() }).unwrap();
         assert_eq!(writes.len(),1);assert_eq!(writes[0]["keyPath"],"mcp_servers.\"fixture-http\"");
         assert!(!serde_json::to_string(&inventory(&after).unwrap()).unwrap().contains("SENTINEL"));
-        let project=json!({"name":{"type":"project","dotCodexFolder":env::temp_dir()},"config":{"mcp_servers":{"fixture-http":{"url":"https://fixture.invalid/mcp?token=SENTINEL"}}},"version":"project-v1"});
+        let project=json!({"name":{"type":"project","dotCodexFolder":env::temp_dir()},"config":{"mcp_servers":{"fixture-http":{"url":"https://fixture.invalid/mcp?region=SENTINEL"}}},"version":"project-v1"});
         after["layers"].as_array_mut().unwrap().push(project);
         let mut responses=vec![Ok(config()),Ok(write_ok()),Ok(after)].into_iter();
         assert!(add(Path::new("."),"fixture-http",&transport,&mut |_,_|responses.next().unwrap()).unwrap_err().contains("다른 계층"));
@@ -452,9 +465,35 @@ mod tests {
         for invalid in ["","space name","quote\"","line\n",&"x".repeat(129)] { assert!(add(Path::new("."),invalid,&stdio(),&mut |_,_|panic!("invalid input reached RPC")).is_err()); }
         for input in [json!({"type":"stdio","command":"tool","args":[],"url":"https://host"}),json!({"type":"streamableHttp","url":"https://host","env":{}})] { assert!(serde_json::from_value::<McpTransport>(input).is_err()); }
         for url in ["file:///tmp/a","https://user:secret@host/path","https://host/path#fragment","not-a-url"] { assert!(transport_value(&McpTransport::StreamableHttp {url:url.into(),bearer_token_env_var:None}).is_err()); }
-        let transport=McpTransport::StreamableHttp {url:"https://fixture.invalid/mcp?key=SENTINEL".into(),bearer_token_env_var:Some("FIXTURE_TOKEN".into())};
-        assert_eq!(transport_value(&transport).unwrap(),json!({"url":"https://fixture.invalid/mcp?key=SENTINEL","bearer_token_env_var":"FIXTURE_TOKEN"}));
+        let transport=McpTransport::StreamableHttp {url:"https://fixture.invalid/mcp?region=SENTINEL".into(),bearer_token_env_var:Some("FIXTURE_TOKEN".into())};
+        assert_eq!(transport_value(&transport).unwrap(),json!({"url":"https://fixture.invalid/mcp?region=SENTINEL","bearer_token_env_var":"FIXTURE_TOKEN"}));
         assert!(!format!("{transport:?}").contains("SENTINEL"));
+    }
+
+    #[test]
+    fn credential_query_add_is_rejected_before_rpc_without_echoing_secrets() {
+        for key in ["token", "key", "api_key", "API-Key", "access_token", "%74oken", "client%5Fsecret", "password", "X-Amz-Signature", "authorization", "refresh_token"] {
+            let transport = McpTransport::StreamableHttp { url:format!("https://fixture.invalid/mcp?region=local&{key}=QUERY_SECRET_SENTINEL"), bearer_token_env_var:Some("FIXTURE_TOKEN".into()) };
+            let mut calls = 0;
+            let result = add(Path::new("."), "fixture-http", &transport, &mut |_, _| { calls += 1; Ok(config()) });
+            assert!(result.is_err(), "credential query reached the RPC boundary: {key}");
+            assert_eq!(calls, 0, "credential query reached the RPC boundary: {key}");
+            let error = result.unwrap_err();
+            assert!(!error.contains("QUERY_SECRET_SENTINEL"));
+            assert!(error.contains("환경변수"));
+        }
+    }
+    #[test]
+    fn credential_query_edit_is_rejected_before_write_without_echoing_secrets() {
+        for key in ["token", "key", "API-Key", "%61ccess_token", "client_secret", "signature"] {
+            let before = saved(json!({"url":"https://fixture.invalid/mcp","bearer_token_env_var":"EXISTING_TOKEN"}));
+            let update = patch(json!({"transport":{"type":"streamableHttp","url":format!("https://fixture.invalid/mcp?{key}=QUERY_SECRET_SENTINEL")}}));
+            let (result, requests) = run_change(before, "v1", Some(&update), Ok(write_ok()), Ok(config()));
+            assert!(result.is_err(), "credential URL patch was accepted: {key}");
+            assert_eq!(requests.len(), 1, "credential URL patch reached a write: {key}");
+            assert_eq!(requests[0].0, "config/read");
+            assert!(!result.unwrap_err().contains("QUERY_SECRET_SENTINEL"));
+        }
     }
 
     fn saved(server: Value) -> Value {

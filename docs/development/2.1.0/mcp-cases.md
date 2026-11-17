@@ -29,6 +29,12 @@ Compared the raw types and actual transport validation at `codex-rs/config/src/m
 
 ## IPC integration contract
 
+### Credential query input regression
+
+New HTTP URLs and explicit URL edits reject credential query names before a configuration write. Names are form-decoded and compared without ASCII case or `_`/`-` differences; examples include `token`, `key`, `api_key`, `access_token`, `client_secret`, passwords and signing credentials. Errors never echo the supplied URL or value; use a bearer environment-variable reference for authentication. Ordinary query parameters remain literal. Omitted URLs, including protected values in an existing configuration, remain unchanged during unrelated edits. This is an input guard, not a migration or a detector of secrets hidden under arbitrary names or paths.
+
+Cases defined before execution: `credential_query_add_is_rejected_before_rpc_without_echoing_secrets` requires zero RPC calls for credential URL additions; `credential_query_edit_is_rejected_before_write_without_echoing_secrets` permits only the initial configuration read and no write. Existing exact-readback, safe HTTP query, and existing-secret preservation cases remain required. Source UI fixtures use a noncredential `region` parameter and still assert that reviews do not reveal raw URL values. Native paired execution and real Core/GUI validation are pending until their execution receipts are available.
+
 `McpServerPatch { transport?: McpTransportPatch, enabled?: boolean }`; transport is a `type`-tagged union. STDIO has optional command/args/env and clearEnv; HTTP has optional url/bearerTokenEnvVar and clearBearerTokenEnvVar. Omitted/null optionals preserve values, explicit args[]/env{} empty them, and clear flags delete keys; simultaneous set+clear is rejected. A transport change must explicitly supply the new command/url.
 
 `edit(directory,name,expected_version,&patch,rpc)` and `remove(directory,name,expected_version,rpc)` verify persistence and exact readback only. `list` returns configVersion and editable. The renderer does not specify raw keyPath/filePath. Current-thread reload/status is a separate parent-owned implementation.

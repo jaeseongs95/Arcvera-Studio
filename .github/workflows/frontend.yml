@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -129,6 +129,9 @@ jobs:
       - name: Prove the MCP one-time response validator boundary
         shell: pwsh
         run: ./scripts/verify-mcp-approval-boundary.ps1
+      - name: Prove credential query rejection against the same MCP cases
+        shell: pwsh
+        run: ./scripts/verify-mcp-url-query.ps1
       - name: Build a source-bound isolated development executable
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_fixtures }}
         shell: pwsh
