@@ -1,8 +1,8 @@
 // One document-lifetime tracker shared by all Desktop input handlers.
 // Weak targets do not retain disposed conversations or terminal textareas.
-const composingInputs = new WeakSet<EventTarget>();
+let composingInputs = new WeakSet<EventTarget>();
 let composingEnters = new WeakSet<EventTarget>();
-let opaqueCompositionKeys = new WeakSet<EventTarget>();
+let opaqueCompositionKeys = new WeakMap<EventTarget, number>();
 document.addEventListener('compositionstart', event => { if (event.target) composingInputs.add(event.target); }, true);
 document.addEventListener('compositionend', event => {
   if (!event.target) return;
@@ -15,39 +15,53 @@ document.addEventListener('focusout', event => { if (event.target) resetComposit
 const isEnter = (event: KeyboardEvent) => event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter';
 const isModifier = (event: KeyboardEvent) => ['Shift', 'Control', 'Alt', 'Meta', 'AltGraph'].includes(event.key);
 document.addEventListener('keydown', event => {
-  if (!event.target) return;
+  const target = event.target;
+  if (!target) return;
+  const nativeComposition = event.isComposing || event.keyCode === 229;
+  const composing = isComposingTarget(target);
+  if (event.key === 'Escape' && composing && !nativeComposition) {
+    // The browser would also dismiss a modal when its handler ignores Escape.
+    event.preventDefault();
+    return;
+  }
   if (!isEnter(event)) {
     if (isModifier(event)) return;
-    composingEnters.delete(event.target);
+    composingEnters.delete(target);
     if (!event.code && (event.key === 'Process' || event.keyCode === 229) &&
-        (event.isComposing || isComposingTarget(event.target))) opaqueCompositionKeys.add(event.target);
-    else opaqueCompositionKeys.delete(event.target);
+        (nativeComposition || composing)) {
+      const held = opaqueCompositionKeys.get(target) ?? 0;
+      if (!event.repeat || held === 0) opaqueCompositionKeys.set(target, held + 1);
+    } else opaqueCompositionKeys.delete(target);
     return;
   }
   // Windows can emit Process/229, compositionend, then Enter/13 for the
   // same physical press. Keep that press guarded until release, not a timer.
-  if (event.isComposing || event.keyCode === 229 || isComposingTarget(event.target)) {
-    composingEnters.add(event.target);
-  // Leave the IME's own events alone; suppress only the trailing browser action.
-  } else if (composingEnters.has(event.target)) {
-    event.preventDefault();
-    // The opaque press is now identified as Enter. An overlapping character's
-    // keyup must not clear its guard; ordinary keydown and focus resets remain.
-    opaqueCompositionKeys.delete(event.target);
+  if (nativeComposition || composing || composingEnters.has(target)) {
+    composingEnters.add(target);
+    // An unmarked key can also submit a form before compositionend.
+    if (!nativeComposition) {
+      event.preventDefault();
+      // Once identified as Enter, wait for Enter release instead of Process.
+      if (!composing) opaqueCompositionKeys.delete(target);
+    }
   }
 }, true);
 document.addEventListener('keyup', event => {
-  if (!event.target) return;
+  const target = event.target;
+  if (!target || isModifier(event)) return;
   // An opaque press can become Process, Enter, or a resolved character at release.
-  const opaqueReleased = opaqueCompositionKeys.has(event.target) && !isModifier(event);
-  if (isEnter(event) || opaqueReleased) {
-    composingEnters.delete(event.target);
-    opaqueCompositionKeys.delete(event.target);
+  const held = opaqueCompositionKeys.get(target) ?? 0;
+  if (isEnter(event) || held === 1) {
+    composingEnters.delete(target);
+    opaqueCompositionKeys.delete(target);
+  } else if (held > 1) {
+    opaqueCompositionKeys.set(target, held - 1);
   }
 }, true);
 window.addEventListener('blur', () => {
+  composingInputs = new WeakSet<EventTarget>();
   composingEnters = new WeakSet<EventTarget>();
-  opaqueCompositionKeys = new WeakSet<EventTarget>();
+  opaqueCompositionKeys = new WeakMap<EventTarget, number>();
 });
 
 export function isComposingTarget(target: EventTarget | null) { return !!target && composingInputs.has(target); }

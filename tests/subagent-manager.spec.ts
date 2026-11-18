@@ -263,6 +263,28 @@ test('직접 부모가 같은 에이전트만 표시하고 선택된 식별자�
   await expect(page.locator('.subagent-status')).toContainText('새로고침');
 });
 
+test('IME32 subagent list retains its committed filter until Korean search finishes', async ({ page }) => {
+  await fixture(page, { count: 2 });
+  await refresh(page);
+  const rows = page.locator('.subagent-row');
+  const search = page.locator('.subagent-search'); await search.focus();
+  await expect(rows).toHaveCount(2);
+  await search.evaluate((input: HTMLInputElement) => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = '조ㅅ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'insertCompositionText' }));
+  });
+  await expect(rows).toHaveCount(2);
+  await search.evaluate((input: HTMLInputElement) => {
+    input.value = '조사 담당 2';
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '조사 담당 2' }));
+  });
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('조사 담당 2');
+  await search.fill('');
+  await expect(rows).toHaveCount(2);
+});
+
 test('한 페이지 100개와 현재 페이지 검색·다음·처음 커서를 유지한다', async ({ page }) => {
   await fixture(page, { count: 101 });
   await page.evaluate(() => { (window as any).subagentFixture.snapshot.nextCursor = 'page-two-token'; });

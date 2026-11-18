@@ -602,8 +602,29 @@ for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
       const event = new KeyboardEvent('keydown', { key: 'Enter', keyCode: signal === 'keyCode229' ? 229 : 13, isComposing: signal === 'isComposing', bubbles: true, cancelable: true });
       element.dispatchEvent(event); return event.defaultPrevented;
     }, signal);
-    expect(prevented).toBe(false); expect(await extensionCalls(page, 'extensions_list')).toHaveLength(before.length);
+    expect(prevented).toBe(signal === 'compositionEvents');
+    expect(await extensionCalls(page, 'extensions_list')).toHaveLength(before.length);
     await page.locator('#extensions-plugin-search').focus(); await search.focus(); await search.press('Enter');
     await expect.poll(async () => (await extensionCalls(page, 'extensions_list')).length).toBe(before.length + 1);
   });
 }
+
+test('IME31 extensions keeps the previous filter until Korean search is committed', async ({ page }) => {
+  await fixture(page); await open(page);
+  const search = page.locator('#extensions-search'); await search.focus();
+  await expect(rows(page)).toContainText('review-kit');
+  await search.evaluate((input: HTMLInputElement) => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'ㅎ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'insertCompositionText' }));
+  });
+  await expect(rows(page)).toContainText('review-kit');
+  await search.evaluate((input: HTMLInputElement) => {
+    input.value = '한글';
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '한글' }));
+  });
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator('#extensions-list')).toContainText('검색 결과가 없습니다');
+  await search.fill('review');
+  await expect(rows(page)).toContainText('review-kit');
+});

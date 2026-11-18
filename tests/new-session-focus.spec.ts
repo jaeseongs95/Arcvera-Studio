@@ -118,6 +118,51 @@ test('IME21 composing character released before compositionend leaves ordinary E
  await page.keyboard.press('Enter'); await expect.poll(() => startCount(page)).toBe(1);
 });
 
+test('IME27 Enter without a composing flag cannot implicitly submit during composition', async ({ page }) => {
+ await workspace(page);
+ const title = page.locator('#session-title'); await title.focus();
+ await title.dispatchEvent('compositionstart', { bubbles: true });
+ await page.keyboard.press('Enter');
+ expect(await startCount(page)).toBe(0);
+ await expect(page.locator('#create-dialog')).toBeVisible();
+ await title.dispatchEvent('compositionend', { bubbles: true });
+ await page.keyboard.press('Enter');
+ await expect.poll(() => startCount(page)).toBe(1);
+});
+
+test('IME28 earlier opaque key release does not expose the following commit Enter', async ({ page }) => {
+ await workspace(page);
+ const title = page.locator('#session-title'); await title.fill('한글'); await title.focus();
+ await title.evaluate(node => {
+  const opaqueKey = { key: 'Process', code: '', keyCode: 229, isComposing: true, bubbles: true, cancelable: true };
+  node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+  node.dispatchEvent(new KeyboardEvent('keydown', opaqueKey));
+  node.dispatchEvent(new KeyboardEvent('keydown', opaqueKey));
+  node.dispatchEvent(new CompositionEvent('compositionend', { data: '글', bubbles: true }));
+  node.dispatchEvent(new KeyboardEvent('keyup', opaqueKey));
+ });
+ await page.keyboard.press('Enter');
+ expect(await startCount(page)).toBe(0);
+ await expect(page.locator('#create-dialog')).toBeVisible();
+ await page.keyboard.press('Enter');
+ await expect.poll(() => startCount(page)).toBe(1);
+});
+
+test('IME33 an opaque character release after compositionend leaves a new Enter usable', async ({ page }) => {
+ await workspace(page);
+ const title = page.locator('#session-title'); await title.fill('한글'); await title.focus();
+ await title.evaluate(node => {
+  const opaqueKey = { key: 'Process', code: '', keyCode: 229, isComposing: true, bubbles: true, cancelable: true };
+  node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+  node.dispatchEvent(new KeyboardEvent('keydown', opaqueKey));
+  node.dispatchEvent(new KeyboardEvent('keydown', { ...opaqueKey, repeat: true }));
+  node.dispatchEvent(new CompositionEvent('compositionend', { data: '글', bubbles: true }));
+  node.dispatchEvent(new KeyboardEvent('keyup', opaqueKey));
+ });
+ await page.keyboard.press('Enter');
+ await expect.poll(() => startCount(page)).toBe(1);
+});
+
 for (const reset of ['focusout', 'blur'] as const) {
  test(`${reset === 'focusout' ? 'IME22' : 'IME23'} empty-code held commit resets on ${reset}`, async ({ page }) => {
   await workspace(page); await commitWithEnterHeld(page, '');

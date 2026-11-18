@@ -97,7 +97,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
   let tab: Tab = 'plugins'; let snapshot: ExtensionsSnapshot | undefined; let cwd: string | null = null;
   let version = 0; let busy = false; let mutation: Promise<ExtensionsSnapshot> | undefined;
   let pendingRead: { token: number; cwd: string | null; catalogQuery: string | null } | undefined; let readPump: Promise<void> | undefined;
-  let catalogMode = false; let loadedCatalogQuery: string | null = null;
+  let catalogMode = false; let loadedCatalogQuery: string | null = null; let searchQuery = '';
   let pendingAction: Mutation | undefined;
   let mcpEditing: { name: string; configVersion: string; transport: 'stdio' | 'streamableHttp' } | undefined;
   let runtimeTarget: McpRuntimeTarget | undefined;
@@ -153,7 +153,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     if (!snapshot) return [];
     if (tab === 'plugins') {
       const installed = snapshot.plugins?.installed ?? []; const ids = new Set(installed.map(item => item.pluginId));
-      const items = catalogMode ? (loadedCatalogQuery === search.value.trim() ? snapshot.plugins?.available ?? [] : []).filter(item => !ids.has(item.pluginId)) : installed;
+      const items = catalogMode ? (loadedCatalogQuery === searchQuery ? snapshot.plugins?.available ?? [] : []).filter(item => !ids.has(item.pluginId)) : installed;
       return items.map(item => ({ id: item.pluginId, title: item.name, subtitle: `${item.marketplaceName}${item.version ? ` · ${item.version}` : ''}`, searchable: [item.name, item.pluginId, item.marketplaceName, item.source], item }));
     }
     if (tab === 'skills') return (snapshot.skills ?? []).map(item => ({ id: item.path, title: item.name, subtitle: item.description, searchable: [item.name, item.description, item.path, item.scope, item.pluginId ?? ''], item }));
@@ -267,7 +267,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     hookRuntimePanel?.setDisabled(busy || exitRequested || !!runtimeOperation);
   }
   function renderList() {
-    const query = search.value.trim().toLocaleLowerCase(); const filtered = rows().filter(row => !query || row.searchable.some(field => field.toLocaleLowerCase().includes(query)));
+    const query = searchQuery.toLocaleLowerCase(); const filtered = rows().filter(row => !query || row.searchable.some(field => field.toLocaleLowerCase().includes(query)));
     if (starts[tab] >= filtered.length) starts[tab] = Math.floor(Math.max(0, filtered.length - 1) / 250) * 250;
     const visible = filtered.slice(starts[tab], starts[tab] + limits[tab]);
     if (snapshot && !visible.some(row => row.id === selections[tab])) selections[tab] = visible[0]?.id;
@@ -319,7 +319,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     $('#extensions-plugin-discover').hidden = tab !== 'plugins';
     $('#extensions-plugin-search').hidden = tab !== 'plugins' || !catalogMode;
     text('#extensions-plugin-discover', catalogMode ? '설치된 플러그인' : '플러그인 추가', catalogMode ? 'Installed plugins' : 'Add a plugin');
-    $<HTMLButtonElement>('#extensions-plugin-search').disabled = busy || exitRequested || [...search.value.trim()].length < 2;
+    $<HTMLButtonElement>('#extensions-plugin-search').disabled = busy || exitRequested || [...searchQuery].length < 2;
     bindAttribute(search, 'placeholder', tab === 'plugins' && catalogMode ? '추가할 플러그인 이름 (두 글자 이상)' : '이름·설명·경로로 검색', tab === 'plugins' && catalogMode ? 'Plugin name to add (at least two characters)' : 'Search names, descriptions and paths');
   }
   function updateDestination() {
@@ -350,7 +350,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
   }
   function load() {
     if (exitRequested || busy && dialog.getAttribute('aria-busy') === 'true') return;
-    const catalogQuery = tab === 'plugins' && catalogMode ? search.value.trim() : null;
+    const catalogQuery = tab === 'plugins' && catalogMode ? searchQuery : null;
     if (catalogQuery !== null && [...catalogQuery].length < 2) return;
     cancelReview(); $('#extensions-error').hidden = true; setBusy(true); status('구성을 불러오는 중…', 'Loading configuration…');
     // ponytail: one active read and one replaceable intent; no server per popup reopen.
@@ -370,7 +370,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
     const operation = host.call<ExtensionsSnapshot>('extensions_mutate', { cwd, request }); mutation = operation;
     try {
       const value = await operation;
-      if (current(token)) { if (request.operation === 'addMcpServer' || request.operation === 'editMcpServer' && mcpEditing?.name === request.name) clearMcpInputs(); if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
+      if (current(token)) { if (request.operation === 'addMcpServer' || request.operation === 'editMcpServer' && mcpEditing?.name === request.name) clearMcpInputs(); if (request.operation === 'installPlugin') { catalogMode = false; loadedCatalogQuery = null; search.value = searchQuery = ''; } show(value); status('변경이 저장되고 선택한 문맥의 구성을 다시 확인했습니다.', 'Saved changes and read back the selected configuration.'); }
       else host.notify('확장 구성이 변경되었습니다. 확장 관리를 다시 열어 확인하세요.', false, 'Extension configuration changed. Reopen the manager to review it.');
     } catch (error) {
       if (current(token)) { snapshot = undefined; renderList(); showError(error); status('변경을 완료하지 못했습니다. 오류와 실제 구성을 확인하세요.', 'The change could not be completed. Review the error and refresh the actual configuration.'); }
@@ -420,10 +420,18 @@ export function createExtensionsManager(host: ExtensionsHost) {
   // A close event may arrive after the same dialog has already reopened.
   // open() synchronously retires the old view; a late event must not clear the new one.
   dialog.onclose = () => { if (!dialog.open) clearClosedView(); };
-  $('#extensions-refresh').onclick = load; search.oninput = () => { if (!busy && !exitRequested) { limits[tab] = 50; starts[tab] = 0; cancelReview(); renderList(); } };
+  function commitSearch() {
+    const query = search.value.trim();
+    if (query === searchQuery) return;
+    searchQuery = query;
+    if (!busy && !exitRequested) { limits[tab] = 50; starts[tab] = 0; cancelReview(); renderList(); }
+  }
+  $('#extensions-refresh').onclick = load;
+  search.oninput = event => { if (!isCompositionEvent(event)) commitSearch(); };
+  search.addEventListener('compositionend', commitSearch);
   $('#extensions-plugin-discover').onclick = () => {
     if (busy || exitRequested) return;
-    catalogMode = !catalogMode; loadedCatalogQuery = null; search.value = ''; delete selections.plugins; limits.plugins = 50; starts.plugins = 0; cancelReview(); renderList();
+    catalogMode = !catalogMode; loadedCatalogQuery = null; search.value = searchQuery = ''; delete selections.plugins; limits.plugins = 50; starts.plugins = 0; cancelReview(); renderList();
     if (catalogMode) search.focus(); else load();
   };
   $('#extensions-plugin-search').onclick = load;
@@ -591,7 +599,7 @@ export function createExtensionsManager(host: ExtensionsHost) {
       if (dialog.open || exitRequested) return;
       clearClosedView();
       const nextCwd = projectCwd || null; if (cwd !== nextCwd) for (const key of TABS) delete selections[key];
-      if (catalogMode) search.value = ''; catalogMode = false; loadedCatalogQuery = null;
+      if (catalogMode) search.value = searchQuery = ''; catalogMode = false; loadedCatalogQuery = null;
       snapshot = undefined; cwd = nextCwd; version++; busy = false; for (const key of TABS) { limits[key] = 50; starts[key] = 0; } $('#extensions-executable').textContent = '…';
       runtimeTarget = target && typeof target.id === 'string' && typeof target.threadId === 'string' && target.threadId && Number.isSafeInteger(target.generation) && target.generation > 0 ? { ...target } : undefined;
       if (cwd) { unbindText($('#extensions-project')); $('#extensions-project').textContent = cwd; } else text('#extensions-project', '사용자 구성 · 선택된 프로젝트 없음', 'User configuration · no project selected');

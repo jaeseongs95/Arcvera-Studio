@@ -1,4 +1,5 @@
 import { bindAttribute, bindText, getLanguage, onLanguageChange, t } from './i18n';
+import { isCompositionEvent } from './ime';
 import { MAX_WORKSPACE_SESSIONS } from './model';
 import './subagent-manager.css';
 
@@ -47,7 +48,7 @@ export function createSubagentManager(host: Host) {
   const rows = new Map<string, { signature: string; node: HTMLButtonElement }>();
   // ponytail: 동시 요청은 팝업 전체에서 하나. 세션별 미확인 표식은 제한 수 이후 새 변경을 막아 상한을 유지한다.
   const unresolved = new Map<string, { requestId: string; expectedParentRuntimeId: string; expectedRuntimeId: string | null }>();
-  let selected: Session | undefined; let agentId: string | undefined; let agents: Agent[] = [];
+  let selected: Session | undefined; let agentId: string | undefined; let agents: Agent[] = []; let query = '';
   let parentRuntimeId: string | undefined;
   let available = false; let supported = false; let connected = false; let fresh = false; let knownList = false; let remoteUnknown = false;
   let visible = true; let exiting = false; let disposed = false; let epoch = 0;
@@ -91,7 +92,7 @@ export function createSubagentManager(host: Host) {
   function readyToRead() { return live(epoch) && !request; }
   function render() {
     bindText($('.subagent-session'), selected ? `세션: ${selected.title}` : '', selected ? `Session: ${selected.title}` : '');
-    const list = $('.subagent-list'); const query = search.value.trim().toLocaleLowerCase();
+    const list = $('.subagent-list');
     const summary = `${t('이 페이지', 'This page')} · ${t('전체', 'All')} ${agents.length} · ${t('실행 중', 'Running')} ${agents.filter(agent => agent.status === 'running').length} · ${t('완료', 'Finished')} ${agents.filter(agent => ['completed', 'errored', 'closed'].includes(agent.status)).length}`;
     if ($('.subagent-summary').textContent !== summary) $('.subagent-summary').textContent = summary;
     const desired: HTMLElement[] = [];
@@ -236,7 +237,7 @@ export function createSubagentManager(host: Host) {
   function clear() {
     epoch++; selected = undefined; agentId = undefined; parentRuntimeId = undefined; available = false; agents = []; rows.clear();
     supported = false; connected = false; fresh = false; knownList = false; remoteUnknown = false; cursor = null; nextCursor = null; page = 1; overflow = false; confirming = false; deleteSnapshot = undefined;
-    clearTimeout(timer); prompt.value = ''; search.value = ''; filter.value = 'all'; $('.subagent-error').hidden = true; status('', ''); render();
+    clearTimeout(timer); prompt.value = ''; search.value = query = ''; filter.value = 'all'; $('.subagent-error').hidden = true; status('', ''); render();
   }
   const onClose = () => { if (!dialog.open) clear(); };
   const visibilityChanged = () => { clearTimeout(timer); deleteSnapshot = undefined; if (visible && !document.hidden && dialog.open) void refresh(); else { epoch++; controls(); } };
@@ -245,7 +246,15 @@ export function createSubagentManager(host: Host) {
   $('.subagent-refresh').onclick = () => void refresh();
   $('.subagent-first').onclick = () => { if (readyToRead()) void refresh(null, 1); };
   $('.subagent-next').onclick = () => { if (readyToRead() && fresh && nextCursor) void refresh(nextCursor, page + 1); };
-  search.oninput = render; $('.subagent-form').addEventListener('submit', onSubmit as EventListener);
+  function commitSearch() {
+    const nextQuery = search.value.trim().toLocaleLowerCase();
+    if (nextQuery === query) return;
+    query = nextQuery;
+    render();
+  }
+  search.oninput = event => { if (!isCompositionEvent(event)) commitSearch(); };
+  search.addEventListener('compositionend', commitSearch);
+  $('.subagent-form').addEventListener('submit', onSubmit as EventListener);
   filter.onchange = () => { deleteSnapshot = undefined; confirming = false; render(); scheduleRefresh(); };
   $('.subagent-interrupt').onclick = () => void mutate('interrupt'); $('.subagent-resume').onclick = () => void mutate('resume');
   $('.subagent-end').onclick = () => { if (!$<HTMLButtonElement>('.subagent-end').disabled) { deleteSnapshot = undefined; confirming = true; controls(); scheduleRefresh(); $<HTMLButtonElement>('.subagent-confirm-cancel').focus(); } };
