@@ -1,0 +1,21 @@
+.context-composition{min-width:0;max-width:100%;color:var(--text-primary,#dce1eb);font-size:12px;line-height:1.65}
+.context-composition,.context-composition *{box-sizing:border-box}
+.context-composition [hidden]{display:none!important}
+.context-composition h3{margin:0 0 10px;font-size:16px;font-weight:500;overflow-wrap:anywhere}
+.context-composition h4{margin:0 0 10px;font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.context-composition .context-composition-status{margin:0 0 12px;font-size:12px;color:var(--text-secondary,#b0bbce);overflow-wrap:anywhere}
+.context-composition-actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.context-composition-actions button{max-width:100%;padding:8px 11px;border:1px solid var(--border,#586078);border-radius:5px;background:var(--surface,#1c202c);color:inherit;font-size:12px;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.context-composition-actions button:disabled{opacity:.45;cursor:not-allowed}
+.context-composition :focus-visible{outline:2px solid var(--accent,#ad9bcf);outline-offset:2px}
+.context-composition-content{min-width:0;max-width:100%}
+.context-composition-group{min-width:0;margin:0 0 16px;padding:12px;border:1px solid var(--border,#343c50);border-radius:6px;background:var(--surface,#191e29)}
+.context-composition dl{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.4fr);gap:6px 12px;min-width:0;margin:0;font-size:12px}
+.context-composition dt{min-width:0;color:var(--text-secondary,#a3afc5);overflow-wrap:anywhere}
+.context-composition dd{min-width:0;margin:0;color:var(--text-primary,#dce1eb);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.context-composition-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:12px;min-width:0}
+.context-composition-metrics>.context-composition-group{margin-bottom:0}
+.context-composition .context-composition-note{margin:10px 0 18px;font-size:12px;color:var(--text-secondary,#a3afc5);overflow-wrap:anywhere}
+.context-composition-fragments{list-style:none;margin:0;padding:0;min-width:0}
+.context-composition-fragments>li{min-width:0;margin:0 0 10px;padding:12px;border:1px solid var(--border,#343c50);border-radius:6px;background:var(--surface,#191e29)}
+@media(max-width:480px){.context-composition dl{grid-template-columns:minmax(0,1fr);gap:2px}.context-composition dd{margin-bottom:7px}.context-composition-actions{gap:6px}.context-composition-group,.context-composition-fragments>li{padding:10px}}

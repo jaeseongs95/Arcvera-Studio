@@ -60,7 +60,7 @@ fn reply(ws: &mut WebSocket<TcpStream>, request: &Value, result: Value) {
 fn initialize_fixture(ws: &mut WebSocket<TcpStream>) {
     let init = read(ws);
     assert_eq!(init["method"], "initialize");
-    assert_eq!(init["params"]["clientInfo"]["version"], "2.0.0");
+    assert_eq!(init["params"]["clientInfo"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(init["params"]["capabilities"]["extensions"]["arcvera/core"]["version"], "1.0.0+fixture");
     assert_eq!(init["params"]["capabilities"]["experimentalApi"], true);
     reply(ws, &init, json!({}));

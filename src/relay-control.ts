@@ -1,3 +1,4 @@
+import { isCompositionEvent } from './ime';
 import { bindAttribute, bindText, onLanguageChange, t } from './i18n';
 
 export interface RelayStatus {
@@ -79,7 +80,7 @@ export function createRelayControl(host: { call: Call }) {
     } finally { busy = false; render(); }
   }
   $('#relay-form').addEventListener('submit', event => { event.preventDefault(); if (!secret.value || !url.value) return; void act('relay_connect'); });
-  $('#relay-form').addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter' && event.isComposing) event.preventDefault(); });
+  $('#relay-form').addEventListener('keydown', event => { if (event instanceof KeyboardEvent && event.key === 'Enter' && isCompositionEvent(event)) event.preventDefault(); });
   disconnect.onclick = () => void act('relay_disconnect'); refresh.onclick = () => void read();
   button.onclick = () => { dialog.showModal(); void read(); };
   $('#relay-close').onclick = () => dialog.close();

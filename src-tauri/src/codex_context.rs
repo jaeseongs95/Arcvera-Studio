@@ -4,6 +4,15 @@ const SETTINGS: &str = "thread/settings/update";
 
 #[derive(Default)]
 pub(super) struct State { thread: Option<String>, pending: Option<Option<i64>> }
+impl State {
+    pub(super) fn bind_thread(&mut self, thread_id: &str) -> Result<(), String> {
+        if self.thread.as_deref().is_some_and(|thread| thread != thread_id) {
+            return Err("다른 대화의 컨텍스트 설정을 재사용하지 않았습니다.".into());
+        }
+        self.thread.get_or_insert_with(|| thread_id.to_owned());
+        Ok(())
+    }
+}
 pub(super) fn nullable_window<'de,D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i64>,D::Error> { Option::<i64>::deserialize(deserializer) }
 pub(super) fn validate_window(value: Option<i64>) -> Result<(),String> {
     if value.is_some_and(|value| !(1..=MAX_CONTEXT_INTEGER).contains(&value)) {Err("컨텍스트 크기는 정확하게 표현할 수 있는 양의 정수여야 합니다.".into())} else {Ok(())}
@@ -25,11 +34,13 @@ fn view(state: &State, value: &Settings) -> Value {
 impl ConversationConnection {
     pub(super) fn context_settings_request(&self,thread_id: &str,request: ConversationRequest) -> Result<Value,String> {
         valid_id(thread_id)?; validate_request(&request)?;
+        if let ConversationRequest::ContextComposition { expected_thread_id, .. } = &request {
+            if expected_thread_id != thread_id { return Err("대화가 변경되어 컨텍스트 구성을 조회하지 않았습니다.".into()); }
+        }
         // Bounded concurrency: a second request never waits behind network I/O.
         // This lock belongs to this session connection, not another session.
         let mut state=self.0.context_settings.try_lock().map_err(|_|"이 세션의 컨텍스트 설정 요청이 이미 진행 중입니다.")?;
-        if state.thread.as_deref().is_some_and(|thread|thread!=thread_id) {return Err("다른 대화의 컨텍스트 설정을 재사용하지 않았습니다.".into());}
-        state.thread.get_or_insert_with(||thread_id.to_owned());
+        state.bind_thread(thread_id)?;
         live(&self.0,&AtomicBool::new(false))?;
         let deadline=Instant::now()+RPC_TIMEOUT;
         let cancelled=Arc::new(AtomicBool::new(false)); let transport=Arc::new(Mutex::new(Transport::default()));
@@ -61,6 +72,11 @@ fn exchange<S: Read+Write>(control: &Control,state: &mut State,rpc: &mut Rpc<S>,
     if matches!(request,ConversationRequest::PermissionStatus) {
         let value=read_permissions(control,rpc,thread_id,cancelled,deadline)?;
         live(control,cancelled)?;
+        return Ok(value);
+    }
+    if let ConversationRequest::ContextComposition { snapshot_id, cursor, .. } = request {
+        let value = composition::exchange(rpc, thread_id, snapshot_id.as_deref(), cursor.unwrap_or(0))?;
+        live(control, cancelled)?;
         return Ok(value);
     }
     let value=rpc.call(SETTINGS,json!({"threadId":thread_id}))?;

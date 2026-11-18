@@ -1,6 +1,6 @@
 [package]
 name = "arcvera-studio"
-version = "2.0.0"
+version = "2.1.0"
 description = "Independent terminal workspace for local coding agents"
 authors = ["Arcvera-Studio contributors"]
 license = "AGPL-3.0-or-later"
@@ -19,6 +19,8 @@ required-features = ["actual-updater-probe"]
 [features]
 # Explicit TEST component only, excluded from product builds.
 actual-updater-probe = ["tauri/test"]
+# Explicit real Core fixture checks; test-only code, excluded from product builds.
+actual-core-fixture = []
 
 [lib]
 name = "arcvera_studio_lib"

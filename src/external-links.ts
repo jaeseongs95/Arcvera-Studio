@@ -70,14 +70,39 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
   const previous = terminal.options.linkHandler;
   const previousTitle = terminal.element?.getAttribute('title');
   const element = terminal.element;
-  let mouseDown: { x: number; y: number } | undefined;
-  const rememberMouseDown = (event: MouseEvent) => { mouseDown = { x: event.clientX, y: event.clientY }; };
+  const document = element?.ownerDocument;
+  const view = document?.defaultView;
+  let mouseDown: { x: number; y: number; dragged: boolean } | undefined;
+  let tracking = false;
+  const trackMovement = (event: MouseEvent) => {
+    if (mouseDown && Math.hypot(event.clientX - mouseDown.x, event.clientY - mouseDown.y) > 4) mouseDown.dragged = true;
+  };
+  const endTracking = () => {
+    if (!tracking) return;
+    tracking = false;
+    document?.removeEventListener('mousemove', trackMovement, true);
+    document?.removeEventListener('mouseup', endTracking, true);
+    view?.removeEventListener('blur', cancelTracking);
+  };
+  const cancelTracking = () => { endTracking(); mouseDown = undefined; };
+  const rememberMouseDown = (event: MouseEvent) => {
+    endTracking();
+    mouseDown = event.button === 0 ? { x: event.clientX, y: event.clientY, dragged: false } : undefined;
+    if (!mouseDown || !document) return;
+    tracking = true;
+    document.addEventListener('mousemove', trackMovement, true);
+    // Keep the completed gesture for Linkifier's later mouseup listener while
+    // releasing our global listeners even if another handler stops bubbling.
+    document.addEventListener('mouseup', endTracking, true);
+    view?.addEventListener('blur', cancelTracking);
+  };
   element?.addEventListener('mousedown', rememberMouseDown, true);
   const activate = (event: MouseEvent, url: string) => {
+    trackMovement(event);
     // xterm activates on mouseup even after dragging within the same link.
     // A selection left over from a previous gesture must not block a new click.
     const selecting = terminal.hasSelection() && mouseDown && (event.clientX !== mouseDown.x || event.clientY !== mouseDown.y);
-    if (event.button !== 0 || event.shiftKey || selecting) return;
+    if (event.button !== 0 || event.shiftKey || selecting || (event.detail > 0 && mouseDown?.dragged)) return;
     // xterm's document mouseup listener releases selection tracking and its
     // drag timer. Let this mouseup reach it after opening the link.
     event.preventDefault();
@@ -154,5 +179,5 @@ export function installTerminalExternalLinks(terminal: Terminal, onError: (error
       callback(links);
     },
   });
-  return { dispose() { if (disposed) return; disposed = true; element?.removeEventListener('mousedown', rememberMouseDown, true); provider.dispose(); leave(); if (terminal.options.linkHandler === handler) terminal.options.linkHandler = previous; } };
+  return { dispose() { if (disposed) return; disposed = true; cancelTracking(); element?.removeEventListener('mousedown', rememberMouseDown, true); provider.dispose(); leave(); if (terminal.options.linkHandler === handler) terminal.options.linkHandler = previous; } };
 }

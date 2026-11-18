@@ -398,6 +398,7 @@ pub fn run() {
         eprintln!("Arcvera-Studio startup failed: {error}");
         std::process::exit(1);
     }
+    external_links::initialize_diagnostics();
     let result = tauri::Builder::default()
         // Claim the app before setup opens storage or restores any CLI sessions.
         // A repeated launch only reveals the existing window, including from the tray.
@@ -470,6 +471,7 @@ pub fn run() {
         }),
         Err(error) => { eprintln!("Arcvera-Studio initialization failed: {error}"); std::process::exit(1); }
     }
+    external_links::finish_diagnostics();
 }
 
 #[cfg(test)]

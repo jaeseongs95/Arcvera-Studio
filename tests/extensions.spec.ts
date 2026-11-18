@@ -188,6 +188,27 @@ test('discovery searches selected-runtime metadata without mutating or replacing
   await expect(page.locator('.xterm-rows')).toContainText('EXTENSIONS_LIVE_OUTPUT');
 });
 
+test('D0077 hook configuration and unavailable execution state stay distinct', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const hook = (window as any).extensionsFixture.hooks[1];
+    hook.enabled = true;
+    hook.trustStatus = 'untrusted';
+  });
+  await open(page); await page.locator('#extensions-tab-hooks').click();
+  const row = page.locator('[data-extension-id="project.review"]');
+  await expect(row).toContainText('사용 설정됨');
+  await expect(row).toContainText('신뢰 확인 필요');
+  await expect(row).not.toContainText('사용 중');
+  await row.click();
+  await expect(page.locator('#extensions-detail')).toContainText('사용 설정됨');
+  await expect(page.locator('#extensions-detail')).not.toContainText('사용 중');
+  await page.evaluate(() => { (window as any).extensionsFixture.hooks = []; });
+  await page.locator('#extensions-refresh').click();
+  await expect(page.locator('#extensions-list')).toContainText('조회된 Hook이 없습니다');
+  await expect(page.locator('#extensions-list')).not.toContainText('등록된 항목이 없습니다');
+});
+
 test('hook metadata stays text and trust approval does not silently enable the hook', async ({ page }) => {
   await fixture(page); await open(page, 0);
   await page.locator('#extensions-tab-hooks').click();
@@ -568,4 +589,42 @@ for (const nativeFailure of [false, true]) test(`confirmed app exit drains accep
     expect(await extensionCalls(page, 'extensions_list')).toEqual(before);
   }
   expect(await extensionCalls(page)).toHaveLength(1);
+});
+
+
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
+  test('IME12 plugin catalog composition Enter is ignored: ' + signal, async ({ page }) => {
+    await fixture(page); await open(page); await page.locator('#extensions-plugin-discover').click();
+    const search = page.locator('#extensions-search'); await search.fill('한글');
+    const before = await extensionCalls(page, 'extensions_list');
+    const prevented = await search.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      const event = new KeyboardEvent('keydown', { key: 'Enter', keyCode: signal === 'keyCode229' ? 229 : 13, isComposing: signal === 'isComposing', bubbles: true, cancelable: true });
+      element.dispatchEvent(event); return event.defaultPrevented;
+    }, signal);
+    expect(prevented).toBe(signal === 'compositionEvents');
+    expect(await extensionCalls(page, 'extensions_list')).toHaveLength(before.length);
+    await page.locator('#extensions-plugin-search').focus(); await search.focus(); await search.press('Enter');
+    await expect.poll(async () => (await extensionCalls(page, 'extensions_list')).length).toBe(before.length + 1);
+  });
+}
+
+test('IME31 extensions keeps the previous filter until Korean search is committed', async ({ page }) => {
+  await fixture(page); await open(page);
+  const search = page.locator('#extensions-search'); await search.focus();
+  await expect(rows(page)).toContainText('review-kit');
+  await search.evaluate((input: HTMLInputElement) => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'ㅎ';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'insertCompositionText' }));
+  });
+  await expect(rows(page)).toContainText('review-kit');
+  await search.evaluate((input: HTMLInputElement) => {
+    input.value = '한글';
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '한글' }));
+  });
+  await expect(rows(page)).toHaveCount(0);
+  await expect(page.locator('#extensions-list')).toContainText('검색 결과가 없습니다');
+  await search.fill('review');
+  await expect(rows(page)).toContainText('review-kit');
 });

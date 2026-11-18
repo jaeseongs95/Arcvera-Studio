@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "task-78794ceb-c532-4b5d-b2ee-33d9aa570655",
+  "contractDigest": "sha256:df054129fcf6f732d41736a28a08a8620ee3088a1447410eb4071885dda98ff9",
+  "requirements": [
+    "IME-SEARCH-LIFECYCLE",
+    "IME-ALL-INPUTS"
+  ],
+  "scopeFiles": [
+    "src/main.ts",
+    "src/ime.ts",
+    "src/conversation.ts",
+    "src/extensions.ts",
+    "src/relay-control.ts",
+    "src/session-browser.ts",
+    "tests/terminal-flow.spec.ts",
+    "tests/conversation.spec.ts",
+    "tests/extensions.spec.ts",
+    "tests/relay.spec.ts",
+    "tests/catalog.spec.ts"
+  ],
+  "runner": "Existing Playwright one worker; real Chromium and xterm, synthetic native IPC.",
+  "environment": "Shared Windows PC, Chromium/xterm and explicit IPC fixtures; one worker, zero retries. Before is frozen 8bf0908 source; after is product correction, identical test bytes. No physical Windows IME or actual CLI.",
+  "cases": [
+    {
+      "id": "IME-REVIEW-BOUNDARIES",
+      "requirementIds": [
+        "IME-SEARCH-LIFECYCLE",
+        "IME-ALL-INPUTS"
+      ],
+      "scenario": "IME09 immediate search-open/input before ResizeObserver; IME10 same-query after selection loss/reopen/session switch; IME11 composer/search focusout recovery; IME12-14 extension/relay/catalog flags, 229 and composition sequence.",
+      "entryPoint": "Real DOM handlers, xterm terminal resize/selection, captured fixture IPC calls",
+      "level": "integration",
+      "expectedBehavior": "Search retains its selection after opening layout settles; same Korean term searches current terminal; composition never runs app actions and focusout restores ordinary actions.",
+      "oracle": "Exact xterm selection coordinates before/after real rAF; no IPC during composition and one ordinary action after blur/end.",
+      "testFiles": [
+        "tests/terminal-flow.spec.ts",
+        "tests/conversation.spec.ts",
+        "tests/extensions.spec.ts",
+        "tests/relay.spec.ts",
+        "tests/catalog.spec.ts"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Read raw before/after assertions against same tests; do not claim signed proof or physical IME.",
+      "argv": [
+        "node",
+        "verification/korean-input-20261117/review-run.mjs"
+      ]
+    }
+  ],
+  "exclusions": [
+    "No CLI changes; CLI-owned defects deferred to next version.",
+    "Physical Windows IME, actual WebView2/CLI, final Core pairing and full release acceptance remain separate."
+  ]
+}

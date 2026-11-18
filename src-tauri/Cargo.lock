@@ -48,6 +48,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arcvera-studio"
+version = "2.1.0"
+dependencies = [
+ "portable-pty",
+ "reqwest",
+ "rusqlite",
+ "rustls",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tokio",
+ "tungstenite",
+ "uuid",
+ "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,29 +2547,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "arcvera-studio"
-version = "2.0.0"
-dependencies = [
- "portable-pty",
- "reqwest",
- "rusqlite",
- "rustls",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tokio",
- "tungstenite",
- "uuid",
- "windows",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "openssl-probe"

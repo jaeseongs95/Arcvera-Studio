@@ -119,6 +119,10 @@ class Fixture {
   if (args.Length == 4 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "start" && args[3] == "--help") {
    Console.Write("Usage: fixture app-server daemon start [OPTIONS]\n\nOptions:\n      --existing-installation\n          Preserve installation\n      --first-installation\n          Guard first installation\n  -h, --help\n          Print help\n"); return 0;
   }
+  if (args.Length == 2 && args[0] == "resume" && args[1] == "--help") {
+   // Capability discovery must not enter the long-lived TUI branch below.
+   Console.Write("Usage: fixture resume [OPTIONS] [SESSION_ID]\n\nOptions:\n  -h, --help\n          Print help\n"); return 0;
+  }
   if (args.Length == 3 && args[0] == "app-server" && args[1] == "daemon" && args[2] == "version") { Console.Write(File.ReadAllText(Path.Combine(root,"version.json"))); return 0; }
   if (args.Length == 2 && args[0] == "app-server" && args[1] == "proxy") {
    using (var client = new TcpClient("127.0.0.1",Int32.Parse(File.ReadAllText(Path.Combine(root,"port"))))) {

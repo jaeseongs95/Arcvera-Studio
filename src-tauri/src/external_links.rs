@@ -1,3 +1,95 @@
+use std::io::Write;
+use std::sync::{Mutex, OnceLock};
+
+// Explicit isolated test output only. No URL or error text enters these records.
+struct LinkTraceState<W> {
+    writer: W,
+    attempts: u64,
+    completed: u64,
+    suppressed: u64,
+    write_errors: u64,
+    finished: bool,
+}
+struct LinkDiagnostics<W> { state: Mutex<LinkTraceState<W>> }
+impl<W: Write> LinkDiagnostics<W> {
+    fn new(writer: W) -> Self {
+        let trace = Self { state: Mutex::new(LinkTraceState {
+            writer, attempts: 0, completed: 0, suppressed: 0, write_errors: 0, finished: false,
+        }) };
+        trace.record("phase=init".to_owned());
+        trace
+    }
+    fn write(state: &mut LinkTraceState<W>, record: &str) {
+        if writeln!(state.writer, "link_open_trace owner=desktop pid={} {record}", std::process::id())
+            .and_then(|_| state.writer.flush()).is_err() { state.write_errors += 1; }
+    }
+    fn record(&self, record: String) {
+        if let Ok(mut state) = self.state.lock() { Self::write(&mut state, &record); }
+    }
+    fn begin(&self) -> Option<u64> {
+        let mut state = self.state.lock().ok()?;
+        // ceiling: bounded test trace; any suppression invalidates the evidence.
+        if state.finished || state.attempts == 4096 {
+            state.suppressed += 1;
+            return None;
+        }
+        state.attempts += 1;
+        let id = state.attempts;
+        Self::write(&mut state, &format!("phase=attempt id={id}"));
+        Some(id)
+    }
+    fn complete(&self, id: u64, ok: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.completed += 1;
+            Self::write(&mut state, &format!("phase=completion id={id} ok={ok}"));
+        }
+    }
+    fn finish(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.finished { return; }
+            state.finished = true;
+            let record = format!("phase=final attempts={} completed={} suppressed={} write_errors={}",
+                state.attempts, state.completed, state.suppressed, state.write_errors);
+            Self::write(&mut state, &record);
+        }
+    }
+    fn observe<T>(&self, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let id = self.begin();
+        // Release the diagnostic lock before calling the real OS opener.
+        let result = work();
+        if let Some(id) = id { self.complete(id, result.is_ok()); }
+        result
+    }
+}
+
+fn diagnostic_setting_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value == Some(std::ffi::OsStr::new("1"))
+}
+fn create_diagnostics(setting: Option<&std::ffi::OsStr>, path: Option<&std::ffi::OsStr>)
+    -> Option<LinkDiagnostics<std::fs::File>> {
+    if !diagnostic_setting_enabled(setting) { return None; }
+    let path = std::path::PathBuf::from(path?);
+    if !path.is_absolute() { return None; }
+    // Never append to, truncate or reuse another run's output.
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).ok()?;
+    Some(LinkDiagnostics::new(file))
+}
+static LINK_DIAGNOSTICS: OnceLock<Option<LinkDiagnostics<std::fs::File>>> = OnceLock::new();
+pub(crate) fn initialize_diagnostics() {
+    LINK_DIAGNOSTICS.get_or_init(|| create_diagnostics(
+        std::env::var_os("ARCVERA_LINK_DIAGNOSTICS").as_deref(),
+        std::env::var_os("ARCVERA_LINK_DIAGNOSTICS_PATH").as_deref()));
+}
+pub(crate) fn finish_diagnostics() {
+    if let Some(Some(trace)) = LINK_DIAGNOSTICS.get() { trace.finish(); }
+}
+fn launch_url(url: &str) -> Result<(), String> {
+    match LINK_DIAGNOSTICS.get().and_then(Option::as_ref) {
+        Some(trace) => trace.observe(|| launch_url_native(url)),
+        None => launch_url_native(url),
+    }
+}
+
 /// Keep OS launch policy at the native boundary, including callers bypassing TS.
 fn validated_url(value: &str) -> Result<String, String> {
     let invalid = || "HTTP(S) 웹 주소만 열 수 있습니다.".to_string();
@@ -17,7 +109,7 @@ fn validated_url(value: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn launch_url(url: &str) -> Result<(), String> {
+fn launch_url_native(url: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     let operation: Vec<u16> = "open\0".encode_utf16().collect();
     let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
@@ -28,7 +120,7 @@ fn launch_url(url: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn launch_url(url: &str) -> Result<(), String> {
+fn launch_url_native(url: &str) -> Result<(), String> {
     let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     let result = std::process::Command::new(program).arg(url).status().map_err(|error| format!("기본 브라우저 실행에 실패했습니다: {error}"))?;
     if !result.success() { return Err(format!("기본 브라우저 실행에 실패했습니다 ({result}).")); }
@@ -47,6 +139,106 @@ fn open_url_with(value: &str, launch: impl FnOnce(&str) -> Result<(), String>) -
 #[cfg(test)]
 mod tests {
     use super::{open_url_with, validated_url};
+
+    #[test]
+    fn link_trace_requires_exact_opt_in() {
+        use std::ffi::OsStr;
+        for value in [None, Some(""), Some("0"), Some("true"), Some(" 1"), Some("1 ")] {
+            assert!(!super::diagnostic_setting_enabled(value.map(OsStr::new)));
+        }
+        assert!(super::diagnostic_setting_enabled(Some(OsStr::new("1"))));
+    }
+
+    #[test]
+    fn link_trace_file_requires_opt_in_and_never_reuses_existing_output() {
+        use std::ffi::OsStr;
+        let path = std::env::temp_dir().join(format!("arcvera-link-trace-{}.log", uuid::Uuid::new_v4()));
+        assert!(super::create_diagnostics(None, Some(path.as_os_str())).is_none());
+        assert!(!path.exists());
+        assert!(super::create_diagnostics(Some(OsStr::new("1")), Some(OsStr::new("relative.log"))).is_none());
+        let trace = super::create_diagnostics(Some(OsStr::new("1")), Some(path.as_os_str())).unwrap();
+        trace.finish();
+        drop(trace);
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(super::create_diagnostics(Some(OsStr::new("1")), Some(path.as_os_str())).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn link_trace_pairs_success_failure_and_zero_summary_without_private_text() {
+        let trace = super::LinkDiagnostics::new(Vec::new());
+        assert_eq!(trace.observe(|| Ok::<_, String>(7)), Ok(7));
+        assert_eq!(trace.observe(|| Err::<(), _>("private-url-or-error".into())), Err("private-url-or-error".into()));
+        trace.finish();
+        trace.finish();
+        let state = trace.state.lock().unwrap();
+        let text = String::from_utf8(state.writer.clone()).unwrap();
+        assert!(text.contains("phase=attempt id=1\n"));
+        assert!(text.contains("phase=completion id=1 ok=true\n"));
+        assert!(text.contains("phase=completion id=2 ok=false\n"));
+        assert!(text.contains("phase=final attempts=2 completed=2 suppressed=0 write_errors=0\n"));
+        assert_eq!(text.lines().count(), 6);
+        assert!(!text.contains("private"));
+        drop(state);
+        let zero = super::LinkDiagnostics::new(Vec::new());
+        zero.finish();
+        assert!(String::from_utf8(zero.state.lock().unwrap().writer.clone()).unwrap()
+            .contains("phase=final attempts=0 completed=0 suppressed=0 write_errors=0\n"));
+    }
+
+    #[test]
+    fn link_trace_failed_sink_preserves_opener_results() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> { Err(std::io::ErrorKind::BrokenPipe.into()) }
+            fn flush(&mut self) -> std::io::Result<()> { Err(std::io::ErrorKind::BrokenPipe.into()) }
+        }
+        let trace = super::LinkDiagnostics::new(Broken);
+        assert_eq!(trace.observe(|| Ok::<_, String>(31)), Ok(31));
+        assert_eq!(trace.observe(|| Err::<(), _>("native failure".into())), Err("native failure".into()));
+        trace.finish();
+        let state = trace.state.lock().unwrap();
+        assert_eq!((state.attempts, state.completed), (2, 2));
+        assert!(state.write_errors > 0);
+    }
+
+    #[test]
+    fn link_trace_concurrent_ids_are_unique_and_no_lock_is_held_across_opener() {
+        let trace = std::sync::Arc::new(super::LinkDiagnostics::new(Vec::new()));
+        // Single-threaded reentrancy checks our lock scope, without a race with
+        // another worker that can legitimately hold the diagnostic lock.
+        trace.observe(|| {
+            assert!(trace.state.try_lock().is_ok());
+            Ok::<_, String>(())
+        }).unwrap();
+        let threads: Vec<_> = (0..16).map(|_| {
+            let trace = trace.clone();
+            std::thread::spawn(move || trace.observe(|| Ok::<_, String>(())).unwrap())
+        }).collect();
+        for thread in threads { thread.join().unwrap(); }
+        trace.finish();
+        let state = trace.state.lock().unwrap();
+        let text = String::from_utf8(state.writer.clone()).unwrap();
+        let ids = |phase: &str| text.lines().filter_map(|line| line.split_once(phase))
+            .map(|(_, tail)| tail.split_whitespace().next().unwrap().parse::<u64>().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids("phase=attempt id="), (1..=17).collect());
+        assert_eq!(ids("phase=completion id="), (1..=17).collect());
+        assert_eq!((state.attempts, state.completed), (17, 17));
+    }
+
+    #[test]
+    fn link_trace_rejection_emits_no_attempt_and_cap_marks_incomplete_evidence() {
+        let trace = super::LinkDiagnostics::new(Vec::new());
+        assert!(open_url_with("javascript:private", |_| trace.observe(|| Ok(()))).is_err());
+        assert_eq!(trace.state.lock().unwrap().attempts, 0);
+        for _ in 0..4097 { trace.observe(|| Ok::<_, String>(())).unwrap(); }
+        trace.finish();
+        let state = trace.state.lock().unwrap();
+        assert_eq!((state.attempts, state.completed, state.suppressed), (4096, 4096, 1));
+        assert!(state.writer.len() < 1024 * 1024);
+    }
     /// Opt-in only: opens one real default-browser tab; never closes browser tabs.
     #[cfg(windows)]
     #[test]

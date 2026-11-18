@@ -212,6 +212,36 @@ test('Korean search composition keeps candidate keys inside the IME until commit
   await expect(page.locator('#catalog-dialog')).toBeVisible();
 });
 
+test('IME29 catalog search resumes after window blur during a composition', async ({ page }) => {
+  await mockNative(page);
+  await page.locator('#catalog-open').click();
+  await expect(page.locator('#catalog-messages')).toContainText('ALPHA ONLY');
+  const search = page.locator('#catalog-search'); await search.focus();
+  await search.evaluate((input: HTMLInputElement) => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    // Model a window switch with neither focusout nor compositionend on the input.
+    window.dispatchEvent(new Event('blur'));
+    window.dispatchEvent(new Event('focus'));
+    input.value = '한글';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  });
+  const queries = () => page.evaluate(() => (window as any).fixture.calls.filter((call: any) => call.command === 'catalog_list' && call.args.request.query === '한글').length);
+  await expect.poll(queries).toBe(1);
+});
+
+test('IME30 real browser Escape default does not close a composing dialog', async ({ page }) => {
+  await mockNative(page);
+  await page.locator('#catalog-open').click();
+  const dialog = page.locator('#catalog-dialog');
+  const search = page.locator('#catalog-search'); await search.focus();
+  await search.dispatchEvent('compositionstart', { bubbles: true });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await search.dispatchEvent('compositionend', { bubbles: true });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
 for (const state of ['error', 'stopping'] as const) {
   test(`already owned ${state} session is focused without starting a duplicate`, async ({ page }) => {
     await mockNative(page, { owned: true, ownedState: state });
@@ -456,3 +486,17 @@ test('a preview completing after close cannot restore released history or overta
   await expect(page.locator('#catalog-messages')).not.toContainText('ALPHA ONLY');
   expect(await page.evaluate(() => (window as any).fixture.maxActive)).toBe(1);
 });
+
+
+for (const signal of ['isComposing', 'keyCode229', 'compositionEvents']) {
+  test('IME14 session catalog composition Escape preserves dialog: ' + signal, async ({ page }) => {
+    await mockNative(page); await page.locator('#catalog-open').click(); const search = page.locator('#catalog-search'); await search.focus();
+    await search.evaluate((element, signal) => {
+      if (signal === 'compositionEvents') element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: signal === 'keyCode229' ? 229 : 27, isComposing: signal === 'isComposing', bubbles: true, cancelable: true }));
+    }, signal);
+    await expect(page.locator('#catalog-dialog')).toBeVisible();
+    await page.locator('#catalog-refresh').focus(); await search.focus(); await search.press('Escape');
+    await expect(page.locator('#catalog-dialog')).toBeHidden();
+  });
+}

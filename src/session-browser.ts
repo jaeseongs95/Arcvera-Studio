@@ -1,3 +1,4 @@
+import { isCompositionEvent } from './ime';
 import { locale, onLanguageChange, t } from './i18n';
 
 import type { ProjectInfo } from './model';
@@ -229,7 +230,7 @@ export function createSessionBrowser(host: BrowserHost) {
   $('#catalog-close').onclick = () => dialog.close();
   dialog.addEventListener('close', () => { clearTimeout(timer); listVersion++; previewVersion++; openAttempt++; opening = false; queue.cancel(); clearSelection(); rows = []; listCursor = null; listLoading = false; listTrimmed = false; renderRows(); text($('#catalog-list-status'), ''); });
   search.addEventListener('compositionstart', () => clearTimeout(timer));
-  search.oninput = event => { if (!(event as InputEvent).isComposing) querySoon(250); };
+  search.oninput = event => { if (!isCompositionEvent(event)) querySoon(250); };
   search.addEventListener('compositionend', () => querySoon(250));
   projectSelect.onchange = () => querySoon();
   $('#catalog-refresh').onclick = () => querySoon();
@@ -238,7 +239,7 @@ export function createSessionBrowser(host: BrowserHost) {
   $('#catalog-new').onclick = () => { const cwd = projectSelect.value || selected?.cwd; dialog.close(); host.newSession(cwd); };
   $('#catalog-resume').onclick = () => void resume();
   dialog.addEventListener('keydown', event => {
-    if (event.isComposing || event.keyCode === 229) return;
+    if (isCompositionEvent(event)) return;
     if (event.key === 'Escape') { event.preventDefault(); dialog.close(); return; }
     if (event.altKey || event.ctrlKey || event.metaKey || opening) return;
     const target = event.target as HTMLElement;

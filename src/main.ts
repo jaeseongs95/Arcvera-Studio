@@ -1,3 +1,4 @@
+import { isCompositionEvent as isCompositionKey } from './ime';
 import { createAttachmentStorage } from './attachment-storage';
 import { createLicenseControl } from './license';
 import { createRelayControl, type RelayStatus } from './relay-control';
@@ -657,17 +658,19 @@ function createTerminal(session: Session) {
   terminal.onBinary(data => sendInput(session.id, data, true));
   terminal.onResize(() => queueResize(session.id));
   terminal.attachCustomKeyEventHandler(event => {
+    // xterm translates Enter even when a document listener prevents its default.
+    // Keep the native composition commit press out of the terminal data stream.
+    if (event.key === 'Enter' && isCompositionKey(event)) return false;
     // Let the browser dispatch xterm's native copy/paste events, rather than
     // translating Ctrl+C/Ctrl+V to CLI control characters. Unselected Ctrl+C
     // still interrupts the CLI; paste keeps xterm's bracketed-paste handling.
-    if (!event.isComposing && event.keyCode !== 229 && event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (!isCompositionKey(event) && event.ctrlKey && !event.altKey && !event.metaKey) {
       const key = event.key.toLowerCase();
       if (key === 'v' || (key === 'c' && terminal.hasSelection())) return false;
     }
     if (event.key === 'Enter' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
       // Windows 콘솔에서도 줄바꿈으로 해석되는 Alt+Enter를 보낸다.
       // 용량 제한과 세션 세대 검사를 거치는 기존 입력 대기열을 사용한다.
-      if (event.isComposing || event.keyCode === 229) return false;
       event.preventDefault();
       if (event.type === 'keydown') sendInput(session.id, '\u001b\r');
       return false;
@@ -1016,7 +1019,10 @@ const questionCenter = createQuestionCenter({ call, button: $<HTMLButtonElement>
 document.body.append(questionCenter.element);
 $('.sidebar').append(weeklyUsage.element);
 bindText($('#extensions-open-label'), '플러그인·스킬·Hook', 'Plugins, skills & hooks');
-$('#extensions-open').onclick = () => extensionsManager.open(selectedProjectCwd());
+$('#extensions-open').onclick = () => {
+  const selected = active && isVisible(active) ? sessions.get(active) : undefined;
+  extensionsManager.open(selectedProjectCwd(), selected?.active && selected.threadId ? { id: selected.id, generation: selected.generation, threadId: selected.threadId, title: selected.title } : undefined);
+};
 const attachmentStorage = createAttachmentStorage(call, id => sessions.get(id)?.title);
 $('#attachment-storage-open').onclick = () => attachmentStorage.open();
 const executableSettings = createExecutableSettings(async <T>(command: string, args?: Record<string, unknown>) => {
@@ -1403,11 +1409,38 @@ async function requestExit(allowUnconfirmedRemote = false) {
 $('#confirm-exit').onclick = () => void requestExit();
 unconfirmedExitButton.onclick = () => void requestExit(true);
 
-function toggleSearch(force?: boolean) { searchVisible = force ?? !searchVisible; $('#search-bar').hidden = !searchVisible; if (searchVisible) $<HTMLInputElement>('#terminal-search').focus(); }
-function find(previous = false) { const value = $<HTMLInputElement>('#terminal-search').value; const search = terminals.get(active)?.search; const found = !!value && search && (previous ? search.findPrevious(value) : search.findNext(value)); bindText($('#search-result'), !value ? '' : found ? '결과 찾음' : '결과 없음', !value ? '' : found ? 'Match found' : 'No matches'); }
-$('#search-toggle').onclick = () => toggleSearch(); $('#search-close').onclick = () => toggleSearch(false); $('#search-prev').onclick = () => find(true); $('#search-next').onclick = () => find(); $('#terminal-search').oninput = () => find(); $('#terminal-search').onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); find(event.shiftKey); } if (event.key === 'Escape') toggleSearch(false); };
+function fitSearchLayout() {
+  // Search visibility changes the terminal hosts' height. Apply it before any
+  // selection, so the queued ResizeObserver fit cannot clear a new match.
+  for (const view of terminals.values()) if (view.card.offsetWidth && view.card.offsetHeight) view.fit.fit();
+}
+function toggleSearch(force?: boolean) {
+  searchVisible = force ?? !searchVisible; $('#search-bar').hidden = !searchVisible;
+  fitSearchLayout();
+  if (searchVisible) $<HTMLInputElement>('#terminal-search').focus();
+}
+const searchedInputs = new WeakMap<Terminal, { value: string; selection: string | undefined }>();
+function find(previous = false) {
+  const value = $<HTMLInputElement>('#terminal-search').value;
+  const view = terminals.get(active);
+  if (view?.card.offsetWidth && view.card.offsetHeight) view.fit.fit();
+  const found = !!value && view && (previous ? view.search.findPrevious(value) : view.search.findNext(value));
+  if (view) searchedInputs.set(view.terminal, { value, selection: JSON.stringify(view.terminal.getSelectionPosition()) });
+  bindText($('#search-result'), !value ? '' : found ? '결과 찾음' : '결과 없음', !value ? '' : found ? 'Match found' : 'No matches');
+}
+$('#search-toggle').onclick = () => toggleSearch(); $('#search-close').onclick = () => toggleSearch(false); $('#search-prev').onclick = () => find(true); $('#search-next').onclick = () => find();
+function findChangedInput() {
+  const terminal = terminals.get(active)?.terminal;
+  const previous = terminal && searchedInputs.get(terminal);
+  // Only suppress a duplicate event while the same terminal still owns the
+  // same result selection. A blur, resize or session switch invalidates it.
+  if (!previous || !terminal?.hasSelection() || $<HTMLInputElement>('#terminal-search').value !== previous.value || JSON.stringify(terminal.getSelectionPosition()) !== previous.selection) find();
+}
+$('#terminal-search').oninput = event => { if (!isCompositionKey(event)) findChangedInput(); };
+$('#terminal-search').addEventListener('compositionend', findChangedInput);
+$('#terminal-search').onkeydown = event => { if (isCompositionKey(event)) return; if (event.key === 'Enter') { event.preventDefault(); find(event.shiftKey); } if (event.key === 'Escape') toggleSearch(false); };
 document.addEventListener('keydown', event => {
-  if (document.querySelector('dialog[open]')) return;
+  if (isCompositionKey(event) || document.querySelector('dialog[open]')) return;
   let id: string | undefined;
   const visible = visibleOrder();
   if (event.altKey && /^[1-9]$/.test(event.key)) id = visible[Number(event.key) - 1];

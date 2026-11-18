@@ -27,7 +27,7 @@ impl ControlsReport {
     }
     pub(super) fn pass(&self) -> bool {
         self.checks.iter().all(|check| matches!(check.status, "PASS" | "NOT_RUN"))
-            && ["runtimeCompatibility", "conversationAttach", "conversationPage", "contextStatus", "subagentsList", "pendingQuestionsList", "cronList", "cronAdd", "cronAddState", "cronPause", "cronPauseState", "cronResume", "cronResumeState", "cronRemove", "cronRemoveState", "stopBeforeResume", "sameThreadResume"]
+            && ["runtimeCompatibility", "conversationAttach", "conversationPage", "contextStatus", "subagentsList", "pendingQuestionsList", "cronReadiness", "cronList", "cronAdd", "cronAddState", "cronPause", "cronPauseState", "cronResume", "cronResumeState", "cronRemove", "cronRemoveState", "stopBeforeResume", "sameThreadResume"]
                 .iter().all(|name| self.checks.iter().any(|check| check.name == *name && check.status == "PASS"))
     }
     fn record(&mut self, name: &'static str, valid: bool, metadata: Value, reason: &'static str) -> bool {
@@ -99,6 +99,16 @@ impl ControlsReport {
         let mut completed = 0;
         let names = ["cronAdd", "cronPause", "cronResume", "cronRemove"];
         let result = (|| -> Option<()> {
+            // A List may already consume its existing 10s deadline. Reserve that
+            // interval inside the 30s observation budget before starting it.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let readiness = observe_cron_readiness(
+                || engine.cron_request(&session.id,session.generation,CronRequest::List{}),
+                || Instant::now() < deadline,
+                || thread::sleep(Duration::from_millis(500)));
+            let ready = readiness.outcome == "ready";
+            self.record("cronReadiness", ready, readiness.metadata(), "cron readiness did not establish a live connection; no mutation sent");
+            if !ready { self.not_run("cronList", "cron readiness did not establish a live connection"); return None; }
             let initial = self.response("cronList", engine.cron_request(&session.id,session.generation,CronRequest::List{}), |v|cron_connected(v)&&v["jobs"].as_array().is_some_and(Vec::is_empty), cron_metadata)?;
             if !cron_connected(&initial) || initial["jobs"].as_array()?.len()!=0 { return None; }
             let at_unix_ms: u64 = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis().checked_add(365*24*60*60*1000)?.try_into().ok()?;
@@ -182,12 +192,94 @@ fn mutation_metadata(value:&Value)->Value {json!({"status":safe_state(&value["st
 fn cron_connected(value:&Value)->bool {
     value["supported"]==true&&value["connected"]==true&&value["scope"]=="cliLifetime"&&value["jobs"].is_array()&&value["hasMore"]==false&&value["mutationState"]!="unknown"
 }
+struct CronReadiness { outcome: &'static str, attempts: usize, first_reason: Option<&'static str> }
+impl CronReadiness {
+    fn metadata(&self) -> Value { json!({"outcome":self.outcome,"attempts":self.attempts,"firstReason":self.first_reason}) }
+}
+fn observe_cron_readiness(mut query: impl FnMut()->Result<Value,String>, mut can_start: impl FnMut()->bool, mut wait: impl FnMut()) -> CronReadiness {
+    let mut attempts = 0; let mut first_reason = None;
+    loop {
+        if !can_start() { return CronReadiness { outcome:"deadline", attempts, first_reason }; }
+        attempts += 1;
+        let value = match query() { Ok(value)=>value, Err(_)=>return CronReadiness { outcome:"requestError", attempts, first_reason } };
+        if attempts == 1 { first_reason = match value["reason"].as_str() { Some("connectionNotReady")=>Some("connectionNotReady"), Some("connectionClosed")=>Some("connectionClosed"), _=>None }; }
+        if cron_connected(&value) && value["reason"].is_null() && (value["mutationState"].is_null() || value["mutationState"]=="clear") {
+            return CronReadiness { outcome:"ready", attempts, first_reason };
+        }
+        let outcome = if value["supported"]==false { Some("unsupported") }
+            else if value["reason"]=="connectionClosed" { Some("closed") }
+            else if value["supported"]==true && value["connected"]==false && value["reason"]=="connectionNotReady"
+                && value["scope"]=="cliLifetime" && value["jobs"].is_array() && value["hasMore"]==false
+                && (value["mutationState"].is_null() || value["mutationState"]=="clear") { None }
+            else { Some("unexpected") };
+        if let Some(outcome) = outcome { return CronReadiness { outcome, attempts, first_reason }; }
+        wait();
+    }
+}
 fn cron_metadata(value:&Value)->Value {
-    json!({"supported":value["supported"],"connected":value["connected"],"cliLifetimeScope":value["scope"]=="cliLifetime","jobCount":value["jobs"].as_array().map(Vec::len),"hasMore":value["hasMore"],"mutationState":safe_state(&value["mutationState"])})
+    let reason = match value["reason"].as_str() { Some(reason @ ("connectionNotReady" | "connectionClosed")) => Some(reason), _ => None };
+    json!({"supported":value["supported"].as_bool(),"connected":value["connected"].as_bool(),"cliLifetimeScope":value["scope"]=="cliLifetime","jobCount":value["jobs"].as_array().map(Vec::len),"hasMore":value["hasMore"].as_bool(),"mutationState":safe_state(&value["mutationState"]),"reason":reason,"supportsExpectedTurnInterrupt":value["supportsExpectedTurnInterrupt"].as_bool()})
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cron_readiness_waits_only_for_not_ready_then_observes_live_scope() {
+        let mut replies = std::collections::VecDeque::from([Ok(json!({"supported":true,"connected":false,"scope":"cliLifetime","jobs":[],"hasMore":false,"reason":"connectionNotReady"})),
+            Ok(json!({"supported":true,"connected":true,"scope":"cliLifetime","jobs":[],"hasMore":false}))]);
+        let waits = std::cell::Cell::new(0);
+        let result = observe_cron_readiness(|| replies.pop_front().unwrap(), || true, || waits.set(waits.get()+1));
+        assert_eq!(result.outcome, "ready"); assert_eq!(result.attempts, 2); assert_eq!(result.first_reason, Some("connectionNotReady"));
+        assert_eq!(waits.get(), 1); assert!(replies.is_empty());
+    }
+    #[test]
+    fn cron_readiness_fails_closed_without_retry_for_terminal_or_unknown_states() {
+        for (reply, expected) in [(Ok(json!({"supported":true,"connected":false,"reason":"connectionClosed"})),"closed"),
+            (Err("private error".into()),"requestError"), (Ok(json!({"supported":false,"reason":"connectionNotReady"})),"unsupported"),
+            (Ok(json!({"supported":true,"connected":false,"reason":"private text"})),"unexpected"),
+            (Ok(json!({"supported":true,"connected":false,"reason":"connectionNotReady","mutationState":"unknown"})),"unexpected")] {
+            let calls = std::cell::Cell::new(0);
+            let result = observe_cron_readiness(|| {calls.set(calls.get()+1); reply.clone()}, || true, || panic!("terminal result must not wait"));
+            assert_eq!(result.outcome, expected); assert_eq!(calls.get(), 1);
+            assert!(!serde_json::to_string(&result.metadata()).unwrap().contains("private"));
+        }
+    }
+    #[test]
+    fn cron_readiness_deadline_stops_reading_without_mutations() {
+        let tick = std::cell::Cell::new(0); let calls = std::cell::Cell::new(0);
+        let result = observe_cron_readiness(|| {calls.set(calls.get()+1); Ok(json!({"supported":true,"connected":false,"scope":"cliLifetime","jobs":[],"hasMore":false,"reason":"connectionNotReady"}))},
+            || tick.get()<3, || tick.set(tick.get()+1));
+        assert_eq!(result.outcome, "deadline"); assert_eq!(result.attempts, 3); assert_eq!(calls.get(), 3);
+        assert_eq!(result.first_reason, Some("connectionNotReady"));
+    }
+    #[test]
+    fn cron_diagnostic_metadata_only_exposes_allowlisted_reason_and_boolean_capability() {
+        for reason in ["connectionNotReady", "connectionClosed"] {
+            for supported in [true, false] {
+                let value = json!({"reason":reason, "supportsExpectedTurnInterrupt":supported, "secret":"private fixture"});
+                let metadata = cron_metadata(&value);
+                assert_eq!(metadata["reason"], reason);
+                assert_eq!(metadata["supportsExpectedTurnInterrupt"], supported);
+                assert!(!serde_json::to_string(&metadata).unwrap().contains("private fixture"));
+            }
+        }
+        for reason in [json!("private fixture"), json!(42), Value::Null] {
+            for capability in [json!("private fixture"), json!(1), Value::Null] {
+                let metadata = cron_metadata(&json!({"reason":reason,"supportsExpectedTurnInterrupt":capability}));
+                assert!(metadata["reason"].is_null());
+                assert!(metadata["supportsExpectedTurnInterrupt"].is_null());
+                assert!(!serde_json::to_string(&metadata).unwrap().contains("private fixture"));
+            }
+        }
+        let missing = cron_metadata(&json!({}));
+        assert!(missing["reason"].is_null()); assert!(missing["supportsExpectedTurnInterrupt"].is_null());
+    }
+    #[test]
+    fn cron_diagnostic_boolean_fields_never_emit_arbitrary_strings() {
+        let metadata = cron_metadata(&json!({"supported":"private fixture", "connected":"private fixture", "hasMore":"private fixture"}));
+        for key in ["supported", "connected", "hasMore"] { assert!(metadata[key].is_null(), "{key}"); }
+        assert!(!serde_json::to_string(&metadata).unwrap().contains("private fixture"));
+    }
     #[test]
     fn control_smoke_uses_engine_selected_path_without_confirming_server_version() {
         // Public Engine response shape: inspect_runtime leaves state/version unconfirmed,

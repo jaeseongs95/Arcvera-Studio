@@ -12,6 +12,8 @@ async function fixture(page: Page) {
       reads: 0, preparations: 0, mutations: 0, notices: [] as any[], capabilities: [] as boolean[], supportSnapshots: [] as any[], failure: false, hold: false,
       release: () => {}, holdRead: false, releaseRead: () => {}, result: 'started',
       settingsReads: 0, settingsFailure: false, settingsResult: { supported: false } as any,
+      compositionRequests: [] as any[], compositionSettled: 0, compositionResult: { supported: false, reason: 'unsupported' } as any,
+      holdComposition: false, releaseComposition: () => {},
       snapshot: { revision: 1, connected: true, guiConnected: true, tokenUsage: { total: { totalTokens: 900000 }, last: { totalTokens: 40000 }, modelContextWindow: 100000 }, tokenUsageFresh: true, compacting: false, active: false, canCompact: true, compactSupported: true } as any,
     };
     state.contextControls = createContextControls({
@@ -23,6 +25,12 @@ async function fixture(page: Page) {
           data.settingsReads++;
           if (data.settingsFailure) throw Error('PRIVATE_TOKEN_PATH_NEVER_REAL');
           return structuredClone(data.settingsResult);
+        }
+        if (args.request.type === 'contextComposition') {
+          data.compositionRequests.push(structuredClone(args.request));
+          const result = structuredClone(data.compositionResult);
+          if (data.holdComposition) { data.holdComposition = false; await new Promise<void>(resolve => { data.releaseComposition = resolve; }); }
+          data.compositionSettled++; return result;
         }
         if (args.request.type !== 'contextStatus') throw Error('관측 이외의 호출');
         data.reads++; const snapshot = structuredClone(data.snapshot);
@@ -54,6 +62,87 @@ test('D0031 CX01 사용량 미수신은 알림 대기로 설명하고 서버 새
   await expect(usage).toHaveAttribute('title', /사용량 알림을 기다리는 중/);
   await expect(usage).toHaveAttribute('aria-label', /컨텍스트 크기 설정/);
   await expect(usage).not.toHaveAttribute('title', /새로고침/);
+});
+
+test('CC parent targets the observed Native thread and exposes stale as refreshable', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const f = (window as any).contextFixture; f.snapshot.threadId = 'thread-a';
+    f.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 };
+  });
+  await page.locator('#context-fixture .context-usage').click();
+  await expect(page.locator('.context-composition-status')).toContainText('지원');
+  expect(await page.evaluate(() => (window as any).contextFixture.compositionRequests)).toEqual([{ type: 'contextComposition', expectedThreadId: 'thread-a', cursor: 0 }]);
+  await page.evaluate(() => { (window as any).contextFixture.compositionResult = { supported: false, reason: 'stale' }; });
+  await page.locator('.context-composition-actions button').first().click();
+  await expect(page.locator('.context-composition-status')).toContainText('변경');
+  expect(await page.evaluate(() => (window as any).contextFixture.compositionRequests.length)).toBe(2);
+});
+
+test('CC parent composition remains available when size settings are unconfirmed', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => { (window as any).contextFixture.snapshot.threadId = 'thread-a'; });
+  await page.locator('#context-fixture .context-usage').click();
+  const dialog = page.getByRole('dialog', { name: '세션 컨텍스트 크기' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.session-context-summary')).toContainText('미확인');
+  await expect(dialog.getByRole('button', { name: '적용', exact: true })).toBeDisabled();
+  await expect(dialog.locator('.context-composition-status')).toContainText('지원');
+});
+
+test('CC parent ignores a closed view reply after reopening the inspector', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const f = (window as any).contextFixture; f.snapshot.threadId = 'thread-a'; f.holdComposition = true;
+    f.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 };
+  });
+  await page.locator('#context-fixture .context-usage').click();
+  await expect.poll(() => page.evaluate(() => (window as any).contextFixture.compositionRequests.length)).toBe(1);
+  await page.getByRole('dialog').getByRole('button', { name: '닫기', exact: true }).click();
+  await page.evaluate(() => { (window as any).contextFixture.compositionResult = { supported: false, reason: 'stale' }; });
+  await page.locator('#context-fixture .context-usage').click();
+  await expect(page.locator('.context-composition-status')).toContainText('변경');
+  await page.evaluate(() => { (window as any).contextFixture.releaseComposition(); });
+  await expect.poll(() => page.evaluate(() => (window as any).contextFixture.compositionSettled)).toBe(2);
+  await expect(page.getByRole('dialog')).toHaveCount(1);
+  await expect(page.locator('.context-composition-status')).toContainText('변경');
+});
+
+test('CC parent full dialog uses desktop space and keeps close reachable while scrolling', async ({ page }, testInfo) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const f = (window as any).contextFixture; f.snapshot.threadId = 'thread-a';
+    f.settingsResult = { supported: true, canChange: true, modelContextWindow: null, effectiveContextWindow: 100000 };
+    f.compositionResult = { supported: true, snapshot: {
+      threadId: 'thread-a', snapshotId: 'layout-snapshot', contextIndexRevision: '1', historyVersion: '1', asOf: '2026-11-14T00:00:00Z',
+      sizes: { residentSerializedBytes: 250, selectedResidentSerializedBytes: 250, excludedResidentSerializedBytes: 0, archiveSerializedBytes: null,
+        selectedBodyEstimatedTokens: 50, estimateProvenance: 'selected_resident_before_request_normalization', navigationEstimatedTokens: 0,
+        baseEstimatedTokens: null, toolEstimatedTokens: null, totalEstimatedTokens: null },
+      limits: { requestedContextWindowOverride: null, effectiveContextWindow: 100000, provenance: 'session_configuration_override' },
+      fragments: Array.from({ length: 25 }, (_, n) => ({ sourceId: `source-${n}`, sourceOrdinal: String(n), residentOccurrence: '0', taskId: 'task-a',
+        kind: 'user', selected: true, required: false, selectionReason: 'reachable_task', residency: 'resident', residentSerializedBytes: 10, estimatedTokens: 2 })),
+      cache: { scope: 'response', provenance: 'not_reported', status: 'unknown', cachedInputTokens: null, writeInputTokens: null,
+        uncachedInputTokens: null, totalInputTokens: null, observedAt: null, observationId: null, requestContextIndexRevision: null,
+        revisionStatus: 'unknown', requestedTtlSeconds: 300, effectiveTtlSeconds: null, ttlSupport: 'unknown', ttlApplication: 'unknown',
+        requestStartedAt: null, minimumValidUntil: null, minimumValidUntilProvenance: 'unknown',
+        minimumValidUntilScope: 'reported_write_tokens_only_not_individual_fragments', estimatedExpiry: null, serverConfirmedExpiry: null }, nextCursor: null,
+    } };
+  });
+  for (const width of [1440, 360]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('#context-fixture .context-usage').click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('.context-composition-fragments > li')).toHaveCount(25);
+    const rect = await dialog.boundingBox();
+    expect(rect!.width).toBeLessThanOrEqual(width);
+    if (width === 1440) expect(rect!.width).toBeGreaterThan(700);
+    const close = dialog.getByRole('button', { name: '닫기', exact: true });
+    await expect(close).toBeInViewport();
+    await dialog.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await expect(close).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath(`composition-dialog-${width}.png`) });
+    await close.click(); await expect(dialog).toHaveCount(0);
+  }
 });
 
 test('D0031 CX02 관측 연결 실패와 마지막 사용량을 구분한다', async ({ page }) => {

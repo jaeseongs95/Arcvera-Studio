@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "engineering-test-plan",
+  "taskId": "task-527b3a63-1221-44fd-aa9f-c1a5471c9572",
+  "contractDigest": "sha256:a3062bc8ebab2484622a9b992cc417714f30906eb6ddc033450812104f5961cd",
+  "requirements": [
+    "IME-COMPOSITION",
+    "IME-PRESERVE"
+  ],
+  "scopeFiles": [
+    "src/main.ts",
+    "tests/terminal-flow.spec.ts",
+    "tests/conversation.spec.ts"
+  ],
+  "runner": "Existing Playwright one worker; real Chromium and xterm, synthetic native IPC.",
+  "environment": "Windows shared PC, owned source fixture; no user profiles, CLI or daemon. Frozen a02913d module served through a Vite pre-load hook for baseline only; all other source and test bytes identical.",
+  "cases": [
+    {
+      "id": "IME-REGRESSION",
+      "requirementIds": [
+        "IME-COMPOSITION",
+        "IME-PRESERVE"
+      ],
+      "scenario": "IME01-08 in bilingual case documents: composition flags, active composition, app shortcuts, search, Shift+Enter and browser composition commit.",
+      "entryPoint": "Actual DOM keyboard/composition events and Chromium Input.imeSetComposition routed through main.ts, xterm and existing input queue",
+      "level": "integration",
+      "expectedBehavior": "No app action during composition; exact committed Korean text once; ordinary shortcuts and UTF-8 input preserved.",
+      "oracle": "DOM layout/focus/search visibility, exact session_write sequence and existing conversation RPC assertions.",
+      "testFiles": [
+        "tests/terminal-flow.spec.ts",
+        "tests/conversation.spec.ts"
+      ],
+      "required": true,
+      "sensitivity": "manual-review",
+      "sensitivityReason": "Review frozen-module baseline and candidate browser reports directly; do not fabricate engineering-run receipts or claim physical IME from injected events.",
+      "argv": [
+        "node",
+        "verification/korean-input-20261117/run.mjs",
+        "after"
+      ]
+    }
+  ],
+  "exclusions": [
+    "No CLI changes; CLI-owned defects deferred to next version.",
+    "Physical Windows IME, actual WebView2/CLI, final Core pairing and full release acceptance remain separate."
+  ]
+}

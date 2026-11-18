@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "slug": "desktop-local-fixture",
+      "display_name": "Desktop local fixture (test only)",
+      "description": "Synthetic metadata for isolated Desktop/Core integration; not a real model.",
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        { "effort": "high", "description": "Synthetic test setting; no model inference." }
+      ],
+      "shell_type": "disabled",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "upgrade": null,
+      "support_verbosity": false,
+      "default_verbosity": null,
+      "apply_patch_tool_type": null,
+      "truncation_policy": { "mode": "bytes", "limit": 10000 },
+      "context_window": 32768,
+      "max_context_window": 32768,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text"],
+      "include_skills_usage_instructions": false,
+      "include_plugin_usage_instructions": false,
+      "include_apps_usage_instructions": false,
+      "base_instructions": "Test-only local provider. Return the fixed fixture response."
+    }
+  ]
+}

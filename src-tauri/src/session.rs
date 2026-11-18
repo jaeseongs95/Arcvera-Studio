@@ -1288,7 +1288,10 @@ impl Engine {
             if info.active && !metadata_complete {complete=false;}
             for request in &pending {
                 let method = request["method"].as_str().unwrap_or("");
-                let kind = match method {"item/tool/requestUserInput" | "opendiy/asyncQuestion" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"};
+                let mcp_approval=if method=="mcpServer/elicitation/request" && request["params"]["threadId"].as_str()==info.thread_id.as_deref() {
+                    codex::ConversationConnection::mcp_tool_approval(&request["params"])
+                } else {None};
+                let kind = if mcp_approval.is_some() {"approval"} else {match method {"item/tool/requestUserInput" | "opendiy/asyncQuestion" => "question","item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "approval",_ => "unsupported"}};
                 let request_id = request["requestId"].as_str().ok_or("대기 요청 식별자가 없습니다.")?;
                 let mut item = serde_json::json!({"id":format!("{}:{}:{}:{}",info.id,info.thread_id.as_deref().unwrap_or(""),info.generation,request_id),"threadId":info.thread_id,"sessionId":info.id,"generation":info.generation,"requestId":request_id,"kind":kind,"sessionTitle":info.title,"title":if kind=="question" {"사용자 답변 대기"} else if kind=="approval" {"사용자 승인 대기"} else {"터미널에서 확인할 요청"},"message":request["params"]["reason"].as_str().or_else(||request["params"]["command"].as_str()).unwrap_or(""),"canRespond":owned&&connected&&request["guiOwned"]==true&&kind!="unsupported"&&request["responded"]!=true,"responded":request["responded"]==true});
                 if kind=="question" {item["questions"]=request["params"]["questions"].clone();}
@@ -1298,7 +1301,13 @@ impl Engine {
                 }
                 item["metadataAvailable"]=request["metadataAvailable"].clone();
                 if kind=="approval" {
-                    let options=codex::ConversationConnection::approval_decisions(&request["params"]).into_iter().map(|decision|serde_json::json!({"id":decision,"label":match decision {"accept"=>"승인","acceptForSession"=>"이 세션에서 승인","decline"=>"거절",_=>"취소"}})).collect::<Vec<_>>();
+                    let mcp=mcp_approval.is_some();
+                    let decisions=if mcp {vec!["accept","decline","cancel"]} else {codex::ConversationConnection::approval_decisions(&request["params"])};
+                    let options=decisions.into_iter().map(|decision|serde_json::json!({"id":decision,"label":match decision {"accept" if mcp=>"이번만 허용","accept"=>"승인","acceptForSession"=>"이 세션에서 승인","decline"=>"거절",_=>"취소"}})).collect::<Vec<_>>();
+                    if let Some(approval)=mcp_approval {
+                        item["mcpToolApproval"]=approval;
+                        item["canRespond"]=serde_json::json!(info.active && item["canRespond"]==true && metadata_complete && request["metadataAvailable"]==true);
+                    }
                     if options.is_empty() {item["canRespond"]=serde_json::json!(false);}
                     item["approval"]=serde_json::json!({"options":options});
                 }
@@ -1938,6 +1947,17 @@ mod lifecycle_tests {
         let session=engine.allocate(&request()).unwrap();let info=session.info().unwrap();
         let id=r#"["request_user_input_async","fixture-call",0]"#;
         let respond=||codex::ConversationRequest::Respond{request_id:id.into(),result:serde_json::json!({"answers":{id:{"answers":["진행"]}}})};
+        assert!(engine.conversation_request(&info.id,info.generation+1,respond()).unwrap_err().contains("stale"));
+        assert!(engine.conversation_request(&info.id,info.generation,respond()).unwrap_err().contains("실행 중"));
+        session.phase.store(1,Ordering::Release);session.stop_requested.store(true,Ordering::Release);
+        assert!(engine.conversation_request(&info.id,info.generation,respond()).unwrap_err().contains("실행 중"));
+        assert!(session.process.lock().unwrap().is_none());session.finish("stopped").unwrap();
+    }
+    #[test]
+    fn mcp_tool_approval_admission_rejects_stale_generation_and_stopping_before_transport() {
+        let engine=Engine::new(Path::new(":memory:"),Arc::new(|_|Ok(()))).unwrap();
+        let session=engine.allocate(&request()).unwrap();let info=session.info().unwrap();
+        let respond=||codex::ConversationRequest::Respond{request_id:"71".into(),result:serde_json::json!({"action":"accept","content":null,"_meta":null})};
         assert!(engine.conversation_request(&info.id,info.generation+1,respond()).unwrap_err().contains("stale"));
         assert!(engine.conversation_request(&info.id,info.generation,respond()).unwrap_err().contains("실행 중"));
         session.phase.store(1,Ordering::Release);session.stop_requested.store(true,Ordering::Release);

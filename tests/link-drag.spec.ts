@@ -132,6 +132,27 @@ test('LD-04 real session drag handle still reorders demo cards', async ({ page }
   expect(await page.evaluate(() => (window as any).linkDrag.drags.some((event: any) => event.className === 'drag-handle' && !event.prevented))).toBe(true);
 });
 
+test('D0093 link drag returns to its origin without opening while application mouse reporting remains active', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(async () => {
+    const state = (window as any).linkDrag;
+    await new Promise<void>(resolve => state.terminal.write('\u001b[?1006h\u001b[?1002h', resolve));
+  });
+  for (const row of [1, 2]) {
+    await page.evaluate(() => { (window as any).linkDrag.calls = []; });
+    const start = await terminalPoint(page, 3, row); const end = await terminalPoint(page, 17, row);
+    await page.mouse.move(start.x, start.y);
+    await expect(page.locator('#drag-terminal .xterm')).toHaveAttribute('title', row === 1 ? 'https://example.com/terminal-long-link' : 'https://example.com/osc8');
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 8 });
+    await page.mouse.move(start.x, start.y, { steps: 8 });
+    await page.mouse.up();
+    expect(await page.evaluate(() => (window as any).linkDrag.calls)).toEqual([]);
+    await page.mouse.click(start.x, start.y);
+    expect(await page.evaluate(() => (window as any).linkDrag.calls)).toEqual([row === 1 ? 'https://example.com/terminal-long-link' : 'https://example.com/osc8']);
+  }
+});
+
 test('LD-05 released plain and OSC8 clicks end selection before the next hover', async ({ page }) => {
   await setup(page);
   const terminal = page.locator('#drag-terminal .xterm');

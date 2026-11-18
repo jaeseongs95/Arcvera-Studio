@@ -1,5 +1,6 @@
 import { bindAttribute, onLanguageChange, t } from './i18n';
 import './context-controls.css';
+import { createContextCompositionPanel } from './context-composition';
 
 interface ContextStatus {
   threadId?: string;
@@ -55,6 +56,7 @@ export function createContextControls(options: Options) {
   let reading = false; let busy = false;
   let settingsReading = false; let changing = false; let editorEpoch = 0;
   let editor: HTMLDialogElement | undefined;
+  let compositionPanel: ReturnType<typeof createContextCompositionPanel> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let revision = -1;
   const abort = new AbortController();
@@ -76,6 +78,8 @@ export function createContextControls(options: Options) {
       if (value.revision < revision) return;
       revision = value.revision;
     }
+    if (snapshot?.threadId && value.threadId && snapshot.threadId !== value.threadId) closeEditor();
+    if (!value.connected) compositionPanel?.showUnavailable('unavailable');
     snapshot = value;
     publishCapabilities();
   }
@@ -110,7 +114,8 @@ export function createContextControls(options: Options) {
     const unavailableEn = snapshot?.connected !== true ? 'The session observation connection could not be confirmed.' : !validUsage ? 'Waiting for a usage notification.' : !validCapacity ? 'The model context limit could not be confirmed.' : 'Waiting for a new usage notification.';
     const ko = `${valid ? `컨텍스트 ${percent}% · 최근 모델 응답 사용량 ${used.toLocaleString('ko-KR')} / ${capacity.toLocaleString('ko-KR')} 토큰${fresh ? '' : ' · 마지막 확인값, 현재 사용량 미확인'}` : '컨텍스트 사용량 미확인'}${fresh ? '' : ` · ${unavailableKo}`} · 클릭하여 세션 컨텍스트 크기 설정`;
     const en = `${valid ? `Context ${percent}% · latest model response usage ${used.toLocaleString('en-US')} / ${capacity.toLocaleString('en-US')} tokens${fresh ? '' : ' · last known value, current usage unknown'}` : 'Context usage unknown'}${fresh ? '' : ` · ${unavailableEn}`} · click to set this session’s context size`;
-    bindAttribute(usage, 'title', ko, en); bindAttribute(usage, 'aria-label', ko, en);
+    bindAttribute(usage, 'title', `${ko} · 컨텍스트 구성과 캐시 상태도 확인`, `${en} · inspect composition and cache status`);
+    bindAttribute(usage, 'aria-label', `${ko} · 컨텍스트 구성과 캐시 상태도 확인`, `${en} · inspect composition and cache status`);
     compact.title = reason(); compact.setAttribute('aria-label', reason());
     usage.disabled = !visible || reading || settingsReading || changing;
     compact.hidden = snapshot?.compactSupported !== true;
@@ -157,22 +162,23 @@ export function createContextControls(options: Options) {
       if (!disposed) { render(); schedule(0); }
     }
   }
-  function closeEditor() { editorEpoch++; editor?.close(); editor?.remove(); editor = undefined; }
+  function closeEditor() { editorEpoch++; compositionPanel?.dispose(); compositionPanel = undefined; editor?.close(); editor?.remove(); editor = undefined; }
   async function openSettings() {
     if (disposed || !visible || settingsReading || changing) return;
     const version = epoch;
     await refresh();
     if (!alive(version) || settingsReading || changing) return;
+    const chosenThread = snapshot?.connected === true ? snapshot.threadId : undefined;
     settingsReading = true; const editorVersion = ++editorEpoch; render();
     try {
       const value = await options.call<unknown>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'contextSettings' } });
       if (!alive(version) || editorVersion !== editorEpoch) return;
       if (!verifiedSettings(value)) {
         options.notify('이 세션의 컨텍스트 크기 설정 지원을 확인하지 못했습니다.', false, 'Context size settings could not be confirmed for this session.');
-        return;
+        if (!chosenThread) return;
       }
       closeEditor();
-      let current = value; const dialogVersion = editorEpoch;
+      let current: SessionContextSettings | undefined = verifiedSettings(value) ? value : undefined; const dialogVersion = editorEpoch;
       const dialog = document.createElement('dialog'); editor = dialog; dialog.className = 'session-context-dialog';
       dialog.setAttribute('aria-label', t('세션 컨텍스트 크기', 'Session context size'));
       const heading = document.createElement('h3'); heading.textContent = t('세션 컨텍스트 크기', 'Session context size');
@@ -185,14 +191,41 @@ export function createContextControls(options: Options) {
       const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = t('적용', 'Apply');
       const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = t('기본값 복원', 'Restore default');
       const close = document.createElement('button'); close.type = 'button'; close.textContent = t('닫기', 'Close');
+      const dialogHeader = document.createElement('div'); dialogHeader.className = 'session-context-actions session-context-header';
+      dialogHeader.append(heading, close);
+      let compositionReading = false;
+      const panel = chosenThread ? createContextCompositionPanel({ threadId: chosenThread, onRefresh: () => void readComposition(), onNext: (id, cursor) => void readComposition(id, cursor) }) : undefined;
+      compositionPanel = panel;
+      if (panel) dialog.classList.add('has-composition');
+      function disableControls() {
+        apply.disabled = reset.disabled = !current || changing || compositionReading;
+        input.disabled = !current || changing;
+        panel?.setDisabled(changing || compositionReading);
+      }
+      async function readComposition(snapshotId?: string, cursor = 0) {
+        if (!panel || !chosenThread || compositionReading || changing || !alive(version) || dialogVersion !== editorEpoch) return;
+        if (snapshot?.threadId !== chosenThread || snapshot.connected !== true) { panel.showUnavailable('unavailable'); return; }
+        compositionReading = true; panel.showPending(); disableControls();
+        try {
+          const result = await options.call<unknown>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'contextComposition', expectedThreadId: chosenThread, ...(snapshotId ? { snapshotId } : {}), cursor } });
+          if (!alive(version) || dialogVersion !== editorEpoch) return;
+          if (snapshot?.threadId !== chosenThread || snapshot.connected !== true) { panel.showUnavailable('unavailable'); return; }
+          const reply = result as { supported?: unknown; reason?: unknown; snapshot?: unknown } | null;
+          if (reply?.supported === true) { if (!panel.render(reply.snapshot)) panel.showUnavailable('unavailable'); }
+          else panel.showUnavailable(reply?.reason === 'unsupported' ? 'unsupported' : reply?.reason === 'stale' ? 'stale' : 'unavailable');
+        } catch { if (alive(version) && dialogVersion === editorEpoch) panel.showUnavailable('unavailable'); }
+        finally { compositionReading = false; if (editor === dialog) disableControls(); }
+      }
       function showCurrent() {
+        if (!current) { summary.textContent = t('세션 크기 설정은 미확인입니다. 구성 조회와 별도로 확인합니다.', 'Session size settings are unconfirmed independently of composition.'); disableControls(); return; }
         const format = (n: number | null) => n === null ? t('기본값', 'Default') : n.toLocaleString(t('ko-KR', 'en-US'));
         summary.textContent = t(`요청값: ${format(current.modelContextWindow)} · 실효 예산: ${format(current.effectiveContextWindow)} 토큰`, `Requested: ${format(current.modelContextWindow)} · effective budget: ${format(current.effectiveContextWindow)} tokens`);
         input.value = current.modelContextWindow?.toString() ?? '';
       }
       async function change(value: number | null) {
-        if (!alive(version) || dialogVersion !== editorEpoch || changing) return;
+        if (!current || !alive(version) || dialogVersion !== editorEpoch || changing || compositionReading) return;
         changing = true; apply.disabled = true; reset.disabled = true; input.disabled = true; dialog.setAttribute('aria-busy', 'true'); render();
+        panel?.setDisabled(true);
         message.textContent = t('적용 확인 대기 중입니다. 닫아도 이미 보낸 요청은 취소되지 않습니다.', 'Waiting for confirmation. Closing does not cancel an already submitted request.');
         try {
           const result = await options.call<unknown>('conversation_request', { id: options.sessionId, generation: options.generation, request: { type: 'setContextWindow', modelContextWindow: value, expectedModelContextWindow: current.modelContextWindow } });
@@ -204,7 +237,7 @@ export function createContextControls(options: Options) {
           if (alive(version) && dialogVersion === editorEpoch) { closeEditor(); options.notify('컨텍스트 변경 결과를 확인하지 못했습니다. 자동으로 다시 요청하지 않습니다. 아이콘을 눌러 서버 상태를 확인하세요.', true, 'The context change could not be confirmed. It will not be retried automatically. Click the icon to check the server state.'); }
         } finally {
           changing = false;
-          if (editor === dialog) { apply.disabled = false; reset.disabled = false; input.disabled = false; dialog.setAttribute('aria-busy', 'false'); }
+          if (editor === dialog) { disableControls(); dialog.setAttribute('aria-busy', 'false'); }
           if (!disposed) render();
         }
       }
@@ -215,7 +248,10 @@ export function createContextControls(options: Options) {
       });
       reset.addEventListener('click', () => void change(null)); close.addEventListener('click', closeEditor);
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeEditor(); });
-      actions.append(apply, reset, close); dialog.append(heading, explanation, summary, label, input, message, actions); document.body.append(dialog); showCurrent(); dialog.showModal();
+      actions.append(apply, reset); dialog.append(dialogHeader);
+      if (panel) dialog.append(panel.element);
+      dialog.append(explanation, summary, label, input, message, actions); document.body.append(dialog); showCurrent(); dialog.showModal();
+      if (panel) void readComposition();
     } catch {
       if (alive(version) && editorVersion === editorEpoch) options.notify('세션 컨텍스트 크기 설정 조회에 실패했습니다. 연결을 확인한 뒤 다시 시도하세요.', true, 'Session context size settings could not be read. Check the connection and try again.');
     }
