@@ -95,7 +95,7 @@ export function createQuestionCenter(host: QuestionCenterHost) {
     for (const [id, row] of rows) if (!remaining.has(id)) { row.node.remove(); rows.delete(id); drafts.delete(id); }
     items.forEach((item, index) => {
       const id = key(item); const draft = drafts.get(id) ?? { values: {} }; drafts.set(id, draft);
-      const signature = JSON.stringify([item, draft.phase, draft.openFailed, Object.hasOwn(item, 'mcpToolApproval') ? [readFailed, mcpMetadataComplete] : null]);
+      const signature = JSON.stringify([item, draft.phase, draft.openFailed, readFailed, Object.hasOwn(item, 'mcpToolApproval') ? mcpMetadataComplete : null]);
       let row = rows.get(id);
       if (!row || force || row.signature !== signature) {
         const node = buildRow(item, draft, index); row?.node.replaceWith(node); row = { node, signature }; rows.set(id, row);
@@ -120,8 +120,8 @@ export function createQuestionCenter(host: QuestionCenterHost) {
     const mcp = Object.hasOwn(item, 'mcpToolApproval');
     const toolApproval = readMcpToolApproval(item.mcpToolApproval);
     const reviewableTool = !!toolApproval && toolApproval.threadId === item.threadId;
-    const locked = !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting
-      || (mcp && (!reviewableTool || item.metadataAvailable !== true || readFailed || !mcpMetadataComplete));
+    const locked = readFailed || item.metadataAvailable === false || !item.canRespond || !item.requestId || !!item.responded || !!draft.phase || exiting
+      || (mcp && (!reviewableTool || item.metadataAvailable !== true || !mcpMetadataComplete));
     if (mcp && toolApproval && reviewableTool) {
       const review = text('pre', `${t('서버', 'Server')}: ${toolApproval.serverName}\n${t('도구', 'Tool')}: ${toolApproval.toolName}\n${t('인수', 'Arguments')}:\n${JSON.stringify(toolApproval.arguments)}`);
       review.className = 'mcp-tool-approval-review'; review.style.whiteSpace = 'pre-wrap'; review.style.overflowWrap = 'anywhere'; row.append(review);
@@ -171,28 +171,28 @@ export function createQuestionCenter(host: QuestionCenterHost) {
           if (!answer.trim()) { rowStatus.textContent = t('모든 질문에 응답하세요.', 'Answer every question.'); return; }
           answers[question.id] = { answers: [answer] };
         }
-        void respond(item, draft, { answers });
+        void respond(item, row, draft, { answers });
       };
     }
     if (item.kind === 'approval' && mcp && reviewableTool) for (const action of MCP_TOOL_APPROVAL_ACTIONS) {
       const control = text('button', action === 'accept' ? t('이번만 허용', 'Allow once') : action === 'decline' ? t('거절', 'Decline') : t('취소', 'Cancel')) as HTMLButtonElement;
       control.type = 'button'; control.className = 'quiet-button'; control.disabled = locked;
-      control.onclick = () => { if (!locked && !draft.phase) void respond(item, draft, mcpToolApprovalResponse(action)); }; form.append(control);
+      control.onclick = () => { if (!locked && !draft.phase) void respond(item, row, draft, mcpToolApprovalResponse(action)); }; form.append(control);
     }
     if (item.kind === 'approval' && !mcp) for (const option of item.approval?.options ?? []) {
       const labels: Record<string, [string, string]> = { accept: ['승인', 'Approve'], decline: ['거절', 'Decline'], cancel: ['취소', 'Cancel'], acceptForSession: ['이 세션에서 승인', 'Approve for this session'] };
       const translated = labels[option.id];
       const label = translated && ['승인', '거절', '취소', '이 세션에서 승인'].includes(option.label) ? t(...translated) : option.label;
       const control = text('button', label) as HTMLButtonElement; control.type = 'button'; control.className = 'quiet-button'; control.disabled = locked;
-      control.onclick = () => { if (!draft.phase) void respond(item, draft, { decision: option.id }); }; form.append(control);
+      control.onclick = () => { if (!locked && !draft.phase) void respond(item, row, draft, { decision: option.id }); }; form.append(control);
     }
     const open = text('button', t('원래 세션 열기 →', 'Open original session →')) as HTMLButtonElement; open.type = 'button'; open.className = 'quiet-button question-open';
     open.onclick = () => { void Promise.resolve().then(() => host.openSession(item.sessionId)).then(() => { if (!disposed) { draft.openFailed = false; element.close(); render(); } }).catch(() => { if (!disposed) { draft.openFailed = true; render(); } }); };
     row.append(form, rowStatus, open); return row;
   }
 
-  function respond(item: PendingQuestion, draft: Draft, result: Record<string, unknown>) {
-    if (disposed || exiting || draft.phase || item.responded || !item.canRespond || !item.requestId) return Promise.resolve();
+  function respond(item: PendingQuestion, row: HTMLElement, draft: Draft, result: Record<string, unknown>) {
+    if (!active() || !element.open || readFailed || rows.get(key(item))?.node !== row || draft.phase) return;
     draft.phase = 'sending'; draft.openFailed = false; render();
     const operation = Promise.resolve().then(() => Object.hasOwn(item, 'mcpToolApproval')
       ? host.call('conversation_request', { id: item.sessionId, generation: item.generation, request: { type: 'respond', requestId: item.requestId, result } })

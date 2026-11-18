@@ -72,6 +72,45 @@ const mcpApprovalRequest = () => ({ seq: 710, requestId: 'mcp-71', guiOwned: tru
     tool_params: { path: '<img src=x onerror="window.injected=true">', nested: { enabled: true } }, persist: ['session', 'always'] },
 } });
 
+test('D0090 conversation pauses ordinary approval and answers after a failed poll', async ({ page }) => {
+  await conversation(page);
+  await page.evaluate(() => {
+    (window as any).conversationFixture.pending = [
+      { seq: 1, method: 'item/fileChange/requestApproval', requestId: 'file-1', params: { availableDecisions: ['accept'] } },
+      { seq: 2, method: 'item/tool/requestUserInput', requestId: 'question-1', params: { questions: [{ id: 'scope', question: '작업 범위' }] } },
+    ];
+  });
+  const approve = view(page).getByRole('button', { name: '이번만 승인', exact: true });
+  const send = view(page).getByRole('button', { name: '답변 보내기', exact: true });
+  const answer = view(page).getByRole('textbox', { name: '작업 범위', exact: true });
+  const responses = () => page.evaluate(() => (window as any).conversationFixture.calls
+    .filter((call: any) => call.args.request?.type === 'respond').map((call: any) => call.args.request));
+  await expect(approve).toBeEnabled();
+  await answer.fill('보존할 초안');
+  await expect(send).toBeEnabled();
+  await page.evaluate(() => {
+    const fixture = (window as any).conversationFixture;
+    fixture.failAt = 'poll';
+    fixture.rawFailure = 'controlled poll rejection';
+  });
+  await expect(view(page).locator('.conversation-status')).toContainText('요청을 완료하지 못했습니다');
+  await expect(approve).toBeDisabled();
+  await expect(send).toBeDisabled();
+  await expect(answer).toBeDisabled();
+  await expect(answer).toHaveValue('보존할 초안');
+  expect(await responses()).toEqual([]);
+
+  await page.evaluate(() => { (window as any).conversationFixture.failAt = ''; });
+  await expect(approve).toBeEnabled();
+  await expect(answer).toHaveValue('보존할 초안');
+  await approve.click();
+  await send.click();
+  expect(await responses()).toEqual([
+    { type: 'respond', requestId: 'file-1', result: { decision: 'accept' } },
+    { type: 'respond', requestId: 'question-1', result: { answers: { scope: { answers: ['보존할 초안'] } } } },
+  ]);
+});
+
 for (const [name, value] of [
   ['missing', undefined], ['null', null], ['server', 'mcpServer'], ['future', 'future'], ['case', 'Core'], ['padded', 'core '],
   ['boolean', true], ['number', 1], ['object', { core: true }], ['array', ['core']],

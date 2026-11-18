@@ -390,8 +390,7 @@ export function createConversation(options: ConversationOptions) {
         for (const action of MCP_TOOL_APPROVAL_ACTIONS) {
           const control = document.createElement('button'); control.type = 'button'; control.className = 'quiet-button';
           control.textContent = action === 'accept' ? t('이번만 허용', 'Allow once') : action === 'decline' ? t('거절', 'Decline') : t('취소', 'Cancel');
-          control.disabled = !connected;
-          control.onclick = () => { if (!disposed && visible && attached && connected) void respond(id, mcpToolApprovalResponse(action), panel); };
+          control.onclick = () => void respond(id, mcpToolApprovalResponse(action), panel);
           panel.append(control);
         }
       } else if (event.method === 'item/commandExecution/requestApproval' || event.method === 'item/fileChange/requestApproval') {
@@ -448,12 +447,19 @@ export function createConversation(options: ConversationOptions) {
         else bindText(reason, '이 요청 형식은 지원하지 않아 자동 응답하지 않습니다. 요청이 시작된 클라이언트에서 확인하세요.', 'This request type is unsupported and will not be answered automatically. Check the client where the request originated.');
         panel.append(reason);
       }
-      if (event.responded || responding.has(id)) { panel.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select').forEach(control => { control.disabled = true; }); const waiting = document.createElement('small'); bindText(waiting, '응답을 보냈습니다. 서버의 처리 확인을 기다립니다.', 'Response sent. Waiting for server confirmation.'); panel.append(waiting); }
+      const waitingForConfirmation = event.responded || responding.has(id);
+      if (!connected || waitingForConfirmation) {
+        panel.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select').forEach(control => { control.disabled = true; });
+      }
+      if (waitingForConfirmation) { const waiting = document.createElement('small'); bindText(waiting, '응답을 보냈습니다. 서버의 처리 확인을 기다립니다.', 'Response sent. Waiting for server confirmation.'); panel.append(waiting); }
       requests.append(panel);
     }
   }
   async function respond(requestId: string, result: Json, panel: HTMLElement) {
-    const pending = pendingRequests.find(event => event.requestId === requestId); if (pending?.responded || responding.has(requestId)) return; if (pending) pending.responded = true; responding.add(requestId);
+    if (disposed || deleted || !visible || !foreground || !attached || !connected || !requests.contains(panel)) return;
+    const pending = pendingRequests.find(event => event.requestId === requestId);
+    if (!pending || pending.responded || responding.has(requestId)) return;
+    pending.responded = true; responding.add(requestId);
     panel.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select').forEach(value => { value.disabled = true; });
     const version = epoch;
     try { await rpc({ type: 'respond', requestId, result }); if (!alive(version)) return; const current = pendingRequests.find(event => event.requestId === requestId); if (current) current.responded = true; requestSignature = ''; renderRequests(); }

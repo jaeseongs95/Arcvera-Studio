@@ -133,6 +133,52 @@ test('D0087 question center blocks MCP actions while metadata polling is unavail
   expect(await mcpResponses(page)).toHaveLength(0);
 });
 
+test('D0090 question center pauses ordinary approval and answers after a failed poll', async ({ page }) => {
+  await fixture(page, [question, approval]);
+  await open(page);
+  const approve = page.getByRole('button', { name: '이번만 승인', exact: true });
+  const send = page.getByRole('button', { name: '응답 보내기', exact: true });
+  const answer = page.getByRole('textbox', { name: '덧붙일 내용' });
+  const scope = page.getByRole('radio', { name: /^하나/ });
+  await expect(approve).toBeEnabled();
+  await scope.check();
+  await answer.fill('보존할 초안');
+  await expect(send).toBeEnabled();
+
+  await page.evaluate(() => { (window as any).questionFixture.pollError = 'controlled poll rejection'; });
+  await page.clock.runFor(3_000);
+  await expect(page.locator('.question-list-status')).toContainText('이전 목록을 유지');
+  await expect(approve).toBeDisabled();
+  await expect(send).toBeDisabled();
+  await expect(answer).toBeDisabled();
+  await expect(answer).toHaveValue('보존할 초안');
+  expect(await responses(page)).toEqual([]);
+
+  await page.evaluate(() => {
+    const fixture = (window as any).questionFixture;
+    fixture.pollError = '';
+    fixture.complete = false;
+  });
+  await page.clock.runFor(3_000);
+  await expect(approve).toBeEnabled();
+  await expect(scope).toBeChecked();
+  await expect(answer).toHaveValue('보존할 초안');
+  await approve.click();
+  await send.click();
+  expect((await responses(page)).map((call: any) => call.args)).toEqual([
+    { sessionId: 'session-two', generation: 2, requestId: 'r1', decision: 'accept' },
+    { sessionId: 'session-one', generation: 4, requestId: 'r1', answers: { scope: { answers: ['하나'] }, note: { answers: ['보존할 초안'] } } },
+  ]);
+});
+
+test('D0090 question center blocks an ordinary approval with stale metadata', async ({ page }) => {
+  await fixture(page, [{ ...approval, metadataAvailable: false }], { complete: false });
+  await open(page);
+  await expect(page.locator('.question-metadata-status')).toBeVisible();
+  await expect(page.getByRole('button', { name: '이번만 승인', exact: true })).toBeDisabled();
+  expect(await responses(page)).toEqual([]);
+});
+
 for (const [name, json, allowed] of [
   ['positive-safe', '9007199254740991', true], ['negative-safe', '-9007199254740991', true],
   ['positive-outside', '9007199254740992', false], ['negative-outside', '-9007199254740992', false],
