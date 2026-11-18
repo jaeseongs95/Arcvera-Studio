@@ -44,6 +44,18 @@ IME09–14는 즉시 검색/resize, 선택 해제·재오픈·세션 전환 후 
 
 최종 제품/시험 조합은 대기 없이 40통과(32.9초, exit0, skipped/flaky 0)였다. 최종 report SHA256=d630396dddc1914ddbb6f511d00712ad0149c2c84482ac47bb4d0bd5301b6ab7, execution=b91b832165c1db7b8a2d58f560eb6f9fe0e85a182915a2db163f1b0487561d5d다. TypeScript --noEmit과 Vite 제품 빌드는 exit0이며 기존 large-chunk 경고만 남았다.
 
+## 빈 code의 Windows Process 키 추가 수정 (2026-11-18)
+
+격리한 08310ed WebView2 실행 파일에서 설치된 Windows 한국어 입력기로 `한글` 조합을 확인했다. n17의 확정 키는 `Process`, keyCode 229이며 `code`가 빈 값이었다. `compositionend` 뒤 키 해제 전에 비조합 Enter/13이 발생해 유효한 폼을 한 번 제출했다. 기존 `code: Enter` 재현은 이 실제 순서를 포함하지 않았다. 실패 후 나머지 native 사례 2개는 실행하지 않았다. 앱은 정상 종료했고 소유한 프로세스 세대 7개 모두 부재를 확인했다.
+
+공통 guard는 키를 식별할 수 없는 조합 눌림을 해제까지 추적한다. 눌린 동안 조합이 끝나면 뒤따르는 Enter를 계속 막고, 문자 키가 조합 종료 전에 해제되면 다음 Enter를 막지 않는다. 일반 키 누름·focusout·reset·창 blur에서 해당 상태를 해제하며 약한 참조와 기존 xterm handler를 유지한다. 타이머·의존성·CLI 변경은 없다.
+
+IME19는 확정 Enter의 폼 시작 0건과 새 Enter의 시작 1건, IME20은 실제 xterm의 한글 1회·확정 CR 0회·새 Enter CR 1회를 검사한다. IME21–23은 문자 키 해제·focusout·blur 복구를 보존한다. 격리 작업본의 동일한 시험 바이트와 Playwright 하위 프로세스 인수에서 수정 전 예상 assertion 2실패·3통과, 수정 후 5통과(exit0)를 확인했다. 최초 웹 서버 작업 경로 오류는 시험 0건으로 별도 보존하며 제품 실패로 세지 않는다. 근거는 `artifacts/ime-empty-code-20261118/{red-01,green-01}`에 있다.
+
+별도 소스 검토에서 다른 문자 키 해제와 보조 키 누름이 이미 확정된 Enter 차단을 푸는 경계를 확인했다. IME24–26은 3실패·보존 사례 1통과를 재현했고, 식별 전 키 해제와 확인된 Enter 해제를 분리하며 보조 키에서 차단을 유지한 뒤 4개 모두 통과했다. 최종 영향 경로 회귀는 48통과·skipped/flaky 0·exit0이며 TypeScript와 Vite도 exit0다. 기존 Vite 청크 크기 경고는 남아 있다. 교차 키 경계는 브라우저에서 직접 재현했으며 실제 Windows 입력기에서의 발생 빈도는 미검증이다.
+
+브라우저 native IPC는 명시적인 fixture다. 새 실행 파일의 Windows 입력기 동작이나 Core 통합을 검증한 결과가 아니며, 새 소스에 결속된 개발용 실행 파일과 native 사례 실행이 남아 있다. 최종 패키징·설치는 이번 범위 밖이다.
+
 ## 실제 Windows 조합 Enter 추가 수정
 
 격리한 980f143 Windows WebView2 실행 파일에서 실제 한국어 입력기로 `gksrmf`를 입력해 `한글` 조합을 확인했다. 유효한 새 세션 폼에서 조합 확정 Enter는 keyup 전에 `Process/Enter/229`, `compositionend`, `Enter/13` 순서로 발생했고, 마지막 이벤트가 폼을 한 번 제출했다. 유효하지 않은 폼에서는 이 결함이 가려졌다. 명시적인 missing-CLI 시험 설정으로 Core 시작 전 오류가 났으며, Desktop에서 확인한 결함이다.

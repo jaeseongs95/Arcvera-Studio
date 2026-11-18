@@ -244,21 +244,41 @@ test('IME05 Chromium composition commits Korean once through real xterm', async 
   } finally { await cdp.detach(); }
 });
 
-test('IME18 native commit Enter ordering sends Korean once without a trailing CR through xterm', async ({ page, context }) => {
+for (const code of ['Enter', '']) {
+test(`${code ? 'IME18' : 'IME20'} native commit Enter ordering (${code || 'empty code'}) sends Korean once without a trailing CR through xterm`, async ({ page, context }) => {
   await workspace(page);
   const cdp = await context.newCDPSession(page);
   try {
     await cdp.send('Input.imeSetComposition', { text: '한글', selectionStart: 2, selectionEnd: 2 });
-    await input(page).dispatchEvent('keydown', { key: 'Process', code: 'Enter', keyCode: 229, isComposing: true });
+    await input(page).dispatchEvent('keydown', { key: 'Process', code, keyCode: 229, isComposing: true });
     await cdp.send('Input.insertText', { text: '한글' });
     await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['한글']);
     await page.keyboard.down('Enter');
     expect(await page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['한글']);
+    await input(page).dispatchEvent('keyup', { key: 'Process', code, keyCode: 229 });
     await page.keyboard.up('Enter'); await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data))).toEqual(['한글', '\r']);
   } finally { await cdp.detach(); }
 });
+}
 
+
+test('IME24 held empty-code commit Enter survives unrelated character release through xterm', async ({ page, context }) => {
+  await workspace(page);
+  const cdp = await context.newCDPSession(page);
+  const payloads = () => page.evaluate(() => (window as any).flow.sent.map((item: any) => item.data));
+  try {
+    await cdp.send('Input.imeSetComposition', { text: '한글', selectionStart: 2, selectionEnd: 2 });
+    await input(page).dispatchEvent('keydown', { key: 'Process', code: '', keyCode: 229, isComposing: true });
+    await cdp.send('Input.insertText', { text: '한글' });
+    await expect.poll(payloads).toEqual(['한글']);
+    await page.keyboard.down('Enter'); expect(await payloads()).toEqual(['한글']);
+    await input(page).dispatchEvent('keyup', { key: 'r', code: 'KeyR', keyCode: 82 });
+    await page.keyboard.down('Enter'); expect(await payloads()).toEqual(['한글']);
+    await page.keyboard.up('Enter'); await page.keyboard.press('Enter');
+    await expect.poll(payloads).toEqual(['한글', '\r']);
+  } finally { await cdp.detach(); }
+});
 
 for (const ending of ['cancel', 'commit-end-input', 'commit-input-end'] as const) {
   test('IME07 search composition ' + ending + ' preserves one search per changed value', async ({ page }) => {

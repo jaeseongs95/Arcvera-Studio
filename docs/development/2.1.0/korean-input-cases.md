@@ -44,6 +44,18 @@ Raw execution, JSON reports, stdout and failed traces are under artifacts/korean
 
 The final product/test combination passed all 40 tests without the readiness wait (32.9s, exit0, zero skipped/flaky). Final report SHA256=d630396dddc1914ddbb6f511d00712ad0149c2c84482ac47bb4d0bd5301b6ab7; execution=b91b832165c1db7b8a2d58f560eb6f9fe0e85a182915a2db163f1b0487561d5d. TypeScript --noEmit and the production Vite build exited 0; the existing large-chunk warning remains.
 
+## Empty-code Windows Process key follow-up (2026-11-18)
+
+The isolated 08310ed WebView2 executable composed `한글` with the installed Windows Korean IME. In run n17, the confirming key was `Process`, keyCode 229, with an empty `code`; `compositionend` was followed by a non-composing Enter/13 before release. The valid form submitted once. The earlier `code: Enter` replay did not cover this actual event sequence. The remaining two native cases were not run after this failure. The application exited normally and all seven owned process generations were absent afterward.
+
+The shared guard now tracks an opaque composing press until release. If composition ends while that press remains down, the trailing Enter stays guarded. A character released before compositionend leaves no Enter latch. Ordinary keydown, focusout, reset and window blur clear the relevant state; weak targets and the existing xterm handler remain in use. No timer, dependency or CLI change was added.
+
+IME19 checks zero form starts on confirmation and one start on a newly pressed Enter. IME20 checks one Korean payload, no confirmation CR and one new-press CR through real xterm. IME21–23 preserve character release, focusout and blur recovery. Identical test bytes and Playwright subprocess arguments on the isolated checkout produced two expected assertion failures and three passes before the guard change, then five passes afterward (exit 0). The initial web-server working-directory error ran zero tests and is preserved separately, not counted as a product failure. Evidence is under `artifacts/ime-empty-code-20261118/{red-01,green-01}`.
+
+Separate source review identified overlapping character release and modifier press clearing an already confirmed Enter latch. IME24–26 reproduced three failures and one preservation pass, then passed all four after separating opaque-key release from confirmed Enter release and retaining the latch through modifiers. Final affected-consumer regression: 48 passed, zero skipped/flaky, exit 0; TypeScript and Vite also exited 0. The existing Vite chunk-size warning remains. This overlap is a directly reproduced browser failure; its frequency with actual Windows IME input is unverified.
+
+Browser native IPC remains an explicit fixture. These checks do not establish the new executable's Windows IME behavior or Core integration. A new source-bound development executable and native cases are still required. Final packaging and installation remain outside this task.
+
 ## Native Windows commit Enter follow-up
 
 Physical Korean IME input in the isolated 980f143 Windows WebView2 executable composed `gksrmf` as `한글`. On a valid new-session form, the commit press emitted `Process/Enter/229`, `compositionend`, then `Enter/13` before keyup. That trailing event incorrectly submitted the form once. An invalid form concealed the defect. The explicit missing-CLI fixture stopped before starting Core; this is a Desktop failure.
